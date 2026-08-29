@@ -472,9 +472,22 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     snd = Sender(tr, led, channel, alert_chat_id=alert_to,
                  worker_id=os.environ.get("WORKER_ID") or None)
 
-    sent = skipped = failed = 0
+    sent = skipped = failed = already = 0
+    missed: list[str] = []
     for item in due:
         if is_late(item.scheduled_utc, now, item.content_type):
+            # **버린 것을 조용히 넘기지 않는다.**
+            # 늦은 것을 버리는 건 설계대로다("늦은 안내는 거짓말이다"). 그런데
+            # 그걸 로그에 안 남기면, 시계가 뜸해져 매일 모닝 브리핑을 놓쳐도
+            # 아무도 모른다 — 채널이 조용한 이유를 알 수 없다.
+            # 첫날 실측에서 시계 간격이 5분이 아니라 73분이었다. 이런 상황에서
+            # '조용히 건너뜀'은 시스템이 죽었는지 할 일이 없었는지를 구분 못 하게 한다.
+            late = (now - item.scheduled_utc).total_seconds() / 60
+            missed.append(f"{item.content_type.value} {item.scope} "
+                          f"(예약보다 {late:.0f}분 늦어 취소)")
+            print(f"    ⏰ 지각으로 버림 {item.content_type.value} {item.scope} "
+                  f"— 예약 {item.scheduled_utc.astimezone(KST):%H:%M} "
+                  f"· {late:.0f}분 지남")
             skipped += 1
             continue
         games = next((g for g in snaps.values() if g and g[0].league is item.league), [])
@@ -487,7 +500,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             payload = (Payload.from_parts(photos, parts) if photos
                        else Payload(text=parts[0]))
             res = snd.send(item, payload)
-            if res.state is SendState.SENT:
+            if res.state is SendState.SENT and res.already:
+                # 대장에 이미 있다 — 이번에는 아무것도 안 나갔다.
+                # **'발송'으로 찍으면 로그가 거짓말을 한다.** 시계가 돌 때마다
+                # 같은 줄이 찍혀, 채널에 카드가 쌓이는 것처럼 보인다.
+                already += 1
+                print(f"    이미 보냄 {item.content_type.value} {item.scope} "
+                      f"→ {res.message_ids} (중복 방지)")
+            elif res.state is SendState.SENT:
                 sent += 1
                 print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
             elif res.state is SendState.NEEDS_HUMAN:
@@ -501,7 +521,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                   f"{type(e).__name__} {str(e)[:110]}")
             traceback.print_exc(limit=2)
 
-    print(f"  [발송] 성공 {sent} · 건너뜀 {skipped} · 실패 {failed}")
+    print(f"  [발송] 새로 보냄 {sent} · 이미 보냄 {already} · "
+          f"건너뜀 {skipped} · 실패 {failed}"
+          + (f" · ⏰ 시각 놓쳐 취소 {len(missed)}" if missed else ""))
 
     # 알림은 사람이 봐야 할 것만. 매 틱 시끄러우면 아무도 안 본다.
     lines = []
@@ -511,6 +533,10 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
     if failed:
         lines.append(f"발송 실패 {failed}건 (로그 확인)")
+    if missed:
+        # 지각으로 버린 것은 '아무 일도 없었다'가 아니다. 채널이 조용한 이유다.
+        # 시계가 뜸해지면 여기가 먼저 알려준다.
+        lines.append(f"시각을 놓쳐 취소 {len(missed)}건 — " + " · ".join(missed[:2]))
     if stale:
         ex = stale[0]
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")

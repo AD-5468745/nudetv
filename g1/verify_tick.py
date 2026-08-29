@@ -253,6 +253,11 @@ r2 = snd.send(item, p1)
 check("두 번째 호출은 API를 치지 않는다", len(f.sent) == 1, f"{len(f.sent)}회")
 check("이미 처리됨을 사유로 알린다", "이미 처리" in r2.reason, r2.reason[:50])
 check("메시지 id가 새로 생기지 않는다", r2.message_ids == r1.message_ids)
+# **로그가 사실을 말해야 한다.** 둘 다 state는 SENT라, 구분하지 않으면 시계가
+# 돌 때마다 "발송 성공 2"가 찍혀 채널에 카드가 쌓이는 것처럼 보인다.
+# 첫날 밤 로그가 실제로 그랬다(중복 발송은 없었지만 로그로는 알 수 없었다).
+check("첫 발송은 '이번에 보냄'으로 표시된다", r1.already is False)
+check("두 번째는 '이미 보냄'으로 표시된다 (로그가 거짓말하지 않게)", r2.already is True)
 
 # 새 컨테이너를 흉내낸다 — 대장 파일만 있고 메모리는 비었다
 led2 = Ledger(led_path)

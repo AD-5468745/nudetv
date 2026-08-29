@@ -319,6 +319,12 @@ class SendOutcome:
     state: SendState
     message_ids: list[int] = field(default_factory=list)
     reason: str = ""
+    # **이번에 실제로 내보냈나, 아니면 대장에 이미 있어서 안 보냈나.**
+    # 둘 다 state는 SENT다 — 대장에 있는 것은 '보내진 상태'가 맞기 때문이다.
+    # 그런데 이 둘을 구분하지 않으면 로그가 거짓말을 한다: 시계가 돌 때마다
+    # "발송 성공 2"가 찍혀, 채널에 카드가 계속 쌓이는 것처럼 보인다.
+    # (실제로 첫날 밤 로그가 그랬다. 중복 발송은 없었지만 로그만 봐서는 알 수 없었다.)
+    already: bool = False
 
 
 class Sender:
@@ -376,7 +382,8 @@ class Sender:
         if rec is None:
             prev = self.led.get(item.idem_key)
             return SendOutcome(prev.state if prev else SendState.SUPERSEDED,
-                               prev.message_ids if prev else [], "이미 처리됨")
+                               prev.message_ids if prev else [], "이미 처리됨",
+                               already=True)
 
         payload.gate()
 
