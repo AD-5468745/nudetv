@@ -339,6 +339,53 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
     return [(path.name, path.read_bytes(), w, h)], parts
 
 
+# ── 드라이런 렌더 시험 ────────────────────────────────────────
+
+# 드라이런에서 실제로 그려볼 카드 수. 리그마다 색·아이콘·팀 표기가 달라
+# 한 장만 보면 나머지가 깨진 걸 못 잡는다(전 리그 카드가 KBO 색이던 사고가 그랬다).
+# 그렇다고 전부 그리면 틱이 길어진다 — 리그별로 한 장씩, 최대 이만큼.
+DRYRUN_RENDER_MAX = 6
+
+
+def _render_samples(items: list, snaps: dict) -> list[str]:
+    """큐에서 리그별로 한 건씩 골라 실제로 그려본다. 실패 사유들을 돌려준다."""
+    out_dir = ROOT / "render"
+    seen: set = set()
+    picked = []
+    for it in items:
+        key = (it.league, it.content_type)
+        if it.league in seen:
+            continue
+        seen.add(it.league)
+        picked.append(it)
+        if len(picked) >= DRYRUN_RENDER_MAX:
+            break
+
+    fails = []
+    for it in picked:
+        games = next((g for g in snaps.values() if g and g[0].league is it.league), [])
+        tag = f"{(it.league.value if it.league else 'none')}-{it.content_type.value}"
+        try:
+            made = render_for(it, games)
+            if made is None:
+                print(f"    · {tag}: 만들 내용이 없음 (정상일 수 있음)")
+                continue
+            photos, parts = made
+            if photos:
+                name, data, w, h = photos[0]
+                dest = out_dir / f"{tag}.jpg"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                print(f"    · {tag}: 카드 {w}x{h} · {len(data) // 1024}KB · "
+                      f"글 {len(parts)}조각 → {dest.name}")
+            else:
+                print(f"    · {tag}: 글만 {len(parts)}조각 "
+                      f"({sum(len(p) for p in parts)}자)")
+        except Exception as e:                               # noqa: BLE001
+            fails.append(f"{tag} 렌더 실패: {type(e).__name__} {str(e)[:150]}")
+    return fails
+
+
 # ── 한 번의 틱 ────────────────────────────────────────────────
 
 def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
@@ -395,8 +442,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if stale:
             print(f"  [경고] 묵은 '예정' {len(stale)}건 — " +
                   ", ".join(f"{g.league.value} {g.sports_day}" for g in stale[:3]))
+
+        # **카드를 실제로 그려본다.** 계획만 찍고 넘어가면 렌더는 첫 실제 발송에서
+        # 처음 시험된다 — 그때 잘못되면 되돌릴 수 없다. 특히 폰트는 서버마다 다른데,
+        # 없으면 크로미움이 조용히 두부(□□□)로 그린다. 숫자 검증은 그걸 못 잡는다.
+        # 여기서 그린 그림은 아티팩트로 올라가 사람이 눈으로 확인한다.
+        render_errors = _render_samples(items, snaps)
+        if render_errors:
+            for r in render_errors:
+                print(f"    ❌ {r}")
+
         # 커버리지 이상은 '조용한 실패'이므로 드라이런에서도 빨간불로 올린다.
-        if errors or not cov.ok:
+        if errors or render_errors or not cov.ok:
             return 1
         return 0
 

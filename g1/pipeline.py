@@ -47,6 +47,47 @@ _TYPO_JS = """
 }
 """
 
+# 한글이 **실제 글자로** 그려지는지 브라우저 안에서 직접 확인한다.
+#
+# 왜 필요한가: 카드는 서버의 시스템 폰트로 그려진다. 내 개발 컴퓨터에는 한글 폰트가
+# 깔려 있지만 **GitHub 서버(ubuntu-latest)에는 없다.** 폰트가 없으면 크로미움은
+# 조용히 두부(□□□)로 그린다 — 오류도 경고도 없다. 숫자 검증은 전부 통과하고,
+# 두부 카드가 채널로 나간 뒤에야 알게 된다.
+# (전에 '전 리그 카드가 KBO 색'을 숫자검증 215건이 다 통과시키고 눈으로 보고서야
+#  잡은 적이 있다. 같은 계열의 사고를 이번엔 기계가 잡게 한다.)
+#
+# 재는 법: 한글 '가'와 **어떤 폰트에도 없는 글자**의 폭을 비교한다.
+# 폰트가 없으면 둘 다 같은 두부 글리프라 폭이 같아진다. 다르면 진짜 글자다.
+_FONT_JS = r"""
+() => {
+  const cv = document.createElement('canvas').getContext('2d');
+  const fam = getComputedStyle(document.querySelector('#card')).fontFamily;
+  cv.font = '64px ' + fam;
+  const ko = cv.measureText('가').width;
+  const tofu = cv.measureText('�').width / 2;   // 없는 글자 = 두부
+  const zero = cv.measureText('0').width;
+  return {family: fam, ko: ko, tofu: tofu, zero: zero,
+          ready: document.fonts ? document.fonts.status : 'n/a'};
+}
+"""
+
+
+class FontMissing(GateError):
+    """한글 폰트가 없다 — 카드가 두부로 나간다."""
+
+
+def assert_korean_font(m: dict) -> None:
+    """한글이 두부로 그려지고 있으면 발송 전에 멈춘다."""
+    if m.get("ko", 0) <= 0:
+        raise FontMissing(f"한글 폭을 재지 못했습니다 (font-family: {m.get('family')})")
+    # 두부 글리프와 폭이 같으면(0.5px 이내) 한글이 안 그려지고 있는 것이다.
+    if abs(m["ko"] - m.get("tofu", -99)) < 0.5:
+        raise FontMissing(
+            "한글 폰트가 없어 카드가 두부(□)로 그려집니다. "
+            f"font-family={m.get('family')} · 한글폭 {m['ko']:.1f} = 두부폭 {m['tofu']:.1f}. "
+            "서버에 한글 폰트를 설치하세요 (우분투: apt-get install -y fonts-noto-cjk).")
+
+
 OUT = pathlib.Path(__file__).resolve().parent / "dryrun"
 # 카드 디자인. **절대 경로를 쓰면 배포 환경에서 카드를 못 그린다** —
 # 개발 폴더 경로가 박혀 있었고, 그대로 올렸으면 첫 발송에서 파일 없음으로 죽었을 것이다.
@@ -345,8 +386,11 @@ def render_png(card_html: str, out: pathlib.Path) -> tuple[int, int, int]:
         pg.goto(f"file://{tmp}")
         pg.wait_for_timeout(900)
         samples = pg.evaluate(_TYPO_JS)
+        font = pg.evaluate(_FONT_JS)
         pg.query_selector("#card").screenshot(path=str(out))
         b.close()
+    # 폰트부터 본다. 두부 카드는 다른 어떤 검사를 통과해도 내보낼 수 없다.
+    assert_korean_font(font)
     assert_card_typography([(x["t"], x["fs"], x["cls"]) for x in samples])
     im = Image.open(out).convert("RGB")
     w, h = im.size

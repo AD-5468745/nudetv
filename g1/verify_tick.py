@@ -469,6 +469,61 @@ _q3 = T.build_all_queues({"MLB": _mixed}, NOW, "-100test")
 _sa3 = [i for i in _q3 if i.content_type is ContentType.START_ALERT]
 check("종료된 경기는 시작 알림 대상이 아니다", len(_sa3) == 1)
 
+# ── 10. 폰트 게이트 — 두부 카드를 막는가 ──────────────────────
+# 개발 컴퓨터에는 한글 폰트가 있고 **서버(ubuntu-latest)에는 없다.**
+# 폰트가 없으면 크로미움은 오류도 경고도 없이 두부(□□□)로 그린다 —
+# 숫자 검증은 전부 통과하고, 두부 카드가 채널에 나간 뒤에야 알게 된다.
+# ('전 리그 카드가 KBO 색'을 숫자검증 215건이 다 통과시키고 눈으로 보고서야
+#  잡은 적이 있다. 같은 계열의 사고를 이번엔 기계가 잡는다.)
+print("\n10. 폰트 게이트 — 두부 카드를 막는가")
+
+
+def _msg(fn) -> str:
+    try:
+        fn()
+        return ""
+    except Exception as e:                                   # noqa: BLE001
+        return str(e)
+
+
+def _no_raise(fn) -> bool:
+    try:
+        fn()
+        return True
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+def _raises(exc, fn) -> bool:
+    try:
+        fn()
+        return False
+    except exc:
+        return True
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+check("한글이 제대로 그려지면 통과",
+      _no_raise(lambda: P.assert_korean_font(
+          {"family": "Noto Sans CJK KR", "ko": 64.0, "tofu": 40.0})))
+check("두부면 막는다 (한글폭 = 두부폭)",
+      _raises(P.FontMissing, lambda: P.assert_korean_font(
+          {"family": "sans-serif", "ko": 42.0, "tofu": 42.0})))
+check("폭이 0이면 막는다 (측정 실패도 통과시키지 않는다)",
+      _raises(P.FontMissing, lambda: P.assert_korean_font({"family": "x", "ko": 0})))
+check("게이트 오류는 GateError 계열 (호출부가 이미 잡는 종류)",
+      issubclass(P.FontMissing, GateError))
+check("설치 방법을 오류 문구가 알려준다",
+      "fonts-noto-cjk" in _msg(lambda: P.assert_korean_font(
+          {"family": "s", "ko": 42.0, "tofu": 42.0})))
+# 이 검증이 도는 컴퓨터에는 한글 폰트가 있다 — 실제 렌더로 게이트가
+# 정상 카드를 막지 않는지도 확인한다(오탐이면 발행이 통째로 멈춘다).
+check("실제 렌더도 폰트 게이트를 통과한다",
+      _no_raise(lambda: P.render_png(
+          P._card("<div class='t' style='font-size:40px'>한글 확인</div>", League.KBO),
+          TMP / "fontcheck.png")))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
