@@ -1,0 +1,433 @@
+"""시계 적대적 검증 — 무인 운영에서 깨질 만한 것을 전부 깨본다 (v1.11c).
+
+시계는 사람이 안 보는 동안 24시간 돈다. 여기서 못 잡은 것은 새벽에 채널에서 터진다.
+특히 두 가지가 치명적이다:
+
+  1. **같은 카드를 두 번 보내는 것** — 되돌릴 수 없다
+  2. **조용히 아무것도 안 하는 것** — 며칠 뒤에야 알아챈다
+
+실행 환경이 매번 새 컨테이너(무상태)라는 점이 이 둘을 다 어렵게 만든다.
+상태를 파일로 남기는데, 그 파일이 사라지거나 깨졌을 때 어느 쪽으로 넘어지는지가 중요하다.
+**"모르면 안 보낸다"** 가 정답이다 — 안 보낸 것은 다음 틱에 보내면 되지만
+두 번 보낸 것은 되돌릴 수 없다.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+import contract as C
+from contract import (ContentType, GameMeta, Game, GateError, KST, League, Score,
+                      ScoreUnit, SendState, Status, TeamRef, is_late)
+import pipeline as P
+
+ok = fail = 0
+
+
+def check(n, c, d=""):
+    global ok, fail
+    if c:
+        ok += 1; print(f"  PASS  {n}")
+    else:
+        fail += 1; print(f"  FAIL  {n}  {d}")
+
+
+TMP = pathlib.Path(tempfile.mkdtemp(prefix="tickverify-"))
+os.environ["NUDETV_STATE"] = str(TMP)
+os.environ.setdefault("TELEGRAM_CHAT_ID", "-100test")
+import tick as T                                            # noqa: E402
+T.ROOT = TMP
+T.LEDGER = TMP / "ledger.jsonl"
+T.FETCH_LOG = TMP / "fetch.json"
+T.SNAP_DIR = TMP / "games"
+
+NOW = datetime(2026, 8, 28, 22, 0, tzinfo=timezone.utc)
+
+
+def mkgame(lg=League.KBO, h="LG", a="OB", day="2026-08-29", hh=18,
+           status=Status.SCHEDULED, score=None, cancel=None):
+    st = datetime(int(day[:4]), int(day[5:7]), int(day[8:10]), hh, 30,
+                  tzinfo=ZoneInfo("Asia/Seoul"))
+    yr, mo = int(day[:4]), int(day[5:7])
+    if C.SEASON_FORMAT_BY_LEAGUE[lg] is C.SEASON_SINGLE_YEAR:
+        season = f"{yr}"
+    else:
+        s0 = yr if mo >= 7 else yr - 1
+        season = f"{s0}-{str(s0 + 1)[2:]}"
+    g = Game(league=lg, season=season, source_key=f"{lg.value}-{day}-{hh}-{h}{a}",
+             home=TeamRef(lg, h), away=TeamRef(lg, a),
+             start_utc=st.astimezone(timezone.utc), home_tz="Asia/Seoul",
+             status=status, score=score, venue="테스트구장",
+             meta=GameMeta(gender=C.GENDER_BY_LEAGUE.get(lg), cancel_reason=cancel))
+    g.validate()
+    return g
+
+
+print("=" * 62)
+print("시계 적대적 검증")
+print("=" * 62)
+
+# ── 1. 스냅샷 왕복 ────────────────────────────────────────────
+print("\n1. 스냅샷 왕복 — 저장했다 읽으면 그대로인가")
+# 손실이 있으면 카드가 틀린다. 카드가 틀리면 사실 오류다.
+src = [
+    mkgame(status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS)),
+    mkgame(h="KT", a="SS", hh=17, status=Status.CANCELED, cancel="우천취소"),
+    mkgame(h="HT", a="LT", hh=14),
+]
+T._save_games("T1", src)
+back = T._load_games("T1")
+check("건수 보존", len(back) == len(src))
+check("game_id 보존", [g.game_id for g in back] == [g.game_id for g in src])
+check("상태 보존", [g.status for g in back] == [g.status for g in src])
+check("점수 보존", back[0].score is not None
+      and (back[0].score.home, back[0].score.away) == (5, 3))
+check("점수 단위 보존", back[0].score.unit is ScoreUnit.RUNS)
+check("취소 사유 보존", back[1].meta.cancel_reason == "우천취소")
+check("sports_day 보존", [g.sports_day for g in back] == [g.sports_day for g in src])
+check("시작 시각 보존", all(a.start_utc == b.start_utc for a, b in zip(back, src)))
+check("되읽은 것도 계약 통과", all(g.validate() is None for g in back))
+
+# 다전제(BO5)는 e스포츠 카드에 필요하다
+lck = Game(league=League.LCK, season="2026", source_key="L1",
+           home=TeamRef(League.LCK, "T1"), away=TeamRef(League.LCK, "GEN"),
+           start_utc=NOW, home_tz="Asia/Seoul", status=Status.FINAL,
+           score=Score(3, 1, ScoreUnit.MAPS), venue=None,
+           meta=GameMeta(best_of=5, season_category="LCK 2026"))
+lck.validate()
+T._save_games("T2", [lck])
+check("BO(다전제) 보존", T._load_games("T2")[0].meta.best_of == 5)
+
+# ── 2. 깨진 상태 파일 ─────────────────────────────────────────
+print("\n2. 깨진 상태 — 어느 쪽으로 넘어지는가")
+(TMP / "games" / "T3.json").write_text("{ 이건 JSON이 아니다", encoding="utf-8")
+try:
+    T._load_games("T3")
+    check("깨진 스냅샷은 예외로 드러난다", False, "조용히 넘어갔다")
+except json.JSONDecodeError:
+    check("깨진 스냅샷은 예외로 드러난다 (조용히 0건이 되지 않는다)", True)
+
+T.FETCH_LOG.write_text("깨진 파일", encoding="utf-8")
+check("깨진 수집 로그는 '수집한 적 없음'과 같게 다룬다 (다음 틱에 다시 수집)",
+      T._fetch_log() == {})
+T.FETCH_LOG.unlink()
+
+# 원자적 저장 — 중간에 죽어도 반쪽 파일이 남지 않는다
+check("저장은 임시파일 → 교체 (반쪽 파일 방지)",
+      not list((TMP / "games").glob("*.tmp")))
+
+# ── 3. 큐 — 리그가 서로를 덮지 않는가 ─────────────────────────
+print("\n3. 큐 — 여러 리그가 한 큐에 섞일 때")
+snaps = {
+    "KBO": [mkgame(League.KBO, "LG", "OB", hh=18)],
+    "NPB": [mkgame(League.NPB, "YOG", "HAN", hh=18)],
+    "KL1": [mkgame(League.KL1, "K01", "K02", hh=19)],
+}
+items = T.build_all_queues(snaps, NOW, "-100test")
+check(f"큐 {len(items)}건 생성", len(items) > 0)
+check("멱등키 전부 유일", len({i.idem_key for i in items}) == len(items),
+      f"{len(items) - len({i.idem_key for i in items})}건 중복")
+morn = [i for i in items if i.content_type is ContentType.MORNING]
+check(f"모닝 브리핑이 리그 수만큼 ({len(morn)}건)", len(morn) == 3, str(len(morn)))
+check("모닝 키에 리그가 들어있다",
+      {i.league for i in morn} == {League.KBO, League.NPB, League.KL1})
+check("큐가 시각순 정렬", all(items[i].scheduled_utc <= items[i + 1].scheduled_utc
+                          for i in range(len(items) - 1)))
+
+# 한 리그가 깨져도 나머지는 큐에 남는다
+class Boom(list):
+    """접근하면 터지는 목록 — 한 리그의 손상을 흉내낸다."""
+    @property
+    def broken(self):
+        raise RuntimeError("이 리그는 깨졌다")
+
+
+snaps_bad = dict(snaps)
+snaps_bad["BAD"] = [object()]                # Game이 아닌 것이 들어온 상황
+items2 = T.build_all_queues(snaps_bad, NOW, "-100test")
+check("한 리그가 깨져도 나머지 큐는 살아남는다", len(items2) >= len(items),
+      f"{len(items2)} vs {len(items)}")
+
+# ── 4. 늦은 항목 ──────────────────────────────────────────────
+print("\n4. 지각 — 늦으면 스스로 버리는가")
+# 무료 스케줄러는 늦는다. "10분 뒤 시작" 카드가 20분 늦게 나가면 거짓말이다.
+late_at = NOW - timedelta(seconds=C.GRACE_SECONDS[ContentType.START_ALERT] + 60)
+check("유예를 넘긴 시작 알림은 지각",
+      is_late(late_at, NOW, ContentType.START_ALERT))
+check("유예 안이면 지각 아님",
+      not is_late(NOW - timedelta(seconds=60), NOW, ContentType.START_ALERT))
+# 결과 카드는 유예가 길다 — 소스가 늦게 채우기 때문
+check("결과 카드 유예가 시작 알림보다 길다",
+      C.GRACE_SECONDS[ContentType.LEAGUE_RESULT]
+      > C.GRACE_SECONDS[ContentType.START_ALERT])
+
+# ── 5. 렌더 ───────────────────────────────────────────────────
+print("\n5. 렌더 — 만들 수 없으면 조용히 실패하지 않는가")
+kbo_day = [mkgame(League.KBO, "LG", "OB", hh=18, status=Status.FINAL,
+                  score=Score(5, 3, ScoreUnit.RUNS)),
+           mkgame(League.KBO, "KT", "SS", hh=17, status=Status.FINAL,
+                  score=Score(2, 7, ScoreUnit.RUNS))]
+q = T.build_all_queues({"KBO": kbo_day}, NOW, "-100test")
+res = [i for i in q if i.content_type is ContentType.LEAGUE_RESULT]
+if res:
+    made = T.render_for(res[0], kbo_day)
+    check("결과 카드가 만들어진다", made is not None)
+    if made:
+        photos, parts = made
+        check("사진 1장 + 캡션", len(photos) == 1 and len(parts) >= 1)
+        check("캡션에 접고펼치기", "<blockquote expandable>" in parts[0])
+        check("사진이 실제 바이트", len(photos[0][1]) > 5000, f"{len(photos[0][1])}B")
+else:
+    check("결과 카드 큐 항목", False, "큐에 결과 카드가 없다")
+
+# 종료 경기가 없으면 결과 카드를 만들지 않는다 (빈 카드를 내보내지 않는다)
+sched_only = [mkgame(League.KBO, "LG", "OB", hh=18)]
+fake = C.QueueItem(idem_key="x", content_type=ContentType.LEAGUE_RESULT,
+                   scope="kbo:2026-08-29", scheduled_utc=NOW,
+                   league=League.KBO, sports_day="2026-08-29")
+check("결과가 아직 없으면 카드를 만들지 않는다 (다음 틱에 다시 본다)",
+      T.render_for(fake, sched_only) is None)
+# 그날 경기가 아예 없으면
+empty = C.QueueItem(idem_key="y", content_type=ContentType.MORNING,
+                    scope="kbo:2099-01-01", scheduled_utc=NOW,
+                    league=League.KBO, sports_day="2099-01-01")
+check("그날 경기가 없으면 None", T.render_for(empty, sched_only) is None)
+# sports_day가 없는 항목은 scope를 날짜로 오해하면 안 된다
+noday = C.QueueItem(idem_key="z", content_type=ContentType.MORNING,
+                    scope="kbo:2026-08-29", scheduled_utc=NOW, league=League.KBO)
+check("sports_day가 없으면 scope를 날짜로 쓰지 않는다",
+      T.render_for(noday, sched_only) is None)
+
+# ── 6. 대장 ───────────────────────────────────────────────────
+print("\n6. 대장 — 같은 것을 두 번 보내지 않는가")
+from sender import Ledger, Pacer, Payload, Sender                # noqa: E402
+
+
+class Fake:
+    """호출을 기록만 하는 가짜 전송기. (verify_sender를 임포트하면 그 파일이
+    통째로 실행되므로 여기서 따로 둔다.)"""
+
+    def __init__(self):
+        self.calls = []
+        self._id = 5000
+
+    def call(self, method, payload, files=None):
+        self.calls.append((method, payload, sorted((files or {}).keys())))
+        if method == "sendMediaGroup":
+            out = []
+            for _ in payload["media"]:
+                self._id += 1
+                out.append({"message_id": self._id})
+            return out
+        self._id += 1
+        return {"message_id": self._id}
+
+    @property
+    def sent(self):
+        return [c for c in self.calls
+                if c[0] in ("sendPhoto", "sendMediaGroup", "sendMessage")]
+
+led_path = TMP / "l1.jsonl"
+led = Ledger(led_path)
+f = Fake()
+snd = Sender(f, led, "-100test", pacer=Pacer(sleep=lambda x: None, clock=lambda: 0.0),
+             now=lambda: NOW)
+item = C.QueueItem(idem_key=C.idem_key("-100test", ContentType.MORNING, "kbo:2026-08-29"),
+                   content_type=ContentType.MORNING, scope="kbo:2026-08-29",
+                   scheduled_utc=NOW, league=League.KBO, sports_day="2026-08-29")
+p1 = Payload(photos=[("a.jpg", b"x" * 900, 1080, 1400)], caption="c")
+r1 = snd.send(item, p1)
+check("첫 발송 성공", r1.state is SendState.SENT)
+r2 = snd.send(item, p1)
+# 반환 state는 '이번에 보냈나'가 아니라 '이 항목의 최종 상태'다 —
+# 이미 보낸 항목은 SENT를 그대로 돌려준다. 진짜 검사는 **API를 다시 쳤는가**이다.
+check("두 번째 호출은 API를 치지 않는다", len(f.sent) == 1, f"{len(f.sent)}회")
+check("이미 처리됨을 사유로 알린다", "이미 처리" in r2.reason, r2.reason[:50])
+check("메시지 id가 새로 생기지 않는다", r2.message_ids == r1.message_ids)
+
+# 새 컨테이너를 흉내낸다 — 대장 파일만 있고 메모리는 비었다
+led2 = Ledger(led_path)
+f2 = Fake()
+snd2 = Sender(f2, led2, "-100test", pacer=Pacer(sleep=lambda x: None, clock=lambda: 0.0),
+              now=lambda: NOW)
+r3 = snd2.send(item, p1)
+check("새 컨테이너에서도 API를 치지 않는다 (대장이 유일한 근거)",
+      len(f2.sent) == 0, f"{len(f2.sent)}회 — 중복 발송!")
+check("새 컨테이너도 이미 처리됨으로 판단", "이미 처리" in r3.reason, r3.reason[:50])
+
+# 대장이 사라지면? — 이것이 이 시스템의 가장 위험한 상태다
+led_path.unlink()
+led3 = Ledger(led_path)
+f3 = Fake()
+snd3 = Sender(f3, led3, "-100test", pacer=Pacer(sleep=lambda x: None, clock=lambda: 0.0),
+              now=lambda: NOW)
+r4 = snd3.send(item, p1)
+check("대장이 사라지면 다시 보낸다 — 그래서 대장 보존이 최우선이다",
+      r4.state is SendState.SENT)
+print("        ↳ 운영 규칙: state/ 폴더는 절대 지우지 않는다. "
+      "지우면 그날 것이 다시 나간다.")
+
+# ── 7. 수집 실패 격리 ─────────────────────────────────────────
+print("\n7. 수집 실패 — 한 리그가 죽어도 나머지가 도는가")
+_orig = T._jobs
+
+
+def _jobs_mixed():
+    def boom():
+        raise GateError("소스 점검 중")
+    return {
+        "GOOD": (League.KBO, lambda: [mkgame(League.KBO, "LG", "OB", hh=18)]),
+        "BAD": (League.NPB, boom),
+    }
+
+
+T._jobs = _jobs_mixed
+counts, errors = T.collect(NOW, force=True)
+check("성공한 리그는 저장된다", counts.get("GOOD") == 1, str(counts))
+check("실패한 리그는 오류로 보고된다", any("BAD" in e for e in errors), str(errors))
+check("실패해도 성공한 리그가 스냅샷에 남는다", len(T._load_games("GOOD")) == 1)
+log = T._fetch_log()
+check("실패 사유가 로그에 남는다", bool(log.get("BAD", {}).get("error")))
+check("실패한 리그는 마지막 성공 시각을 덮어쓰지 않는다",
+      log.get("BAD", {}).get("at") is None)
+T._jobs = _orig
+
+# ── 8. 커버리지 감시 ──────────────────────────────────────────
+print("\n8. 커버리지 감시 — 조용한 실패를 잡는가")
+import coverage as CV
+
+_CNOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)   # KST 21:00, 야구 시즌 중
+_YDAY = "2026-08-27"
+_TDAY = "2026-08-28"
+_fresh = {"at": _CNOW.isoformat(), "count": 5, "error": None}
+
+
+def _days(lg, day, n, done=False, **kw):
+    """done=True면 종료 상태로 만든다 — 지난 경기를 '예정'으로 두면
+    감시가 (정당하게) '결과가 안 들어왔다'로 잡는다."""
+    sc = Score(5, 3, ScoreUnit.RUNS) if done else None
+    st = Status.FINAL if done else Status.SCHEDULED
+    # 같은 시각이 겹치면 source_key가 같아진다 — 팀을 바꿔 구분한다
+    # 오늘 경기는 유예(6시간) 안이어야 한다. _CNOW가 KST 21:00이므로 19시 이후로 둔다 —
+    # 그러지 않으면 감시가 (정당하게) '결과가 안 들어왔다'로 잡는다.
+    pairs = [("LG", "OB"), ("KT", "SS"), ("HT", "LT"), ("NC", "WO"), ("SK", "HH"),
+             ("OB", "LG"), ("SS", "KT"), ("LT", "HT"), ("WO", "NC"), ("HH", "SK")]
+    return [mkgame(lg, pairs[i % len(pairs)][0], pairs[i % len(pairs)][1],
+                   day=day, hh=(14 + i if done else 19), status=st, score=sc, **kw)
+            for i in range(n)]
+
+
+# 정상 — 어제도 오늘도 경기가 있다
+r = CV.run({"KBO": _days(League.KBO, _YDAY, 5, done=True)
+                   + _days(League.KBO, _TDAY, 5)},
+           {"KBO": _fresh}, _CNOW)
+check("정상이면 이상 없음", r.ok, str(r.lines()))
+
+# 어제 5경기 → 오늘 0경기: 소스가 오늘 편성을 안 준다
+r = CV.run({"KBO": _days(League.KBO, _YDAY, 5, done=True)}, {"KBO": _fresh}, _CNOW)
+check("오늘 편성이 사라지면 잡는다",
+      any("사라" in x for x in r.lines()), str(r.lines()))
+
+# 반쯤 깨진 경우 — 0건만 보면 놓친다
+r = CV.run({"KBO": _days(League.KBO, _YDAY, 10, done=True)
+                   + _days(League.KBO, _TDAY, 1)},
+           {"KBO": _fresh}, _CNOW)
+check("절반 넘게 줄어도 잡는다 (0건만 보면 놓친다)",
+      any("급감" in x for x in r.lines()), str(r.lines()))
+
+# 수집이 멈춤 — 스냅샷은 남아 있어서 내용만 보면 정상처럼 보인다
+_old = {"at": (_CNOW - timedelta(hours=9)).isoformat(), "count": 5, "error": None}
+r = CV.run({"KBO": _days(League.KBO, _YDAY, 5, done=True)
+                   + _days(League.KBO, _TDAY, 5)},
+           {"KBO": _old}, _CNOW)
+check("수집이 멈추면 잡는다 (스냅샷이 남아 있어도)",
+      any("멈춤" in x for x in r.lines()), str(r.lines()))
+
+# 한 번도 성공 못 함
+r = CV.run({"LCK": []}, {"LCK": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
+check("한 번도 수집 못 한 리그를 잡는다",
+      any("성공 기록 없음" in x for x in r.lines()), str(r.lines()))
+
+# 비시즌은 조용한 게 정상 — 8월 농구·배구
+r = CV.run({"KBL": [], "VLEAGUE_M": []},
+           {"KBL": _fresh, "VLEAGUE_M": _fresh}, _CNOW)
+check("비시즌 0건은 경보가 아니다 (8월 농구·배구)", r.ok, str(r.lines()))
+
+# 시즌 중 0건은 경보 — 1월 농구
+_JAN = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+r = CV.run({"KBL": []}, {"KBL": {"at": _JAN.isoformat(), "count": 0, "error": None}}, _JAN)
+check("시즌 중 0건은 경보 (1월 농구)",
+      any("0건" in x for x in r.lines()), str(r.lines()))
+
+# 결과가 안 들어온 지난 경기
+r = CV.run({"KBO": _days(League.KBO, _YDAY, 3) + _days(League.KBO, _TDAY, 3)},
+           {"KBO": _fresh}, _CNOW + timedelta(days=2))
+check("결과가 안 들어온 지난 경기를 잡는다",
+      any("결과가 안 들어온" in x for x in r.lines()), str(r.lines()))
+
+check("전 리그가 시즌 표에 등록됨",
+      set(C.SEASON_MONTHS) == set(League),
+      str([l.value for l in League if l not in C.SEASON_MONTHS]))
+
+# ── 9. 시작 알림 = 리그 하루 한 통 (v1.11c) ────────────────────
+print("\n9. 시작 알림 — 도배가 아니라 하루 한 통인가")
+# 사고: 같은 시각(±5분) 경기를 묶어 시각마다 보냈더니 실측 **하루 26건**,
+# 그중 17건이 MLB 새벽 1~3시대였다. 새벽에 열일곱 번 울리는 채널은 구독자가 나간다.
+from contract import day_schedule_scope, START_ALERT_LEAD_MINUTES
+
+# NOW는 2026-08-29 07:00 KST다. 경기는 그 뒤여야 알림이 미래에 잡힌다
+# (과거 예약은 큐가 걸러낸다 — 그것도 정상 동작이다).
+_many = ([mkgame(League.MLB, "NYY", "BOS", day="2026-08-29", hh=h)
+          for h in (12, 14, 17, 20, 23)]
+         + [mkgame(League.MLB, "LAD", "SF", day="2026-08-29", hh=h)
+            for h in (12, 17, 23)])
+_q = T.build_all_queues({"MLB": _many}, NOW, "-100test")
+_sa = [i for i in _q if i.content_type is ContentType.START_ALERT]
+check(f"경기 {len(_many)}건 · 시작 알림 {len(_sa)}건 (하루 한 통)", len(_sa) == 1,
+      f"{len(_sa)}건 — 도배")
+check("scope에 리그와 날짜가 들어간다",
+      bool(_sa) and _sa[0].scope == "MLB:2026-08-29", _sa[0].scope if _sa else "")
+
+# 첫 경기 기준으로 리드타임만큼 앞서 예약되는가
+_first = min(g.start_utc for g in _many)
+if _sa:
+    lead = (_first - _sa[0].scheduled_utc).total_seconds() / 60
+    check(f"첫 경기 {START_ALERT_LEAD_MINUTES}분 전 예약", abs(lead - START_ALERT_LEAD_MINUTES) < 1,
+          f"{lead:.0f}분")
+
+# 한 통에 그날 경기가 다 들어가야 한다 — 빠지면 '하루 한 통'이 정보 손실이 된다
+_txt = P.render_start_alert(_many, _first - timedelta(minutes=START_ALERT_LEAD_MINUTES))
+check("한 통에 전 경기가 들어간다", _txt.count("vs") == len(_many),
+      f"{_txt.count('vs')}/{len(_many)}")
+check("시각별로 묶여 있다", _txt.count("◆") == len({g.start_kst.strftime('%H:%M') for g in _many}))
+check("텔레그램 텍스트 상한 안", len(_txt) <= 4096, f"{len(_txt)}자")
+check("경기가 많으면 접고펼치기", "<blockquote expandable>" in _txt)
+check("첫 경기까지 남은 시간을 적는다", "시작" in _txt)
+
+# 두 리그가 같은 날이면 서로 다른 통이어야 한다
+_two = T.build_all_queues(
+    {"MLB": _many, "KBO": [mkgame(League.KBO, "LG", "OB", day="2026-08-29", hh=18)]},
+    NOW, "-100test")
+_sa2 = [i for i in _two if i.content_type is ContentType.START_ALERT]
+check("두 리그면 두 통 (서로 안 덮음)", len(_sa2) == 2, f"{len(_sa2)}건")
+check("멱등키도 다르다", len({i.idem_key for i in _sa2}) == 2)
+
+# 이미 끝난 경기는 시간표에 안 들어간다
+_mixed = _many + [mkgame(League.MLB, "CHC", "STL", day="2026-08-29", hh=10,
+                         status=Status.FINAL, score=Score(4, 2, ScoreUnit.RUNS))]
+_q3 = T.build_all_queues({"MLB": _mixed}, NOW, "-100test")
+_sa3 = [i for i in _q3 if i.content_type is ContentType.START_ALERT]
+check("종료된 경기는 시작 알림 대상이 아니다", len(_sa3) == 1)
+
+print(f"\n결과: {ok} PASS / {fail} FAIL")
+shutil.rmtree(TMP, ignore_errors=True)
+sys.exit(1 if fail else 0)

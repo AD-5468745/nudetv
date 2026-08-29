@@ -1,0 +1,125 @@
+name: 누드TV 발행 시계
+
+# ─────────────────────────────────────────────────────────────
+# 언제 깨어나는가 — **공개 저장소 전제** (Actions 무제한 무료)
+#
+# 5분마다 깨어납니다. 덕분에 예약 시각과 실제 발송이 거의 어긋나지 않습니다
+# (시작 알림이 경기 2시간 전에 정확히 나갑니다).
+#
+# ⚠️ **비공개 저장소로 되돌리면 이 설정은 한도를 8배 초과합니다.**
+#    그때는 아래 `*/5` 줄을 지우고 정각 줄들의 주석을 풀고,
+#    TICK_LOOKAHEAD_MINUTES 를 60 으로 되돌리세요.
+# ─────────────────────────────────────────────────────────────
+on:
+  schedule:
+    - cron: '*/5 * * * *'        # 5분마다 (공개 저장소이므로 무제한)
+    # ↓ 비공개로 되돌릴 때 쓰는 설정 (하루 27회)
+    # - cron: '0 * * * *'
+    # - cron: '15 22 * * *'
+    # - cron: '30 9 * * *'
+    # - cron: '30 13 * * *' 
+  workflow_dispatch:             # 손으로 즉시 실행할 때
+    inputs:
+      dry_run:
+        description: '드라이런(발송하지 않고 계획만 확인)'
+        type: boolean
+        default: true
+
+# 앞 실행이 아직 돌고 있으면 기다립니다.
+# 겹쳐 돌면 같은 카드를 두 번 보낼 수 있습니다 — 되돌릴 수 없는 사고입니다.
+concurrency:
+  group: nudetv-tick
+  cancel-in-progress: false
+
+permissions:
+  contents: write                # 발송 대장(state/)을 커밋해야 합니다
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15          # 매달려 있으면 한도만 태웁니다
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 크로미움 캐시
+        # 카드는 브라우저로 그립니다. 매번 내려받으면 회당 1분이 더 듭니다.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-v1
+
+      - name: 경기 데이터 캐시
+        # **경기 데이터는 커밋하지 않습니다.** 5분마다 도니 하루 288번인데,
+        # 점수가 바뀔 때마다 커밋하면 저장소가 커밋으로 뒤덮입니다.
+        # 사라져도 다시 수집하면 그만이라 캐시가 맞는 자리입니다.
+        # (발송 대장은 다릅니다 — 사라지면 오늘 것을 다시 보내므로 반드시 커밋합니다.)
+        uses: actions/cache@v4
+        with:
+          path: state/games
+          key: games-${{ github.run_id }}
+          restore-keys: games-
+
+      - name: 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright pillow
+          python -m playwright install --with-deps chromium
+
+      - name: 시계 실행
+        id: run
+        env:
+          # 값은 저장소 Settings → Secrets and variables → Actions 에 넣습니다.
+          # 이 파일에는 절대 값을 적지 않습니다.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
+          FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
+          NUDETV_STATE: ${{ github.workspace }}/state
+          WORKER_ID: gha-${{ github.run_id }}
+          # 시작 알림을 경기 몇 분 전에 보낼지 (대표님 지정: 2시간 전).
+          START_ALERT_LEAD_MINUTES: '120'
+          # 한 번 깨어날 때 앞으로 몇 분치 큐를 처리할지 — 시계 간격과 맞춥니다.
+          # 5분 시계(현재): 6   ·   정각 시계로 되돌리면: 60
+          TICK_LOOKAHEAD_MINUTES: '6' 
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.dry_run }}" = "true" ]; then
+            python g1/tick.py --dry-run
+          else
+            python g1/tick.py
+          fi
+        continue-on-error: true   # 실패해도 아래 커밋은 해야 합니다(중간까지의 발송 기록 보존)
+
+      - name: 발송 대장 저장
+        # **이 단계가 이 워크플로에서 가장 중요합니다.**
+        # 대장이 남지 않으면 다음 실행이 오늘 것을 다시 보냅니다.
+        # 그래서 시계가 실패했더라도 무조건 커밋합니다.
+        if: always()
+        run: |
+          git config user.name  "nudetv-bot"
+          git config user.email "bot@users.noreply.github.com"
+          # 대장만 커밋합니다. 경기 데이터(state/games)는 캐시가 들고 있습니다.
+          git add -A state/ledger.jsonl state/.gitkeep 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+          else
+            git commit -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC"
+            # 다른 실행이 먼저 밀어 넣었을 수 있습니다. 우리 것을 덮어쓰지 않고 얹습니다.
+            for i in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              sleep $((i * 5))
+            done
+          fi
+
+      - name: 결과 판정
+        # 커밋을 마친 뒤에 실패를 알립니다 — 순서가 반대면 대장이 유실됩니다.
+        if: steps.run.outcome == 'failure'
+        run: |
+          echo "시계가 오류로 끝났습니다. 위 로그를 확인하세요."
+          exit 1

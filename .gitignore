@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# 경기 데이터는 캐시가 들고 있습니다 — 커밋하면 5분마다 커밋이 쌓입니다.
+# 사라져도 다음 실행이 다시 수집하므로 잃을 게 없습니다.
+state/games/
+state/fetch.json
+state/render/
+
+# 발송 대장(state/ledger.jsonl)은 **반드시 커밋합니다.**
+# 그것이 "무엇을 언제 보냈나"의 유일한 기록이고, 사라지면 오늘 것이 다시 나갑니다.
+
+g1/dryrun/
+g1/cache/

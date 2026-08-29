@@ -1,0 +1,409 @@
+"""시계 — 한 번 깨어나서 할 일을 한다 (v1.11c 신설).
+
+**설계의 전제: 이 프로그램은 정확한 시각에 깨어나지 않는다.**
+무료 스케줄러(깃허브 액션 등)는 부하가 몰리면 몇 분에서 수십 분까지 늦는다.
+그래서 "07:30에 정확히 쏜다"로 설계하면 반드시 깨진다.
+
+대신 **자주 깨어나 큐를 훑고, 늦은 것은 스스로 버린다.**
+계약이 이미 그렇게 만들어져 있다 — `is_late()`와 `REJUDGE_AT_SEND`가 그것이다.
+"10분 뒤 경기 시작"이라고 쓴 카드가 20분 늦게 나가면 그건 거짓말이므로 안 보내는 게 맞다.
+
+**실행 환경은 매번 새 컨테이너다(무상태).** 그래서 상태를 파일로 남긴다:
+
+    state/ledger.jsonl        발송 대장 — 같은 것을 두 번 보내지 않게 하는 유일한 근거
+    state/fetch.json          리그별 마지막 수집 시각
+    state/games/<리그>.json   수집 스냅샷
+
+대장이 사라지면 **이미 보낸 것을 다시 보낸다.** 구독자에게 같은 카드가 두 번 가는 사고는
+되돌릴 수 없으므로, 대장 보존이 이 시스템에서 가장 중요한 파일이다.
+
+**리그 하나가 죽어도 나머지는 돈다.** 수집 실패는 그 리그만 건너뛰고 알림을 남긴다 —
+소스 한 곳이 점검 중이라고 그날 전체 발행이 멈추면 안 된다.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+import time as _time
+import traceback
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
+                      UnknownStatus, is_late, stale_unresolved)
+import pipeline as P
+from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
+
+# ── 경로 ──────────────────────────────────────────────────────
+ROOT = pathlib.Path(os.environ.get("NUDETV_STATE", "state")).resolve()
+LEDGER = ROOT / "ledger.jsonl"
+FETCH_LOG = ROOT / "fetch.json"
+SNAP_DIR = ROOT / "games"
+
+# ── 수집 주기 ─────────────────────────────────────────────────
+# 매 틱마다 전 리그를 긁으면 소스에 부담이고 레이트리밋에 걸린다.
+# 일정은 자주 안 바뀌므로 30분이면 충분하다. 단 경기 중에는 결과가 바뀌므로 짧게 본다.
+FETCH_EVERY_SECONDS = 30 * 60
+FETCH_EVERY_LIVE_SECONDS = 10 * 60      # 그 리그에 오늘 경기가 있으면
+
+# 큐에서 이만큼 앞선 것까지 이번 틱에 처리한다.
+# **틱 간격과 맞춰야 한다.** 짧으면 다음 틱까지 못 기다리는 항목이 통째로 누락되고,
+# 길면 필요 이상으로 일찍 보낸다. 정각 시계(무료 환경)면 60분이 맞다.
+# 5분 시계로 옮기면 TICK_LOOKAHEAD_MINUTES=6 으로 줄이면 된다.
+LOOKAHEAD_SECONDS = max(6, int(os.environ.get("TICK_LOOKAHEAD_MINUTES", "60"))) * 60
+
+# 리그 하나가 이보다 오래 걸리면 틱 전체가 밀린다. 넘으면 알림에 올린다.
+SLOW_FETCH_SECONDS = 60
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+# ── 수집 대상 ─────────────────────────────────────────────────
+# 리그를 늘릴 때 여기만 고친다. 실패해도 다른 리그에 영향이 없도록 각각 독립이다.
+def _jobs() -> dict[str, tuple[League, callable]]:
+    from adapters.kbo import KboAdapter
+    from adapters.mlb import MlbAdapter
+    from adapters.kbl import KblAdapter
+    from adapters.kovo import KovoAdapter
+    from adapters.kleague import KLeagueAdapter
+    from adapters.npb import NpbAdapter
+
+    today = datetime.now(KST)
+    y, mm = today.year, f"{today.month:02d}"
+    prev = (today.replace(day=1) - timedelta(days=1))
+    months = sorted({f"{prev.month:02d}", mm})
+
+    jobs = {
+        "KBO": (League.KBO, lambda: KboAdapter().fetch(y, months)),
+        "MLB": (League.MLB, lambda: MlbAdapter().fetch(
+            (today - timedelta(days=3)).strftime("%Y-%m-%d"),
+            (today + timedelta(days=3)).strftime("%Y-%m-%d"))),
+        "KBL": (League.KBL, lambda: KblAdapter().fetch(
+            (today - timedelta(days=7)).strftime("%Y%m%d"),
+            (today + timedelta(days=14)).strftime("%Y%m%d"))),
+        "VLEAGUE_M": (League.VLEAGUE_M, lambda: KovoAdapter("1").fetch("023")),
+        "VLEAGUE_W": (League.VLEAGUE_W, lambda: KovoAdapter("2").fetch("023")),
+        "KL1": (League.KL1, lambda: KLeagueAdapter().fetch(y, months)),
+        "NPB": (League.NPB, lambda: NpbAdapter().fetch(y, months)),
+    }
+
+    # LCK·국제는 Leaguepedia 쿼터가 빡빡하다.
+    # **운영의 긴 재시도(최대 6분)를 시계에서 그대로 쓰면 틱 하나가 그것만으로 끝난다.**
+    # 시계는 자주 깨어나는 것이 안전장치이므로, 여기서는 한 번만 더 시도하고
+    # 안 되면 캐시로 버틴다(캐시도 없으면 그 리그만 이번 틱을 건너뛴다).
+    try:
+        import adapters.lck as _lck
+        from adapters.lck import LckAdapter
+        _lck._RATELIMIT_WAITS = (15,)
+        # since를 '30일 전'처럼 매일 움직이는 값으로 두면 **캐시 키가 매일 바뀌어**
+        # 캐시가 한 번도 안 맞는다. 리밋에 걸린 날 버티라고 만든 캐시가 무용지물이 된다.
+        # 월초로 내려 고정하면 한 달에 한 번만 바뀐다.
+        _s = (today.replace(day=1) - timedelta(days=32)).replace(day=1)
+        since = _s.strftime("%Y-%m-%d")
+        jobs["LCK"] = (League.LCK, lambda: LckAdapter(League.LCK).fetch(since))
+        jobs["INTL_LOL"] = (League.INTL_LOL,
+                            lambda: LckAdapter(League.INTL_LOL).fetch(since))
+    except Exception:                                        # noqa: BLE001
+        pass
+
+    # 유럽 6개 — 키가 있을 때만 켜진다. 없으면 조용히 빠지는 게 아니라 아예 등록되지 않는다
+    # (조용히 0건을 반환하면 '오늘 유럽 경기가 없다'로 오해된다).
+    if os.environ.get("FOOTBALL_DATA_TOKEN", "").strip():
+        from adapters.football_data import COMPETITION, FootballDataAdapter
+        d0 = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+        d1 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+        for code, lg in COMPETITION.items():
+            jobs[lg.value] = (
+                lg, (lambda _lg=lg: FootballDataAdapter(_lg).fetch(d0, d1)))
+    return jobs
+
+
+# ── 스냅샷 ────────────────────────────────────────────────────
+
+def _snap_path(name: str) -> pathlib.Path:
+    return SNAP_DIR / f"{name}.json"
+
+
+def _save_games(name: str, games: list) -> None:
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    rows = [{
+        "league": g.league.value, "season": g.season, "source_key": g.source_key,
+        "home": g.home.team_code, "away": g.away.team_code,
+        "start_utc": _iso(g.start_utc), "home_tz": g.home_tz,
+        "status": g.status.value,
+        "score": ([g.score.home, g.score.away, g.score.unit.value] if g.score else None),
+        "venue": g.venue, "sports_day": g.sports_day,
+        "cancel_reason": g.meta.cancel_reason, "best_of": g.meta.best_of,
+        "season_category": g.meta.season_category,
+    } for g in games]
+    tmp = _snap_path(name).with_suffix(".tmp")
+    tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(_snap_path(name))          # 원자적 교체 — 중간에 죽어도 반쪽 파일이 남지 않는다
+
+
+def _load_games(name: str) -> list:
+    """스냅샷을 Game으로 되돌린다. 카드 렌더는 이것만 있으면 된다."""
+    from contract import Game, GameMeta, Score, ScoreUnit, Status, TeamRef
+    p = _snap_path(name)
+    if not p.exists():
+        return []
+    out = []
+    for d in json.loads(p.read_text(encoding="utf-8")):
+        lg = League(d["league"])
+        sc = (Score(d["score"][0], d["score"][1], ScoreUnit(d["score"][2]))
+              if d.get("score") else None)
+        out.append(Game(
+            league=lg, season=d["season"], source_key=d["source_key"],
+            home=TeamRef(lg, d["home"]), away=TeamRef(lg, d["away"]),
+            start_utc=datetime.fromisoformat(d["start_utc"]),
+            home_tz=d["home_tz"], status=Status(d["status"]), score=sc,
+            venue=d.get("venue"), sports_day_fixed=d.get("sports_day"),
+            meta=GameMeta(cancel_reason=d.get("cancel_reason"),
+                          best_of=d.get("best_of"),
+                          season_category=d.get("season_category"))))
+    return out
+
+
+# ── 수집 ──────────────────────────────────────────────────────
+
+def _fetch_log() -> dict:
+    if FETCH_LOG.exists():
+        try:
+            return json.loads(FETCH_LOG.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}                       # 깨진 로그는 '수집한 적 없음'과 같게 다룬다
+    return {}
+
+
+def collect(now: datetime, force: bool = False) -> tuple[dict, list[str]]:
+    """수집이 필요한 리그만 긁는다. 반환: (리그별 경기 수, 실패 메시지들)."""
+    log = _fetch_log()
+    counts, errors = {}, []
+    today = now.astimezone(KST).strftime("%Y-%m-%d")
+
+    for name, (lg, fn) in _jobs().items():
+        last = log.get(name, {}).get("at")
+        prev = _load_games(name)
+        has_today = any(g.sports_day == today for g in prev)
+        every = FETCH_EVERY_LIVE_SECONDS if has_today else FETCH_EVERY_SECONDS
+        if not force and last:
+            age = (now - datetime.fromisoformat(last)).total_seconds()
+            if age < every:
+                counts[name] = len(prev)
+                continue
+        t0 = _time.monotonic()
+        try:
+            games = fn()
+            _save_games(name, games)
+            dt = _time.monotonic() - t0
+            log[name] = {"at": _iso(now), "count": len(games), "error": None,
+                         "seconds": round(dt, 1)}
+            counts[name] = len(games)
+            if dt > SLOW_FETCH_SECONDS:
+                errors.append(f"{name}: 수집이 {dt:.0f}초 걸렸습니다 "
+                              f"(기준 {SLOW_FETCH_SECONDS}초) — 틱이 밀립니다")
+        except (GateError, UnknownStatus) as e:
+            # 소스가 바뀌었거나 게이트에 걸렸다. 그 리그만 건너뛴다.
+            log[name] = {"at": log.get(name, {}).get("at"),
+                         "count": len(prev), "error": str(e)[:200]}
+            counts[name] = len(prev)
+            errors.append(f"{name}: {type(e).__name__} {str(e)[:120]}")
+        except Exception as e:                               # noqa: BLE001
+            log[name] = {"at": log.get(name, {}).get("at"),
+                         "count": len(prev), "error": f"{type(e).__name__}: {e}"[:200]}
+            counts[name] = len(prev)
+            errors.append(f"{name}: 예상 못한 {type(e).__name__} {str(e)[:110]}")
+
+    ROOT.mkdir(parents=True, exist_ok=True)
+    FETCH_LOG.write_text(json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8")
+    return counts, errors
+
+
+def all_games() -> dict[str, list]:
+    return {name: _load_games(name) for name in _jobs()}
+
+
+# ── 큐 ────────────────────────────────────────────────────────
+
+def build_all_queues(snapshots: dict[str, list], now: datetime,
+                     channel: str) -> list[QueueItem]:
+    """리그별로 큐를 만들어 합친다. 한 리그가 깨져도 나머지는 큐에 남는다."""
+    items: list[QueueItem] = []
+    for name, games in snapshots.items():
+        if not games:
+            continue
+        try:
+            items += P.build_queue(games, now, channel, floor_hours=0)
+        except Exception as e:                               # noqa: BLE001
+            print(f"  [큐] {name} 생성 실패 {type(e).__name__}: {str(e)[:90]}")
+    items.sort(key=lambda i: i.scheduled_utc)
+    return items
+
+
+# ── 렌더 ──────────────────────────────────────────────────────
+
+def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
+    """큐 항목 → (사진들, 캡션 파트들). 만들 수 없으면 None."""
+    day = item.sports_day
+    if not day:
+        return None                         # scope는 이제 '리그:날짜'라 날짜로 못 쓴다
+    todays = [g for g in games if g.sports_day == day]
+    if not todays:
+        return None
+
+    out = ROOT / "render"
+    out.mkdir(parents=True, exist_ok=True)
+    tag = item.idem_key.replace("|", "_").replace(":", "-")[:80]
+
+    if item.content_type is ContentType.MORNING:
+        html = P.render_morning(todays, day)
+        parts = P.caption_morning(todays, day, as_parts=True)
+    elif item.content_type is ContentType.LEAGUE_RESULT:
+        from contract import Status
+        if not any(g.status is Status.FINAL for g in todays):
+            return None                     # 아직 결과가 없다 — 다음 틱에 다시 본다
+        html = P.render_result(todays, day)
+        parts = P.caption_result(todays, day, as_parts=True)
+    elif item.content_type is ContentType.START_ALERT:
+        # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
+        from contract import day_schedule_scope
+        same = [g for g in games
+                if day_schedule_scope(g) == item.scope and g.status is Status.SCHEDULED]
+        if not same:
+            return None
+        # 남은 시간을 지금 기준으로 계산해야 한다 — 안 넘기면 "몇 분 뒤"가 틀린다
+        return [], [P.render_start_alert(same, _now())]   # 사진 없는 텍스트 콘텐츠
+    else:
+        return None
+
+    path = out / f"{tag}.png"
+    w, h, b = P.render_png(html, path)
+    return [(path.name, path.read_bytes(), w, h)], parts
+
+
+# ── 한 번의 틱 ────────────────────────────────────────────────
+
+def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
+    now = _now()
+    channel = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not channel:
+        print("TELEGRAM_CHAT_ID 가 없습니다.", file=sys.stderr)
+        return 2
+
+    print(f"[틱] {now.astimezone(KST):%Y-%m-%d %H:%M} KST"
+          + (" · 드라이런" if dry_run else ""))
+
+    counts, errors = collect(now, force=force_fetch)
+    print("  [수집] " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    for e in errors:
+        print(f"  [수집 실패] {e}")
+
+    snaps = all_games()
+
+    # 묵은 '예정'은 소스가 종결을 안 찍은 것이다. 카드에 실리기 전에 알린다.
+    stale = []
+    for name, games in snaps.items():
+        stale += stale_unresolved(games, now_utc=now)
+
+    # 커버리지 감시 — 리그가 조용히 사라지는 것을 잡는 눈.
+    # 무인 운영에서 가장 위험한 실패는 에러가 아니라 침묵이다.
+    import coverage as CV
+    cov = CV.run(snaps, _fetch_log(), now)
+    if not cov.ok:
+        print(f"  [커버리지] 이상 {len(cov.findings)}건")
+        for line in cov.lines()[:6]:
+            print(f"    ⚠️ {line}")
+    else:
+        print(f"  [커버리지] 리그 {cov.checked}개 이상 없음")
+
+    items = build_all_queues(snaps, now, channel)
+    due = [i for i in items
+           if i.scheduled_utc <= now + timedelta(seconds=LOOKAHEAD_SECONDS)]
+    print(f"  [큐] 전체 {len(items)} · 지금 처리 {len(due)}")
+
+    if dry_run:
+        print("  [예약된 큐 — 앞의 14건]")
+        for i in items[:14]:
+            mark = "▶" if i in due else " "
+            hrs = (i.scheduled_utc - now).total_seconds() / 3600
+            print(f"   {mark} {i.scheduled_utc.astimezone(KST):%m-%d %H:%M} "
+                  f"({hrs:+5.1f}h) {i.content_type.value:14} "
+                  f"{(i.league.value if i.league else '-'):10} {i.scope}")
+        if stale:
+            print(f"  [경고] 묵은 '예정' {len(stale)}건 — " +
+                  ", ".join(f"{g.league.value} {g.sports_day}" for g in stale[:3]))
+        if errors:
+            return 1
+        return 0
+
+    led = Ledger(LEDGER)
+    tr = Transport(load_token())
+    alert_to = os.environ.get("ALERT_CHAT_ID", "").strip() or None
+    snd = Sender(tr, led, channel, alert_chat_id=alert_to,
+                 worker_id=os.environ.get("WORKER_ID") or None)
+
+    sent = skipped = failed = 0
+    for item in due:
+        if is_late(item.scheduled_utc, now, item.content_type):
+            skipped += 1
+            continue
+        games = next((g for g in snaps.values() if g and g[0].league is item.league), [])
+        try:
+            made = render_for(item, games)
+            if made is None:
+                skipped += 1
+                continue
+            photos, parts = made
+            payload = (Payload.from_parts(photos, parts) if photos
+                       else Payload(text=parts[0]))
+            res = snd.send(item, payload)
+            if res.state is SendState.SENT:
+                sent += 1
+                print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
+            elif res.state is SendState.NEEDS_HUMAN:
+                failed += 1
+                print(f"    ⚠️ 사람 확인 필요 {item.idem_key}: {res.reason}")
+            else:
+                skipped += 1
+        except Exception as e:                               # noqa: BLE001
+            failed += 1
+            print(f"    실패 {item.content_type.value} {item.scope}: "
+                  f"{type(e).__name__} {str(e)[:110]}")
+            traceback.print_exc(limit=2)
+
+    print(f"  [발송] 성공 {sent} · 건너뜀 {skipped} · 실패 {failed}")
+
+    # 알림은 사람이 봐야 할 것만. 매 틱 시끄러우면 아무도 안 본다.
+    lines = []
+    if errors:
+        lines += [f"수집 실패 — {e}" for e in errors[:5]]
+    if failed:
+        lines.append(f"발송 실패 {failed}건 (로그 확인)")
+    if stale:
+        ex = stale[0]
+        lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
+    # 커버리지 이상은 '조용한 실패'라 알림이 없으면 며칠 뒤에야 알게 된다
+    lines += cov.lines()[:4]
+    if lines:
+        try:
+            snd.alert("시계 점검 필요", lines)
+        except Exception:                                    # noqa: BLE001
+            print("    (알림 발송도 실패)")
+
+    return 1 if (errors or failed) else 0
+
+
+if __name__ == "__main__":
+    args = set(sys.argv[1:])
+    sys.exit(tick(dry_run="--dry-run" in args, force_fetch="--force-fetch" in args))

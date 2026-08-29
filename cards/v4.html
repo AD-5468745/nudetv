@@ -1,0 +1,196 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>카드 시스템 v4.0</title>
+<style>
+/* ══════════════════════════════════════════════════════════
+   v4.0 — 밝은 파스텔 (2026-08-28)
+
+   v1(L*7.6) → v2(16.3) → v3(27.0) → v4: 바닥을 뒤집었다.
+   배경 L*93.9, 본문 판 L*100. 글자는 진한 잉크(L*12).
+
+   파스텔의 함정: 채도가 낮고 밝아서 **글자로 쓰면 대비가 안 난다.**
+   그래서 규칙을 하나 세웠다 —
+     · 파스텔 = 면에만 (배경 워시 · pill 바탕 · 강조 행)
+     · 글자·테두리 = 같은 계열의 진한 잉크
+   리그 색을 (진한 잉크, 파스텔 워시) 두 쌍으로 관리하는 이유다.
+
+   워터마크도 뒤집었다. 밝은 바닥에서 흰색 overlay는 보이지 않는다.
+   어두운 색 + multiply 합성으로 바꿨다.
+   ══════════════════════════════════════════════════════════ */
+:root{
+  /* v4.1 — 파스텔을 '점'이 아니라 '분위기'로.
+     회색 중립 바탕에 파스텔을 조금 얹으면 색감이 안 산다.
+     리그 파스텔(--lg-ink)을 종이(--paper)에 섞어 카드 전체를 물들인다.
+     섞는 비율만 다르게 해서 면을 구분한다: 판 0% · 줄무늬 32% · 바닥 50% · 푸터 78% */
+  --paper:#fffdfa;
+  --ink:#16202e; --sub:#43536b; --dim:#5f7089;
+  --win:#0f7a45; --lose:#6f7d92; --alert:#c02f2f;
+  --pad:96px;
+
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#c8ccd2;font-family:'Noto Sans CJK KR','Noto Sans KR',sans-serif;padding:30px;}
+
+.card{width:1080px;color:var(--ink);position:relative;overflow:hidden;
+  /* 파생 토큰은 여기서 만든다 — --lg-ink 가 이 요소의 인라인 스타일에 있기 때문이다.
+     :root에 두면 --lg-ink 가 정의되지 않아 color-mix 전체가 무효가 되고 회색으로 떨어진다. */
+  --ground:color-mix(in srgb,var(--lg-ink) 62%,var(--paper));
+  --stripe:color-mix(in srgb,var(--lg-ink) 38%,var(--paper));
+  --boxbg :color-mix(in srgb,var(--lg-ink) 55%,var(--paper));
+  --footbg:color-mix(in srgb,var(--lg-ink) 88%,var(--paper));
+  --sunk  :color-mix(in srgb,var(--lg) 24%,var(--paper));
+  /* 승자 색 = 그 리그의 잉크색 (v1.11c).
+     전에는 전 리그가 초록(#0f7a45) 고정이라 MLB(빨강)·NPB(자홍)·KBL(주황) 카드에서
+     승자만 초록으로 튀었다. 리그색을 쓰면 카드 하나가 한 색조로 읽힌다.
+     '진한 색 = 이긴 쪽'이라는 뜻은 그대로 유지되고, 패자(--lose)는 회색 그대로다.
+     여기(.card)에 둬야 한다 — --lg 가 이 요소의 인라인 스타일이라 :root에선 무효다. */
+  --win:var(--lg);
+  --line     :color-mix(in srgb,var(--lg) 28%,var(--paper));
+  --line-soft:color-mix(in srgb,var(--lg) 14%,var(--paper));
+  background:linear-gradient(177deg,
+    color-mix(in srgb,var(--lg-ink) 92%,var(--paper)) 0%,
+    var(--ground) 30%, var(--ground) 78%,
+    color-mix(in srgb,var(--lg-ink) 66%,var(--paper)) 100%);
+  font-variant-numeric:tabular-nums lining-nums;margin:0 0 46px 0;letter-spacing:-.005em;}
+
+/* ── 워터마크 3층 (밝은 바닥용 — 어두운 색 + multiply) ── */
+.card::before{content:'';position:absolute;inset:0;z-index:0;pointer-events:none;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/></filter><rect width='64' height='64' filter='url(%23n)' opacity='0.5'/></svg>");
+  opacity:.024;mix-blend-mode:multiply;}
+.wm{position:absolute;inset:-160px;z-index:0;pointer-events:none;display:flex;flex-wrap:wrap;
+  gap:118px 146px;align-content:flex-start;transform:rotate(-24deg);
+  opacity:.034;mix-blend-mode:multiply;}
+.wm span{font-size:26px;font-weight:900;letter-spacing:.2em;color:#2b3a52;white-space:nowrap;}
+/* 중앙 로고 — 본문 글자 위를 가로지른다. 지우면 숫자가 같이 뭉개진다 */
+.wmc{position:absolute;top:50%;left:50%;z-index:3;pointer-events:none;white-space:nowrap;
+  transform:translate(-50%,-50%) rotate(-7deg);
+  font-size:132px;font-weight:900;letter-spacing:.06em;color:#2b3a52;
+  opacity:.044;mix-blend-mode:multiply;}
+.card > *:not(.wm):not(.wmc){position:relative;z-index:1;}
+
+/* ── 헤더 ────────────────────────────────────────── */
+.strip{height:9px;background:linear-gradient(90deg,var(--lg) 0%,var(--lg) 50%,transparent 88%);}
+.hdr{padding:40px var(--pad) 30px;}
+.hdr-top{display:flex;align-items:center;gap:16px;margin-bottom:24px;}
+.pill{display:flex;align-items:center;gap:11px;font-size:30px;font-weight:800;letter-spacing:.04em;
+  padding:9px 20px;border-radius:11px;color:var(--lg);
+  background:var(--paper);border:2px solid color-mix(in srgb,var(--lg) 34%,transparent);}
+.pill svg{width:30px;height:30px;}
+.hdr-top .kind{font-size:28px;color:var(--sub);font-weight:700;}
+.hdr-top .dt{margin-left:auto;font-size:30px;font-weight:800;color:var(--sub);}
+.hdr h1{font-size:60px;font-weight:900;line-height:1.14;letter-spacing:-.028em;}
+.hdr h1 em{font-style:normal;color:var(--lg);}
+.hdr .sub{font-size:29px;color:var(--sub);margin-top:14px;font-weight:700;}
+
+/* ── 본문 판 ─────────────────────────────────────── */
+.body{margin:0 var(--pad);background:var(--paper);border-radius:22px;overflow:hidden;
+  box-shadow:0 1px 0 rgba(22,32,46,.04), 0 12px 30px rgba(22,32,46,.10);}
+.body + .body{margin-top:20px;}
+
+/* ── 경기 행 ─────────────────────────────────────── */
+.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;
+  padding:32px 34px;gap:20px;border-bottom:1px solid var(--line-soft);}
+.row:last-child{border-bottom:0;}
+.row:nth-child(even){background:var(--stripe);}
+.row.big{background:var(--boxbg);box-shadow:inset 10px 0 0 var(--lg);}
+.row .mt{font-size:44px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;
+  padding-right:24px;}
+.row .mt .sep{color:var(--dim);font-weight:700;font-size:31px;margin:0 11px;}
+.row .meta{font-size:33px;color:var(--sub);font-weight:700;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.row .meta .hook{color:var(--alert);font-weight:800;}
+.row .tm{text-align:right;padding-left:20px;white-space:nowrap;}
+.row .tm .k{font-size:45px;font-weight:900;letter-spacing:-.02em;}
+.row .tm .l{font-size:28px;color:var(--dim);font-weight:700;margin-top:5px;}
+.row.off .mt{color:var(--lose);}
+
+/* ── 결과 행 ─────────────────────────────────────── */
+.res{display:grid;grid-template-columns:1fr 92px 92px 1fr 152px;align-items:center;
+  padding:34px 34px;gap:14px;border-bottom:1px solid var(--line-soft);}
+.res:last-child{border-bottom:0;}
+.res:nth-child(even){background:var(--stripe);}
+.res .n1{font-size:45px;font-weight:900;text-align:right;}
+.res .n2{font-size:45px;font-weight:900;}
+.res .s1,.res .s2{font-size:51px;font-weight:900;text-align:center;}
+.res .st{font-size:32px;font-weight:800;color:var(--sub);text-align:right;}
+.res.w1 .n1,.res.w1 .s1{color:var(--win);} .res.w1 .n2,.res.w1 .s2{color:var(--lose);}
+.res.w2 .n2,.res.w2 .s2{color:var(--win);} .res.w2 .n1,.res.w2 .s1{color:var(--lose);}
+.res.dr{background:var(--boxbg);}
+.res.cx{background:#ffeae7;}
+.res.cx .n1,.res.cx .n2{color:var(--lose);text-decoration:line-through;
+  text-decoration-thickness:2px;text-decoration-color:rgba(192,47,47,.45);}
+.res.cx .st{color:var(--alert);font-weight:900;}
+
+/* ── 순위표 ──────────────────────────────────────── */
+.stb{width:100%;border-collapse:collapse;}
+.stb th{font-size:28px;color:var(--dim);font-weight:800;padding:22px 12px 14px;
+  text-align:right;letter-spacing:.02em;white-space:nowrap;}
+.stb th:nth-child(2){text-align:left;} .stb th:first-child{text-align:center;white-space:nowrap;}
+.stb td{font-size:38px;font-weight:800;padding:16px 12px;text-align:right;color:var(--sub);
+  border-top:1px solid var(--line-soft);line-height:1.2;white-space:nowrap;}
+.stb td:nth-child(2){text-align:left;color:var(--ink);font-size:41px;
+  max-width:250px;overflow:hidden;text-overflow:ellipsis;}
+.stb td:first-child{color:var(--dim);width:96px;text-align:center;}
+.stb tr:nth-child(even) td{background:var(--stripe);}
+.stb tr.hl td{background:var(--boxbg);color:var(--ink);}
+.stb tr.hl td:first-child{box-shadow:inset 9px 0 0 var(--lg);color:var(--lg);}
+.stb .pad{padding-left:22px;} .stb .padr{padding-right:22px;}
+
+/* ── 리더보드 ─────────────────────────────────────── */
+.lb{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:22px;}
+.lbx{background:var(--stripe);border-radius:16px;padding:6px 22px 10px;}
+.lbt{font-size:29px;font-weight:900;color:var(--lg);letter-spacing:.02em;
+  padding:14px 0 12px;border-bottom:2px solid color-mix(in srgb,var(--lg) 40%,transparent);}
+.lbr{display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:baseline;gap:10px;
+  padding:19px 0;border-bottom:1px solid var(--line-soft);}
+.lbx .lbr:last-child{border-bottom:0;}
+.lbr .r{font-size:28px;font-weight:900;color:var(--dim);text-align:center;}
+.lbr.r1 .r{color:var(--lg);}
+.lbr .p{font-size:35px;font-weight:800;letter-spacing:-.025em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.lbr .p small{font-size:28px;color:var(--dim);font-weight:700;margin-left:7px;}
+.lbr .v{font-size:39px;font-weight:900;}
+.lbr.r1 .v{color:var(--lg);}
+
+/* ── 맞대결 ───────────────────────────────────────── */
+.vs{display:grid;grid-template-columns:1fr 132px 1fr;align-items:center;padding:42px 34px;gap:16px;}
+.vs .tn{font-size:56px;font-weight:900;letter-spacing:-.03em;}
+.vs .tr{font-size:29px;color:var(--sub);font-weight:700;margin-top:11px;
+  line-height:1.35;white-space:nowrap;}
+.vs .tr.l2{margin-top:6px;color:var(--dim);}
+.vs .rt{text-align:right;}
+.vs .mid{text-align:center;}
+.vs .mid .ml{display:block;font-size:28px;color:var(--dim);font-weight:800;}
+.vs .mid .mv{display:block;font-size:42px;color:var(--sub);font-weight:900;
+  margin-top:7px;letter-spacing:-.02em;}
+.brow{display:grid;grid-template-columns:142px 1fr 122px;align-items:center;gap:22px;
+  padding:0 34px 22px;}
+.brow:first-of-type{padding-top:4px;}
+.brow .bn{font-size:42px;font-weight:900;}
+.brow .bar{height:36px;background:var(--sunk);border-radius:18px;overflow:hidden;}
+.brow .fill{height:100%;border-radius:18px;}
+.brow .pct{text-align:right;font-size:42px;font-weight:900;}
+.brow.w .fill{background:var(--lg);} .brow.w .pct{color:var(--lg);}
+.brow.l .fill{background:#9fadc0;} .brow.l .pct{color:var(--lose);}
+
+/* ── 강조 패널 (카드당 최대 1개) ──────────────────── */
+.rec{margin:18px var(--pad) 0;background:var(--boxbg);
+  border-left:11px solid var(--lg);border-radius:0 18px 18px 0;padding:20px 28px;}
+.rec .l{font-size:28px;font-weight:800;color:var(--sub);margin-bottom:10px;}
+.rec .t{font-size:42px;line-height:1.44;color:var(--ink);font-weight:800;letter-spacing:-.02em;}
+.rec .t b{color:var(--lg);}
+
+.foot{margin-top:28px;background:var(--footbg);padding:28px var(--pad) 40px;
+  display:flex;justify-content:space-between;align-items:center;}
+.foot .tk{font-size:28px;color:var(--sub);font-weight:700;}
+.foot .lg{font-size:33px;font-weight:900;color:var(--lg);letter-spacing:.1em;}
+
+/* ── 텔레그램 텍스트 (인용블록) ───────────────────── */
+.tg{width:1080px;background:#1c2733;padding:40px;margin:0 0 46px 0;border-radius:4px;}
+.tgl{font-size:28px;color:#8fa8c0;margin-bottom:26px;font-weight:800;}
+.msg{background:#22303f;border-radius:18px;padding:28px 32px;margin-bottom:22px;}
+.msg .hd{font-size:38px;font-weight:900;color:#eef3fa;margin-bottom:16px;}
+.msg .bq{border-left:5px solid #6ba7e8;padding:6px 0 6px 22px;margin:14px 0;}
+.msg .bq div{font-size:36px;color:#dce7f2;line-height:1.5;font-weight:700;}
+.msg .bq div + div{margin-top:10px;}
+.msg .bq .lc{color:#8fa8c0;font-size:28px;font-weight:700;}
+.msg .tail{font-size:30px;color:#9db4c9;margin-top:14px;font-weight:700;}
+</style></head><body></body></html>
