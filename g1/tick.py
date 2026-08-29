@@ -34,8 +34,14 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+# **함수 안에서 import 하지 않는다.** 파이썬은 함수 어딘가에 `from x import Y`가
+# 있으면 그 함수 전체에서 Y를 지역 이름으로 취급한다. 그래서 한쪽 분기에서만
+# import 하고 다른 분기에서 쓰면, 그 분기는 실행되는 순간 NameError로 죽는다.
+# 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
+# **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
-                      UnknownStatus, is_late, stale_unresolved)
+                      Status, UnknownStatus, day_schedule_scope, is_late,
+                      stale_unresolved)
 import pipeline as P
 from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
 
@@ -317,14 +323,12 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
         html = P.render_morning(todays, day)
         parts = P.caption_morning(todays, day, as_parts=True)
     elif item.content_type is ContentType.LEAGUE_RESULT:
-        from contract import Status
         if not any(g.status is Status.FINAL for g in todays):
             return None                     # 아직 결과가 없다 — 다음 틱에 다시 본다
         html = P.render_result(todays, day)
         parts = P.caption_result(todays, day, as_parts=True)
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
-        from contract import day_schedule_scope
         same = [g for g in games
                 if day_schedule_scope(g) == item.scope and g.status is Status.SCHEDULED]
         if not same:

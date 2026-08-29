@@ -524,6 +524,51 @@ check("실제 렌더도 폰트 게이트를 통과한다",
           P._card("<div class='t' style='font-size:40px'>한글 확인</div>", League.KBO),
           TMP / "fontcheck.png")))
 
+# ── 11. 발송 경로 전체를 실제로 태운다 ────────────────────────
+# **왜 이 검증이 따로 필요한가.**
+# 시작 알림은 build_all_queues(큐)와 render_start_alert(문구)를 따로따로
+# 검사해 전부 통과했다. 그런데 둘을 잇는 render_for가 NameError로 죽고 있었다 —
+# 조건부 import 하나 때문에 시작 알림은 **한 번도 렌더된 적이 없었다.**
+# 부품을 아무리 잘 시험해도 조립된 길을 안 걸어보면 이런 것이 남는다.
+# 그래서 여기서는 큐에 오르는 모든 종류를 render_for로 끝까지 태운다.
+print("\n11. 발송 경로 — 큐에 오르는 모든 종류가 실제로 만들어지는가")
+
+_day = "2026-08-29"
+_full = {
+    # 결과 카드 + 모닝 + 시작 알림이 모두 나오도록: 끝난 경기와 앞으로 할 경기를 섞는다
+    "KBO": [mkgame(League.KBO, "LG", "OB", day=_day, hh=14, status=Status.FINAL,
+                   score=Score(5, 3, ScoreUnit.RUNS)),
+            mkgame(League.KBO, "KT", "SS", day=_day, hh=23)],
+    "NPB": [mkgame(League.NPB, "YOG", "HAN", day=_day, hh=23)],
+}
+_items = T.build_all_queues(_full, NOW, "-100test")
+_kinds = {i.content_type for i in _items}
+check(f"큐에 세 종류가 다 오른다 ({len(_items)}건)",
+      {ContentType.MORNING, ContentType.LEAGUE_RESULT,
+       ContentType.START_ALERT} <= _kinds, str([k.value for k in _kinds]))
+
+_made, _empty, _broke = [], [], []
+for _it in _items:
+    _gs = next((g for g in _full.values() if g and g[0].league is _it.league), [])
+    try:
+        _r = T.render_for(_it, _gs)
+        (_made if _r else _empty).append(_it.content_type.value)
+    except Exception as _e:                                  # noqa: BLE001
+        _broke.append(f"{_it.content_type.value}/{_it.league.value}: "
+                      f"{type(_e).__name__} {_e}")
+
+check("어떤 종류도 예외로 죽지 않는다", not _broke, " | ".join(_broke[:3]))
+check("세 종류가 모두 실제로 만들어진다",
+      {"morning", "league_result", "start_alert"} <= set(_made),
+      f"만들어짐={sorted(set(_made))} 비어서건너뜀={sorted(set(_empty))}")
+
+# 시작 알림은 사진 없이 글만 나간다 — 그 형태까지 확인한다
+_sa = next(i for i in _items if i.content_type is ContentType.START_ALERT)
+_sr = T.render_for(_sa, _full[_sa.league.value])
+check("시작 알림은 사진 없이 글만", _sr is not None and _sr[0] == [] and _sr[1])
+check("시작 알림 글에 팀 이름이 들어간다",
+      bool(_sr) and any("KT" in p or "SS" in p for p in _sr[1]), str(_sr[1])[:120])
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
