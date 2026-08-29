@@ -715,6 +715,22 @@ START_ALERT_LEAD_MINUTES = max(5, int(_os.environ.get("START_ALERT_LEAD_MINUTES"
 GRACE_SECONDS[ContentType.START_ALERT] = max(
     480, (START_ALERT_LEAD_MINUTES - 5) * 60)
 
+
+def start_alert_lead_text() -> str:
+    """카드·글에 적을 '몇 시간(분) 전 알림' 문구. **반드시 이걸 쓴다.**
+
+    전에는 카드 아래에 "경기 시작 10분 전 알림"이 문자열로 박혀 있었다.
+    리드타임을 2시간으로 바꾼 뒤에도 카드는 계속 10분이라고 말했다 —
+    시스템이 하는 일과 카드가 하는 말이 어긋났고, 숫자 검증은 그걸 못 잡는다.
+    (최소 폰트를 상수로만 두었다가 하루 만에 어긴 것과 같은 계열이다.)
+    """
+    m = START_ALERT_LEAD_MINUTES
+    if m % 60 == 0:
+        return f"경기 시작 {m // 60}시간 전 알림"
+    if m > 60:
+        return f"경기 시작 {m // 60}시간 {m % 60}분 전 알림"
+    return f"경기 시작 {m}분 전 알림"
+
 LEASE_SECONDS: dict[ContentType, int] = {ct: max(60, g // 3) for ct, g in GRACE_SECONDS.items()}
 
 # 계획 발송 = 큐 등록분. 상한·폭주 대상이 아니라 페이서 대상이다.
@@ -1362,6 +1378,127 @@ def team_name(team: "TeamRef") -> str:
     이름을 모르는 것은 사실 오류가 아니므로 코드로 대체하고 넘어간다.
     """
     return TEAM_NAMES.get(team.league, {}).get(team.team_code, team.team_code)
+
+
+# ── 경기장 이름 (한국어 표기) ────────────────────────────────
+#
+# 소스가 주는 그대로 쓰면 NPB 카드에 "京セラD大阪 · ベルーナドーム"처럼 일본어가
+# 박힌다. 한국 시청자에게는 읽히지 않는 글자다 — 카드에 넣을 이유가 없다.
+# 아는 것만 바꾸고, 모르는 것은 원문을 그대로 둔다(빈칸보다는 낫다).
+VENUE_NAMES: dict[str, str] = {
+    # NPB 12구단 홈구장
+    "バンテリンドーム": "반테린돔",
+    "京セラD大阪": "교세라돔",
+    "マツダスタジアム": "마쓰다스타디움",
+    "エスコンＦ": "에스콘필드",
+    "エスコンF": "에스콘필드",
+    "横浜": "요코하마",
+    "神宮": "진구",
+    "東京ドーム": "도쿄돔",
+    "ベルーナドーム": "베루나돔",
+    "みずほPayPay": "미즈호페이페이돔",
+    "楽天モバイル": "라쿠텐모바일파크",
+    "ZOZOマリン": "조조마린",
+    "甲子園": "고시엔",
+    # 지방 개최 구장
+    "ほっと神戸": "홋토모토고베",
+    "那覇": "나하",
+    "盛岡": "모리오카",
+    "郡山": "고리야마",
+    "富山": "도야마",
+}
+
+
+# ── 홈구장 표 — 홈/원정이 뒤집혔는지 잡는 유일한 자동 검사 ──
+#
+# 홈과 원정이 바뀌어도 카드는 멀쩡해 보인다. 팀 이름 두 개가 자리만 바꾼 것이라
+# 숫자 검증은 전부 통과하고, 점수까지 함께 뒤집히면 **승패를 반대로 내보낸다.**
+# 실제로 NPB가 그랬다 — 8/30 여섯 경기가 전부 뒤집혀 있었고, 카드를 눈으로 보다
+# "고시엔에서 요미우리가 홈?"이 이상해서 발견했다.
+#
+# 사람 눈에 기대지 않으려면 기계가 볼 수 있는 근거가 필요하다. 그게 **경기장**이다.
+# 홈팀의 홈구장과 경기장이 다르면 뒤집힌 것이다(지방 개최는 예외라 표에서 뺀다).
+HOME_VENUES: dict[League, dict[str, frozenset[str]]] = {
+    League.KBO: {
+        "LG": frozenset({"잠실"}), "OB": frozenset({"잠실"}),
+        "KT": frozenset({"수원"}), "SK": frozenset({"문학"}),
+        "NC": frozenset({"창원"}), "WO": frozenset({"고척"}),
+        "HT": frozenset({"광주"}), "LT": frozenset({"사직"}),
+        "SS": frozenset({"대구"}), "HH": frozenset({"대전"}),
+    },
+    # 올스타(CEN·PAC)는 홈구장이 없다 — 표에 없으므로 판정에서 빠진다.
+    League.NPB: {
+        "NIP": frozenset({"エスコンＦ", "エスコンF"}),    # 니혼햄
+        "LOT": frozenset({"ZOZOマリン"}),                 # 지바롯데
+        "SOF": frozenset({"みずほPayPay"}),               # 소프트뱅크
+        "ORI": frozenset({"京セラD大阪"}),                # 오릭스
+        "SEI": frozenset({"ベルーナドーム"}),             # 세이부
+        "RAK": frozenset({"楽天モバイル"}),               # 라쿠텐
+        "DEN": frozenset({"横浜"}),                       # DeNA
+        "CHU": frozenset({"バンテリンドーム"}),           # 주니치
+        "YOG": frozenset({"東京ドーム"}),                 # 요미우리
+        "HAN": frozenset({"甲子園"}),                     # 한신
+        "YAK": frozenset({"神宮"}),                       # 야쿠르트
+        "HIR": frozenset({"マツダスタジアム"}),           # 히로시마
+    },
+}
+
+
+def home_venue_mismatches(games: "list[Game]") -> "list[tuple[Game, str]]":
+    """홈팀의 홈구장과 경기장이 어긋나는 경기를 모은다.
+
+    지방 개최(NPB의 나하·모리오카 등)는 표에 없으므로 걸리지 않는다 —
+    **모르는 구장은 통과시킨다.** 여기서 잡고 싶은 것은 개별 예외가 아니라
+    "한 리그가 통째로 뒤집힌" 상태다.
+    """
+    out = []
+    for g in games:
+        table = HOME_VENUES.get(g.league)
+        if not table or not g.venue:
+            continue
+        want = table.get(g.home.team_code)
+        if not want:
+            continue
+        key = "".join(str(g.venue).split()).replace("　", "")
+        # 이 경기장이 **다른 팀의** 홈구장이면 뒤집힌 것이다.
+        # 어느 팀 것도 아니면 지방 개최 — 넘어간다.
+        owner = next((c for c, vs in table.items() if key in vs), None)
+        if owner is None:
+            continue
+        if key not in want:
+            out.append((g, owner))
+    return out
+
+
+def assert_home_away(games: "list[Game]", *, max_ratio: float = 0.3) -> None:
+    """홈/원정이 통째로 뒤집혔으면 멈춘다.
+
+    한두 건은 지방 개최나 소스의 개별 오류일 수 있으므로 통과시킨다.
+    3할을 넘으면 개별 사고가 아니라 매핑이 반대인 것이다.
+    """
+    known = [g for g in games
+             if g.venue and HOME_VENUES.get(g.league, {}).get(g.home.team_code)]
+    if len(known) < 4:
+        return                                   # 표본이 적으면 판정하지 않는다
+    bad = home_venue_mismatches(known)
+    if len(bad) / len(known) > max_ratio:
+        g, owner = bad[0]
+        raise GateError(
+            f"{games[0].league.value}: 홈/원정이 뒤집힌 것으로 보입니다 — "
+            f"{len(bad)}/{len(known)}경기에서 경기장이 홈팀과 어긋납니다. "
+            f"예) 홈 {g.home.team_code} 인데 경기장 {g.venue}는 {owner}의 홈구장입니다.")
+
+
+def venue_name(venue: "str | None") -> str:
+    """화면에 쓸 경기장 이름.
+
+    소스가 전각 공백이나 사이 공백을 섞어 준다("横 浜", "エスコンＦ").
+    공백을 지우고 맞춰본 뒤, 모르면 원문을 그대로 돌려준다.
+    """
+    if not venue:
+        return ""
+    key = "".join(venue.split()).replace("　", "")
+    return VENUE_NAMES.get(key, venue)
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -569,6 +569,32 @@ check("시작 알림은 사진 없이 글만", _sr is not None and _sr[0] == [] 
 check("시작 알림 글에 팀 이름이 들어간다",
       bool(_sr) and any("KT" in p or "SS" in p for p in _sr[1]), str(_sr[1])[:120])
 
+# ── 12. 카드가 하는 말과 시스템이 하는 일이 같은가 ────────────
+# 카드 아래에 "경기 시작 10분 전 알림"이 문자열로 박혀 있었다. 리드타임을
+# 2시간으로 바꾼 뒤에도 카드는 계속 10분이라고 말했다 — **카드가 거짓말을
+# 하고 있었고, 숫자 검증 347건이 전부 통과했다.** 눈으로 카드를 보고서야 알았다.
+# 안 쓰는 기능("예측 투표는 경기 3시간 전")도 안내하고 있었다.
+print("\n12. 카드 문구 — 시스템이 하는 일과 같은 말을 하는가")
+from contract import start_alert_lead_text, venue_name                # noqa: E402
+
+_txt = start_alert_lead_text()
+check(f"리드타임 문구가 설정을 따라간다 ({_txt})",
+      str(C.START_ALERT_LEAD_MINUTES // 60) in _txt
+      or str(C.START_ALERT_LEAD_MINUTES) in _txt, _txt)
+
+_mhtml = P.render_morning(
+    [mkgame(League.NPB, "YOG", "HAN", day="2026-08-29", hh=18)], "2026-08-29")
+check("모닝 카드가 실제 리드타임을 적는다", _txt in _mhtml, _txt)
+check("옛 문구('10분 전')가 카드에 남아 있지 않다", "10분 전 알림" not in _mhtml)
+check("없는 기능을 안내하지 않는다 (예측 투표)", "예측 투표" not in _mhtml)
+
+# 경기장 이름 — 일본어가 그대로 나가면 한국 시청자는 못 읽는다
+check("일본 구장이 한국어로 바뀐다", venue_name("京セラD大阪") == "교세라돔")
+check("전각·사이 공백이 섞여도 맞춘다", venue_name("横 浜") == "요코하마")
+check("모르는 구장은 원문을 그대로 (빈칸으로 만들지 않는다)",
+      venue_name("Yankee Stadium") == "Yankee Stadium")
+check("경기장이 없으면 빈 문자열", venue_name(None) == "")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

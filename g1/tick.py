@@ -40,8 +40,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
-                      Status, UnknownStatus, day_schedule_scope, is_late,
-                      stale_unresolved)
+                      Status, UnknownStatus, assert_home_away,
+                      day_schedule_scope, is_late, stale_unresolved)
 import pipeline as P
 from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
 
@@ -256,6 +256,11 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
         t0 = _time.monotonic()
         try:
             games = fn()
+            # **홈/원정이 통째로 뒤집혔는지 저장 전에 본다.**
+            # 뒤집혀도 카드는 멀쩡해 보인다(팀 두 개가 자리만 바꾼 것이다).
+            # 점수까지 함께 뒤집히면 승패를 반대로 내보낸다 — 되돌릴 수 없는 오보다.
+            # 기계가 볼 수 있는 근거는 경기장뿐이다: 홈구장이 홈팀과 어긋나면 뒤집힌 것.
+            assert_home_away(games)
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,

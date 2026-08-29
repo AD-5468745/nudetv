@@ -129,8 +129,13 @@ class NpbAdapter:
             status = mapped
         elif s1.isdigit() and s2.isdigit():
             status = Status.FINAL
-            # 화면 배치대로 team1=원정, team2=홈
-            score = Score(int(s2), int(s1), ScoreUnit.RUNS)
+            # **team1이 홈이다** (v1.11c에서 바로잡음).
+            # 전에는 "화면 배치대로 team1=원정"으로 읽었다. 그 상태로 카드를 그렸더니
+            # 8/30 여섯 경기가 전부 경기장과 어긋났다 — 에스콘필드(니혼햄 홈구장)
+            # 경기의 홈팀이 지바롯데로, 고시엔(한신 홈) 경기의 홈팀이 요미우리로 찍혔다.
+            # 여섯 경기 전부 어긋나므로 우연이 아니다. 점수도 함께 뒤집혀 있었으니
+            # 결과 카드는 승패를 반대로 내보냈을 것이다.
+            score = Score(int(s1), int(s2), ScoreUnit.RUNS)
         elif state and state != "-" and "終了" not in state:
             status = Status.LIVE                  # '（横浜）9回表' 형태
         else:
@@ -142,8 +147,8 @@ class NpbAdapter:
 
         g = Game(
             league=League.NPB, season=str(season), source_key=key,
-            home=TeamRef(League.NPB, TEAM_CODE[t2]),
-            away=TeamRef(League.NPB, TEAM_CODE[t1]),
+            home=TeamRef(League.NPB, TEAM_CODE[t1]),
+            away=TeamRef(League.NPB, TEAM_CODE[t2]),
             start_utc=start.astimezone(ZoneInfo("UTC")), home_tz="Asia/Tokyo",
             status=status, score=score, venue=place or None,
             meta=GameMeta(cancel_reason=cancel or None),

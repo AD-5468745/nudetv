@@ -23,7 +23,8 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       START_ALERT_LEAD_MINUTES,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
-                      day_schedule_scope, start_alert_bucket)
+                      day_schedule_scope, start_alert_bucket,
+                      start_alert_lead_text, venue_name)
 from contract import assert_card_typography, team_name
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
@@ -309,7 +310,7 @@ def render_morning(games: list[Game], day: str,
             f'<div class="row{" off" if gone else ""}"><div class="mt">'
             f'{esc(team_name(g.away))}<span class="sep">vs</span>'
             f'{esc(team_name(g.home))}</div>'
-            f'<div class="meta">{esc(g.venue or "")}'
+            f'<div class="meta">{esc(venue_name(g.venue))}'
             + (f' <span class="hook">{esc(reason)}</span>' if gone else "") +
             f'</div><div class="tm"><div class="k">{esc(kst)}</div>'
             + (f'<div class="l">현지 {esc(loc)}</div>' if loc else "") + "</div></div>")
@@ -322,13 +323,16 @@ def render_morning(games: list[Game], day: str,
         bits.append(f"{len(games)}경기 편성 · {len(dropped)}경기 취소")
     if more:
         bits.append(f"아래에 나머지 {more}경기")
-    sub = " · ".join(bits) if bits else "예측 투표는 경기 3시간 전" 
+    # 안내 문구는 **실제로 하는 일**만 적는다. 예전에는 아직 없는 기능
+    # ("예측 투표는 경기 3시간 전")을 안내하고 있었다 — 카드가 거짓말을 하면
+    # 카드 전체를 못 믿게 된다.
+    sub = " · ".join(bits) if bits else start_alert_lead_text()
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
     body = (_hdr(*LEAGUE_COLORS[lg], lgname, "모닝 브리핑",
                  f'{d.month}.{d.day} {_WD[d.weekday()]}', h1, sub, league=lg) +
             f'<div class="body">{"".join(rows)}</div>'
-            '<div class="foot"><div class="tk">경기 시작 10분 전 알림</div>'
+            f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, lg)
 
@@ -437,7 +441,7 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
         for g in group:
             row = f"  {esc(team_name(g.away))} vs {esc(team_name(g.home))}"
             if g.venue:
-                row += f" · {esc(g.venue)}"
+                row += f" · {esc(venue_name(g.venue))}"
             lines.append(row)
 
     mins = int((first - now).total_seconds() // 60)
@@ -682,7 +686,7 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     lgname = LEAGUE_LABEL.get(rb.league, rb.league.value)
     body = (_hdr(*LEAGUE_COLORS[rb.league], lgname, "맞대결 분석", _dt(day),
                  f'{esc(TEAM_NAMES[rb.league].get(a, a))} <em>vs</em> {esc(TEAM_NAMES[rb.league].get(h, h))}',
-                 f'{esc(kst)} · {esc(game.venue or "")}') +
+                 f'{esc(kst)} · {esc(venue_name(game.venue))}') +
             f'<div class="body"><div class="vs">{side(sa, False)}'
             f'<div class="mid"><span class="ml">시즌</span>'
             f'<span class="mv">{wld.win}-{wld.loss}-{wld.draw}</span></div>'
@@ -784,7 +788,7 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False):
         lines.append(f"{esc(kst)}  {esc(team_name(g.away))} vs {esc(team_name(g.home))}{mark}")
     lg = games[0].league if games else League.KBO
     head = f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} 오늘 전체 편성 {len(games)}경기</b>\n"
-    tail = "예측 투표는 경기 3시간 전"
+    tail = start_alert_lead_text()
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
 
