@@ -595,6 +595,60 @@ check("모르는 구장은 원문을 그대로 (빈칸으로 만들지 않는다
       venue_name("Yankee Stadium") == "Yankee Stadium")
 check("경기장이 없으면 빈 문자열", venue_name(None) == "")
 
+# ── 13. 홈/원정 게이트 ────────────────────────────────────────
+# NPB에서 실제로 287경기 중 281경기가 뒤집혀 있었다. 팀 이름 두 개가 자리만
+# 바꾼 것이라 다른 검증은 전부 통과했고, **점수까지 함께 뒤집혀** 결과 카드가
+# 승패를 반대로 내보낼 뻔했다. 기계가 볼 수 있는 근거는 경기장뿐이다.
+print("\n13. 홈/원정 — 뒤집힘을 경기장으로 잡는가")
+import dataclasses as _dc                                             # noqa: E402
+from contract import (HOME_VENUES, assert_home_away,                  # noqa: E402
+                      home_venue_mismatches)
+
+_ok_games = [mkgame(League.KBO, h, a, day="2026-08-29", hh=14 + i)
+             for i, (h, a) in enumerate([("LG", "OB"), ("KT", "SS"),
+                                         ("HT", "LT"), ("WO", "NC"),
+                                         ("SS", "KT"), ("LT", "HT")])]
+for g in _ok_games:                       # 홈팀의 홈구장을 넣어준다
+    g.venue = sorted(HOME_VENUES[League.KBO][g.home.team_code])[0]
+check("정상이면 어긋남 0", not home_venue_mismatches(_ok_games))
+check("정상이면 게이트 통과", _no_raise(lambda: assert_home_away(_ok_games)))
+
+# 홈과 원정을 통째로 바꾼다 — 경기장은 그대로 두어 '뒤집힘'을 흉내낸다
+_flipped = []
+for g in _ok_games:
+    f = _dc.replace(g, home=g.away, away=g.home)
+    f.venue = g.venue
+    _flipped.append(f)
+check("통째로 뒤집으면 어긋남이 대량 잡힌다",
+      len(home_venue_mismatches(_flipped)) >= 5,
+      str(len(home_venue_mismatches(_flipped))))
+check("통째로 뒤집으면 게이트가 막는다",
+      _raises(GateError, lambda: assert_home_away(_flipped)))
+check("오류 문구가 근거(경기장·어느 팀 홈)를 밝힌다",
+      "홈구장" in _msg(lambda: assert_home_away(_flipped)))
+
+# 한두 건은 대체 개최일 수 있다 — 막지 않는다(오탐이면 발행이 통째로 멈춘다).
+_one_off = list(_ok_games)
+_one_off[0] = _dc.replace(_ok_games[0], home=_ok_games[0].away,
+                          away=_ok_games[0].home)
+_one_off[0].venue = _ok_games[0].venue
+check("한 건 어긋남은 통과 (8월 고시엔처럼 대체 개최가 있다)",
+      _no_raise(lambda: assert_home_away(_one_off)))
+
+# 표본이 적으면 판정하지 않는다
+check("경기가 3건 이하면 판정하지 않는다",
+      _no_raise(lambda: assert_home_away(_flipped[:3])))
+
+# 표에 없는 리그·구장은 통과 (모르는 것으로 막지 않는다)
+_lck = [mkgame(League.LCK, "T1", "GEN", day="2026-08-29", hh=17 + i) for i in range(5)]
+check("홈구장 표가 없는 리그는 통과 (LCK)",
+      _no_raise(lambda: assert_home_away(_lck)))
+
+check("주요 리그에 홈구장 표가 있다 (KBO·NPB·MLB·K리그·V리그)",
+      {League.KBO, League.NPB, League.MLB, League.KL1,
+       League.VLEAGUE_M, League.VLEAGUE_W} <= set(HOME_VENUES),
+      str(sorted(l.value for l in HOME_VENUES)))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
