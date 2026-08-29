@@ -172,7 +172,10 @@ SEASON_MONTHS: dict[League, frozenset[int]] = {
     League.VLEAGUE_M: frozenset({10, 11, 12, 1, 2, 3, 4}),
     League.VLEAGUE_W: frozenset({10, 11, 12, 1, 2, 3, 4}),
     League.LCK:       frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
-    League.INTL_LOL:  frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
+    # 국제 LoL은 리그가 아니라 **두 대회**다(MSI 4~7월 · 롤드컵 9~11월).
+    # LCK와 같은 달로 넓게 잡아두면 8월·12월에 "시즌 중인데 경기 0건"이 매일 울고,
+    # 그 소음에 진짜 사고가 묻힌다. 대회가 실제로 열리는 달만 시즌으로 본다.
+    League.INTL_LOL:  frozenset({4, 5, 6, 7, 9, 10, 11}),
     League.EPL:       frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.LALIGA:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.SERIEA:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),

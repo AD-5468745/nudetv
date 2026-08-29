@@ -291,7 +291,7 @@ def _jobs_mixed():
 
 
 T._jobs = _jobs_mixed
-counts, errors = T.collect(NOW, force=True)
+counts, errors, soft = T.collect(NOW, force=True)
 check("성공한 리그는 저장된다", counts.get("GOOD") == 1, str(counts))
 check("실패한 리그는 오류로 보고된다", any("BAD" in e for e in errors), str(errors))
 check("실패해도 성공한 리그가 스냅샷에 남는다", len(T._load_games("GOOD")) == 1)
@@ -299,6 +299,38 @@ log = T._fetch_log()
 check("실패 사유가 로그에 남는다", bool(log.get("BAD", {}).get("error")))
 check("실패한 리그는 마지막 성공 시각을 덮어쓰지 않는다",
       log.get("BAD", {}).get("at") is None)
+check("소스 구조 오류는 '기다리면 풀릴 것'으로 분류되지 않는다", not soft, str(soft))
+check("실패 시각이 기록된다 (다음 시도를 늦추는 근거)",
+      bool(log.get("BAD", {}).get("failed_at")))
+
+# ── 7-1. 일시적 실패는 빨간불을 올리지 않는다 ──────────────────
+# 첫 배포에서 실제로 이 덫에 걸렸다: Leaguepedia 레이트리밋 하나로 시계 전체가
+# 실패 처리되고, 실패한 실행은 캐시를 저장하지 않아 다음 실행도 캐시 없이 출발했다.
+print("\n7-1. 일시적 실패 — 다음 틱에 풀릴 것을 사고로 올리지 않는가")
+from adapters.lck import RateLimited                          # noqa: E402
+
+
+def _jobs_ratelimited():
+    def limited():
+        raise RateLimited("Leaguepedia: ratelimited")
+    return {"GOOD": (League.KBO, lambda: [mkgame(League.KBO, "LG", "OB", hh=18)]),
+            "LCK": (League.LCK, limited)}
+
+
+T._jobs = _jobs_ratelimited
+counts, errors, soft = T.collect(NOW, force=True)
+check("레이트리밋은 '기다리면 풀릴 것'으로 분류된다",
+      any("LCK" in s for s in soft), str(soft))
+check("레이트리밋은 사람이 볼 실패에 안 들어간다", not errors, str(errors))
+check("그래도 조용히 넘기지는 않는다 (로그에 남는다)", len(soft) == 1)
+check("다른 리그는 정상 수집된다", counts.get("GOOD") == 1)
+
+# 막힌 소스를 5분마다 다시 두드리지 않는가 (force 없이)
+counts2, errors2, soft2 = T.collect(NOW + timedelta(minutes=5))
+check("막힌 소스는 15분 안에 다시 두드리지 않는다", not soft2 and not errors2,
+      f"soft={soft2} errors={errors2}")
+counts3, errors3, soft3 = T.collect(NOW + timedelta(minutes=16))
+check("15분이 지나면 다시 시도한다", any("LCK" in s for s in soft3), str(soft3))
 T._jobs = _orig
 
 # ── 8. 커버리지 감시 ──────────────────────────────────────────
@@ -356,6 +388,15 @@ check("수집이 멈추면 잡는다 (스냅샷이 남아 있어도)",
 r = CV.run({"LCK": []}, {"LCK": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
 check("한 번도 수집 못 한 리그를 잡는다",
       any("성공 기록 없음" in x for x in r.lines()), str(r.lines()))
+check("시즌 중 리그가 못 들어오면 빨간불 (LCK는 8월이 시즌)", not r.ok, str(r.lines()))
+
+# 비시즌 리그의 수집 실패 — 알리되 빨간불은 아니다.
+# 이걸 구분 못 하면 8월마다 농구가 울고, 그 소음에 진짜 사고가 묻힌다.
+r = CV.run({"KBL": []}, {"KBL": {"at": None, "count": 0, "error": "timeout"}}, _CNOW)
+check("비시즌 리그의 수집 실패도 알리기는 한다", bool(r.findings), str(r.lines()))
+check("비시즌 리그의 수집 실패는 빨간불이 아니다", r.ok, str(r.lines()))
+check("비시즌임을 문구로 알 수 있다",
+      any("비시즌" in x for x in r.lines()), str(r.lines()))
 
 # 비시즌은 조용한 게 정상 — 8월 농구·배구
 r = CV.run({"KBL": [], "VLEAGUE_M": []},

@@ -38,9 +38,14 @@ class Finding:
     league: str
     kind: str
     detail: str
+    # soft=True는 "알려는 주되 빨간불로는 올리지 않는다"는 뜻이다.
+    # 비시즌 리그의 수집 실패가 여기 해당한다 — 어차피 내보낼 경기가 없으므로
+    # 이걸로 시계를 실패 처리하면, 8월마다 농구·롤이 울어 진짜 사고가 그 소음에 묻힌다.
+    soft: bool = False
 
     def __str__(self) -> str:
-        return f"[{self.league}] {self.kind} — {self.detail}"
+        mark = "(비시즌 — 참고) " if self.soft else ""
+        return f"[{self.league}] {mark}{self.kind} — {self.detail}"
 
 
 @dataclass
@@ -49,8 +54,13 @@ class Report:
     checked: int = 0
 
     @property
+    def hard(self) -> list[Finding]:
+        """사람이 손대야 하는 것만."""
+        return [f for f in self.findings if not f.soft]
+
+    @property
     def ok(self) -> bool:
-        return not self.findings
+        return not self.hard
 
     def lines(self) -> list[str]:
         return [str(f) for f in self.findings]
@@ -63,21 +73,34 @@ def _counts_by_day(games: list) -> dict[str, int]:
     return out
 
 
+def _off_season(name: str, now: datetime) -> bool:
+    """이 리그가 지금 비시즌인가. 이름을 못 맞히면 '시즌 중'으로 본다(안전한 쪽)."""
+    from contract import KST, League, in_season
+    lg = next((l for l in League if l.value == name), None)
+    return bool(lg) and not in_season(lg, now.astimezone(KST))
+
+
 def check_snapshot_age(fetch_log: dict, now: datetime,
                        max_age: int = SNAPSHOT_MAX_AGE_SECONDS) -> list[Finding]:
-    """수집 자체가 멈췄는지. 내용을 보기 전에 이것부터 본다."""
+    """수집 자체가 멈췄는지. 내용을 보기 전에 이것부터 본다.
+
+    비시즌 리그의 실패는 **참고로만** 남긴다(soft). 내보낼 경기가 없는 리그 때문에
+    시계를 실패로 세우면, 그 소음에 진짜 사고가 묻힌다.
+    """
     out = []
     for name, rec in sorted(fetch_log.items()):
+        soft = _off_season(name, now)
         at = rec.get("at")
         if not at:
             out.append(Finding(name, "수집 성공 기록 없음",
-                               f"마지막 오류: {str(rec.get('error'))[:80]}"))
+                               f"마지막 오류: {str(rec.get('error'))[:80]}", soft=soft))
             continue
         age = (now - datetime.fromisoformat(at)).total_seconds()
         if age > max_age:
             out.append(Finding(name, "수집이 멈춤",
                                f"마지막 성공 {age / 3600:.1f}시간 전"
-                               + (f" · {str(rec.get('error'))[:60]}" if rec.get("error") else "")))
+                               + (f" · {str(rec.get('error'))[:60]}" if rec.get("error") else ""),
+                               soft=soft))
     return out
 
 
@@ -152,7 +175,7 @@ if __name__ == "__main__":
 
     r = run(T.all_games(), T._fetch_log())
     print(f"커버리지 감시 — 리그 {r.checked}개 점검")
-    if r.ok:
+    if not r.findings:
         print("  이상 없음")
     else:
         for line in r.lines():

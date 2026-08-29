@@ -51,6 +51,12 @@ SNAP_DIR = ROOT / "games"
 FETCH_EVERY_SECONDS = 30 * 60
 FETCH_EVERY_LIVE_SECONDS = 10 * 60      # 그 리그에 오늘 경기가 있으면
 
+# **막힌 소스는 이만큼 쉬었다 다시 두드린다.**
+# 위의 30분 제동은 '성공 기록'을 기준으로 하므로, 한 번도 성공 못한 소스에는
+# 걸리지 않는다. 그대로 두면 5분마다 하루 288번을 두드려 차단을 부른다.
+# 15분이면 5분 시계에서 세 틱에 한 번 — 회복은 충분히 빠르고 소스에는 예의가 된다.
+RETRY_AFTER_FAIL_SECONDS = 15 * 60
+
 # 큐에서 이만큼 앞선 것까지 이번 틱에 처리한다.
 # **틱 간격과 맞춰야 한다.** 짧으면 다음 틱까지 못 기다리는 항목이 통째로 누락되고,
 # 길면 필요 이상으로 일찍 보낸다. 정각 시계(무료 환경)면 60분이 맞다.
@@ -186,20 +192,59 @@ def _fetch_log() -> dict:
     return {}
 
 
-def collect(now: datetime, force: bool = False) -> tuple[dict, list[str]]:
-    """수집이 필요한 리그만 긁는다. 반환: (리그별 경기 수, 실패 메시지들)."""
+# ── 일시적 실패 vs 진짜 고장 ──────────────────────────────────
+#
+# 5분마다 도는 시계에서 **모든 실패를 빨간불로 올리면 아무도 빨간불을 안 본다.**
+# 레이트리밋·네트워크 끊김은 다음 틱(5분 뒤)에 저절로 풀린다. 반면 소스 구조가
+# 바뀐 것(GateError)은 사람이 고쳐야 한다. 둘을 섞으면 진짜 사고를 놓친다.
+#
+# **그렇다고 조용히 넘기지는 않는다.** 일시적 실패도 로그·알림에는 그대로 남고,
+# 며칠 이어지면 커버리지 감시가 "수집 성공 기록 없음"으로 잡아 빨간불을 올린다.
+# 즉 '한 번 걸림'은 통과, '계속 걸림'은 실패 — 판단을 커버리지에 맡긴다.
+TRANSIENT_ERROR_NAMES = frozenset({
+    "RateLimited",        # 소스 호출 한도 — 기다리면 풀린다
+    "Timeout", "TimeoutError", "ReadTimeout", "ConnectTimeout",
+    "URLError", "HTTPError", "ConnectionError", "ConnectionResetError",
+    "RemoteDisconnected", "IncompleteRead", "SSLError",
+})
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """이 오류가 '기다리면 풀리는 것'인가."""
+    for cls in type(exc).__mro__:
+        if cls.__name__ in TRANSIENT_ERROR_NAMES:
+            return True
+    return False
+
+
+def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[str]]:
+    """수집이 필요한 리그만 긁는다.
+
+    반환: (리그별 경기 수, 사람이 봐야 할 실패, 기다리면 풀릴 실패)
+    """
     log = _fetch_log()
-    counts, errors = {}, []
+    counts, errors, soft = {}, [], []
     today = now.astimezone(KST).strftime("%Y-%m-%d")
 
     for name, (lg, fn) in _jobs().items():
-        last = log.get(name, {}).get("at")
+        rec = log.get(name, {})
+        last = rec.get("at")
         prev = _load_games(name)
         has_today = any(g.sports_day == today for g in prev)
         every = FETCH_EVERY_LIVE_SECONDS if has_today else FETCH_EVERY_SECONDS
         if not force and last:
             age = (now - datetime.fromisoformat(last)).total_seconds()
             if age < every:
+                counts[name] = len(prev)
+                continue
+        # **실패한 소스를 5분마다 다시 때리지 않는다.**
+        # 성공 기록이 없으면 위의 30분 제동이 걸리지 않아, 한 번 막힌 소스를
+        # 하루 288번 두드리게 된다. 호출 한도에 걸린 상대에게 그건 차단을 부른다
+        # (첫 실행에서 Leaguepedia가 정확히 이렇게 막혔다).
+        failed_at = rec.get("failed_at")
+        if not force and failed_at:
+            since_fail = (now - datetime.fromisoformat(failed_at)).total_seconds()
+            if since_fail < RETRY_AFTER_FAIL_SECONDS:
                 counts[name] = len(prev)
                 continue
         t0 = _time.monotonic()
@@ -215,19 +260,21 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str]]:
                               f"(기준 {SLOW_FETCH_SECONDS}초) — 틱이 밀립니다")
         except (GateError, UnknownStatus) as e:
             # 소스가 바뀌었거나 게이트에 걸렸다. 그 리그만 건너뛴다.
-            log[name] = {"at": log.get(name, {}).get("at"),
+            log[name] = {"at": rec.get("at"), "failed_at": _iso(now),
                          "count": len(prev), "error": str(e)[:200]}
             counts[name] = len(prev)
-            errors.append(f"{name}: {type(e).__name__} {str(e)[:120]}")
+            msg = f"{name}: {type(e).__name__} {str(e)[:120]}"
+            (soft if _is_transient(e) else errors).append(msg)
         except Exception as e:                               # noqa: BLE001
-            log[name] = {"at": log.get(name, {}).get("at"),
+            log[name] = {"at": rec.get("at"), "failed_at": _iso(now),
                          "count": len(prev), "error": f"{type(e).__name__}: {e}"[:200]}
             counts[name] = len(prev)
-            errors.append(f"{name}: 예상 못한 {type(e).__name__} {str(e)[:110]}")
+            msg = f"{name}: 예상 못한 {type(e).__name__} {str(e)[:110]}"
+            (soft if _is_transient(e) else errors).append(msg)
 
     ROOT.mkdir(parents=True, exist_ok=True)
     FETCH_LOG.write_text(json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8")
-    return counts, errors
+    return counts, errors, soft
 
 
 def all_games() -> dict[str, list]:
@@ -304,10 +351,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     print(f"[틱] {now.astimezone(KST):%Y-%m-%d %H:%M} KST"
           + (" · 드라이런" if dry_run else ""))
 
-    counts, errors = collect(now, force=force_fetch)
+    counts, errors, soft = collect(now, force=force_fetch)
     print("  [수집] " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for e in errors:
         print(f"  [수집 실패] {e}")
+    for e in soft:
+        # 다음 틱에 저절로 풀릴 것. 빨간불로 올리지 않는다 —
+        # 계속 이어지면 아래 커버리지가 잡아 올린다.
+        print(f"  [일시적 실패 — 다음 틱 재시도] {e}")
 
     snaps = all_games()
 
@@ -320,8 +371,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 무인 운영에서 가장 위험한 실패는 에러가 아니라 침묵이다.
     import coverage as CV
     cov = CV.run(snaps, _fetch_log(), now)
-    if not cov.ok:
-        print(f"  [커버리지] 이상 {len(cov.findings)}건")
+    if cov.findings:
+        print(f"  [커버리지] 이상 {len(cov.findings)}건 "
+              f"(사람이 볼 것 {len(cov.hard)}건)")
         for line in cov.lines()[:6]:
             print(f"    ⚠️ {line}")
     else:
@@ -343,7 +395,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if stale:
             print(f"  [경고] 묵은 '예정' {len(stale)}건 — " +
                   ", ".join(f"{g.league.value} {g.sports_day}" for g in stale[:3]))
-        if errors:
+        # 커버리지 이상은 '조용한 실패'이므로 드라이런에서도 빨간불로 올린다.
+        if errors or not cov.ok:
             return 1
         return 0
 
@@ -388,6 +441,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     lines = []
     if errors:
         lines += [f"수집 실패 — {e}" for e in errors[:5]]
+    if soft:
+        lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
     if failed:
         lines.append(f"발송 실패 {failed}건 (로그 확인)")
     if stale:
@@ -401,7 +456,12 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         except Exception:                                    # noqa: BLE001
             print("    (알림 발송도 실패)")
 
-    return 1 if (errors or failed) else 0
+    # 빨간불의 뜻: **사람이 손대야 한다.**
+    #   · errors  — 소스 구조 변경 등, 기다려도 안 풀린다
+    #   · failed  — 발송 실패. 카드가 안 나갔다
+    #   · not cov.ok — 리그가 조용히 사라졌다(가장 위험한 실패)
+    # soft(레이트리밋 등)는 여기 없다. 다음 틱에 풀리고, 안 풀리면 cov가 잡는다.
+    return 1 if (errors or failed or not cov.ok) else 0
 
 
 if __name__ == "__main__":

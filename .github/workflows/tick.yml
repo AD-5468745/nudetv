@@ -54,16 +54,26 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-v1
 
-      - name: 경기 데이터 캐시
+      - name: 경기 데이터 복원
         # **경기 데이터는 커밋하지 않습니다.** 5분마다 도니 하루 288번인데,
         # 점수가 바뀔 때마다 커밋하면 저장소가 커밋으로 뒤덮입니다.
         # 사라져도 다시 수집하면 그만이라 캐시가 맞는 자리입니다.
         # (발송 대장은 다릅니다 — 사라지면 오늘 것을 다시 보내므로 반드시 커밋합니다.)
-        uses: actions/cache@v4
+        #
+        # 세 가지를 함께 나릅니다. 하나라도 빠지면 나머지가 무의미해집니다:
+        #   state/games      — 수집한 경기들
+        #   state/fetch.json — **"어느 리그를 언제 마지막으로 긁었나" 수첩.**
+        #                      이게 사라지면 30분 제동장치가 풀려 5분마다 전 리그를
+        #                      새로 긁습니다(하루 288번). 소스가 차단합니다.
+        #   g1/cache         — LoL 원본 보관함. 호출 한도에 걸린 날 여기서 꺼내 버팁니다.
+        uses: actions/cache/restore@v4
         with:
-          path: state/games
-          key: games-${{ github.run_id }}
-          restore-keys: games-
+          path: |
+            state/games
+            state/fetch.json
+            g1/cache
+          key: data-${{ github.run_id }}
+          restore-keys: data-
 
       - name: 설치
         run: |
@@ -95,6 +105,21 @@ jobs:
             python g1/tick.py
           fi
         continue-on-error: true   # 실패해도 아래 커밋은 해야 합니다(중간까지의 발송 기록 보존)
+
+      - name: 경기 데이터 저장
+        # **`always()`가 핵심입니다.** 기본 캐시 동작은 "성공한 실행만 저장"인데,
+        # 그러면 이런 덫에 빠집니다:
+        #   호출 한도에 걸림 → 실패 → 캐시 저장 안 됨 → 다음에도 캐시 없음 →
+        #   또 한도에 걸림 → 영원히 못 빠져나옴.
+        # 실제로 첫 실행이 정확히 이 덫에 걸렸습니다. 그래서 실패해도 저장합니다.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state/games
+            state/fetch.json
+            g1/cache
+          key: data-${{ github.run_id }}
 
       - name: 발송 대장 저장
         # **이 단계가 이 워크플로에서 가장 중요합니다.**
