@@ -30,6 +30,15 @@ on:
         description: '드라이런(발송하지 않고 계획만 확인)'
         type: boolean
         default: true
+      loop_hours:
+        # **깃허브 자동 시계가 안 켜질 때를 위한 비상 수단입니다.**
+        # 0이면 평소대로 한 번만 일하고 끝납니다.
+        # 0보다 크면 그 시간 동안 실행 하나가 살아 있으면서 5분마다 일합니다.
+        # 공개 저장소는 실행 시간이 무제한이라 비용은 그대로 0원입니다.
+        # 한 실행의 상한이 6시간이므로 5.5를 넘겨 넣지 마세요.
+        description: '비상 연속 운전 시간 (0=한 번만, 예: 5.5)'
+        type: string
+        default: '0'
 
 # 앞 실행이 아직 돌고 있으면 기다립니다.
 # 겹쳐 돌면 같은 카드를 두 번 보낼 수 있습니다 — 되돌릴 수 없는 사고입니다.
@@ -43,7 +52,10 @@ permissions:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 15          # 매달려 있으면 한도만 태웁니다
+    # 평소 한 번 실행은 2분이면 끝납니다. 상한을 크게 두는 이유는 비상
+    # 연속 운전(loop_hours) 때문입니다 — 깃허브 한 실행의 상한이 6시간이라
+    # 그보다 조금 아래로 잡습니다. 매달려 있어도 공개 저장소는 비용이 0원입니다.
+    timeout-minutes: 350
 
     steps:
       - uses: actions/checkout@v4
@@ -108,13 +120,47 @@ jobs:
           # 한 번 깨어날 때 앞으로 몇 분치 큐를 처리할지 — 시계 간격과 맞춥니다.
           # 5분 시계(현재): 6   ·   정각 시계로 되돌리면: 60
           TICK_LOOKAHEAD_MINUTES: '6' 
+          LOOP_HOURS: ${{ inputs.loop_hours || '0' }}
         run: |
+          set +e
+          DRY=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
              && [ "${{ inputs.dry_run }}" = "true" ]; then
-            python g1/tick.py --dry-run
-          else
-            python g1/tick.py
+            DRY="--dry-run"
           fi
+
+          # 대장을 남기는 함수 — 연속 운전 중에도 매번 남겨야 합니다.
+          # 실행이 6시간을 살다 중간에 죽으면, 그때까지 보낸 기록이 없어져
+          # **이미 보낸 카드를 다시 보냅니다.** 되돌릴 수 없는 사고입니다.
+          save_ledger() {
+            git add -A state/ledger.jsonl state/.gitkeep 2>/dev/null || true
+            git diff --cached --quiet && return 0
+            git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 0
+            for i in 1 2 3; do
+              git pull -q --rebase --autostash && git push -q && return 0
+              sleep $((i * 5))
+            done
+          }
+          git config user.name  "nudetv-bot"
+          git config user.email "bot@users.noreply.github.com"
+
+          LOOPS=$(python -c "print(int(float('${LOOP_HOURS:-0}') * 12))" 2>/dev/null || echo 0)
+          if [ "$LOOPS" -le 0 ]; then
+            python g1/tick.py $DRY          # 평소: 한 번 일하고 끝
+            exit $?
+          fi
+
+          # 비상 연속 운전 — 깃허브 자동 시계가 안 켜질 때만 씁니다.
+          echo "비상 연속 운전: 5분 간격 ${LOOPS}회 (약 ${LOOP_HOURS}시간)"
+          LAST=0
+          for i in $(seq 1 "$LOOPS"); do
+            echo "───── ${i}/${LOOPS} ─────"
+            python g1/tick.py $DRY
+            LAST=$?
+            save_ledger
+            [ "$i" -lt "$LOOPS" ] && sleep 300
+          done
+          exit $LAST
         continue-on-error: true   # 실패해도 아래 커밋은 해야 합니다(중간까지의 발송 기록 보존)
 
       - name: 카드 미리보기 올리기
