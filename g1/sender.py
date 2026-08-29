@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
 import hmac
 import json
 import os
@@ -21,6 +22,7 @@ import pathlib
 import random
 import sys
 import time
+import time as _time
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -44,6 +46,13 @@ RATE_PER_MINUTE = 20
 
 # 오류 알림은 이 두 가지에서 면제된다
 ALERT_EXEMPT = True
+
+# **같은 알림을 이 시간 안에는 되풀이하지 않는다.**
+# 시계가 5분마다 도니, 하루 종일 이어지는 문제 하나가 알림 288통이 된다.
+# 그렇게 도배되면 사람은 알림을 꺼버리고 — 그 순간 감시는 없는 것이 된다.
+# 6시간이면 하루 네 번. 문제가 살아 있다는 것을 알기에 충분하고,
+# 무시하게 될 만큼 잦지는 않다. 내용이 달라지면 유예와 무관하게 바로 나간다.
+ALERT_REPEAT_SECONDS = int(os.environ.get("ALERT_REPEAT_SECONDS", str(6 * 3600)))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -461,19 +470,68 @@ class Sender:
 
     # ── 오류 알림 ───────────────────────────────────────────
 
-    def alert(self, title: str, lines: list[str]) -> bool:
+    def alert(self, title: str, lines: list[str], *, repeat_after: int | None = None) -> bool:
         """장애 알림. 카드가 아니라 텍스트로 낸다 — 렌더가 깨져서 난 오류일 수도 있으므로.
 
         상한·페이서 우선순위와 무관하게 나간다. 상한에 막히면 감시가 없는 것과 같다.
+
+        **같은 내용은 되풀이하지 않는다 (v1.11d).**
+        시계가 5분마다 돌기 때문에, 하루 종일 이어지는 문제 하나가 알림 288통이 된다.
+        그렇게 도배되면 사람은 알림을 끄고, 그 순간 감시는 없는 것이 된다.
+        그래서 **내용이 같으면 `repeat_after` 안에는 다시 보내지 않는다.**
+        내용이 달라지면(새 문제가 생기면) 유예와 무관하게 바로 나간다 —
+        조용해지는 것이 아니라 '같은 말을 반복하지 않는' 것이다.
         """
         body = f"⚠️ <b>{esc(title)}</b>\n" + quote([esc(x) for x in lines])
+        gap = ALERT_REPEAT_SECONDS if repeat_after is None else repeat_after
+        fp = _hashlib.sha256("\n".join([title] + list(lines)).encode()).hexdigest()[:16]
+        if gap > 0 and not self._alert_is_new(fp, gap):
+            return False                      # 방금 같은 말을 했다
         try:
             self.tr.call("sendMessage", {"chat_id": self.alert_chat_id, "text": body[:4096],
                                          "parse_mode": "HTML",
                                          "disable_web_page_preview": True})
+            self._alert_mark(fp)
             return True
         except (TelegramError, AmbiguousSend):
             return False      # 알림 실패로 본 작업을 죽이지 않는다
+
+    # ── 알림 되풀이 방지 ──────────────────────────────────────
+    # 대장(ledger)과 같은 폴더에 작은 기록을 둔다. 실행마다 컨테이너가 새로 뜨므로
+    # 메모리에 두면 아무 소용이 없다 — 매 틱이 '처음 보는 알림'으로 판단한다.
+
+    def _alert_log_path(self) -> pathlib.Path:
+        return pathlib.Path(self.led.path).parent / "alerts.json"
+
+    def _alert_log(self) -> dict:
+        p = self._alert_log_path()
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}                         # 깨졌으면 '보낸 적 없음'과 같게 다룬다
+
+    def _alert_is_new(self, fp: str, gap: int) -> bool:
+        at = self._alert_log().get(fp)
+        if not at:
+            return True
+        return (_time.time() - float(at)) >= gap
+
+    def _alert_mark(self, fp: str) -> None:
+        log = self._alert_log()
+        log[fp] = _time.time()
+        # 오래된 것은 버린다 — 파일이 무한히 자라면 그 자체가 사고다.
+        cutoff = _time.time() - max(ALERT_REPEAT_SECONDS * 4, 86400)
+        log = {k: v for k, v in log.items() if float(v) >= cutoff}
+        p = self._alert_log_path()
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(log), encoding="utf-8")
+            tmp.replace(p)
+        except OSError:
+            pass                              # 기록 실패로 알림을 막지 않는다
 
 
 # ─────────────────────────────────────────────────────────────

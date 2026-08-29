@@ -133,7 +133,7 @@ jobs:
           # 실행이 6시간을 살다 중간에 죽으면, 그때까지 보낸 기록이 없어져
           # **이미 보낸 카드를 다시 보냅니다.** 되돌릴 수 없는 사고입니다.
           save_ledger() {
-            git add -A state/ledger.jsonl state/.gitkeep 2>/dev/null || true
+            git add -A state/ledger.jsonl state/alerts.json state/.gitkeep 2>/dev/null || true
             git diff --cached --quiet && return 0
             git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 0
             for i in 1 2 3; do
@@ -199,7 +199,9 @@ jobs:
           git config user.name  "nudetv-bot"
           git config user.email "bot@users.noreply.github.com"
           # 대장만 커밋합니다. 경기 데이터(state/games)는 캐시가 들고 있습니다.
-          git add -A state/ledger.jsonl state/.gitkeep 2>/dev/null || true
+          # alerts.json도 함께 — **이게 없으면 같은 알림이 5분마다 다시 나갑니다**
+          # (매 실행이 새 컨테이너라 "방금 보냈다"를 파일로만 기억할 수 있습니다).
+          git add -A state/ledger.jsonl state/alerts.json state/.gitkeep 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음"
           else

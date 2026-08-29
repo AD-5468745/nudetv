@@ -16,7 +16,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from contract import (ContentType, GateError, KST, League, LEASE_SECONDS,
                       QueueItem, SendState, idem_key)
-from sender import (AmbiguousSend, Ledger, Pacer, PartialSend, Payload, Secret, Sender,
+from sender import (ALERT_REPEAT_SECONDS,
+                    AmbiguousSend, Ledger, Pacer, PartialSend, Payload, Secret, Sender,
                     TelegramError, load_token, new_webhook_secret, redact,
                     verify_webhook, webhook_setup_payload)
 
@@ -349,6 +350,38 @@ pl = Payload.from_parts([PHOTO], ["캡션", "이어1", "이어2"])
 check("from_parts가 캡션/후속을 가름",
       pl.caption == "캡션" and pl.follow_texts == ["이어1", "이어2"])
 expect("빈 파트는 차단", lambda: Payload.from_parts([PHOTO], []))
+
+# ── 알림 되풀이 방지 ──────────────────────────────────────────
+# 시계가 5분마다 돈다. 하루 종일 이어지는 문제 하나가 **알림 288통**이 된다.
+# 그렇게 도배되면 사람은 알림을 꺼버리고, 그 순간 감시는 없는 것이 된다.
+# 실제로 LCK 수집 실패 하나로 이 상황이 벌어질 뻔했다.
+print("\n알림 되풀이 — 같은 말을 5분마다 반복하지 않는가")
+import tempfile as _tf, pathlib as _pl                                # noqa: E402
+_AT = _pl.Path(_tf.mkdtemp(prefix="alertdedup-"))
+_atr = Fake()
+_as = Sender(_atr, Ledger(_AT / "ledger.jsonl"), "-100test",
+             alert_chat_id="777", worker_id="w1")
+_n = lambda: len([c for c in _atr.calls if c[0] == "sendMessage"])     # noqa: E731
+
+check("첫 알림은 나간다", _as.alert("점검", ["LCK 실패"]) and _n() == 1)
+check("같은 내용은 다시 안 나간다", (not _as.alert("점검", ["LCK 실패"])) and _n() == 1)
+check("내용이 달라지면 바로 나간다 (조용해지는 게 아니다)",
+      _as.alert("점검", ["NPB도 실패"]) and _n() == 2)
+
+# **새 컨테이너에서도 막혀야 한다.** 매 실행이 새 컨테이너라 메모리 기억은 소용없다.
+_as2 = Sender(_atr, Ledger(_AT / "ledger.jsonl"), "-100test",
+              alert_chat_id="777", worker_id="w2")
+check("새 컨테이너에서도 같은 알림은 막힌다 (기록이 파일에 있다)",
+      (not _as2.alert("점검", ["LCK 실패"])) and _n() == 2)
+check("유예를 0으로 주면 항상 나간다 (긴급용 통로는 남긴다)",
+      _as2.alert("점검", ["LCK 실패"], repeat_after=0) and _n() == 3)
+
+_alog = _AT / "alerts.json"
+check("기록이 대장 옆에 남는다 (커밋 대상)", _alog.exists())
+_txt = _alog.read_text(encoding="utf-8")
+check("기록에 알림 본문이 남지 않는다 (지문과 시각뿐)",
+      "LCK" not in _txt and "점검" not in _txt, _txt[:80])
+check("기본 유예가 6시간", ALERT_REPEAT_SECONDS == 6 * 3600, str(ALERT_REPEAT_SECONDS))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)
