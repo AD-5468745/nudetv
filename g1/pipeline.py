@@ -39,7 +39,10 @@ _TYPO_JS = """
         if(r.width>0 && r.height>0)
           res.push({t:n.textContent.trim().slice(0,16),
                     fs:parseFloat(getComputedStyle(el).fontSize),
-                    cls:(el.className||'').toString().slice(0,24)});
+                    cls:(el.className||'').toString().slice(0,24),
+                    // 줄 수 — 2 이상이면 그 요소가 두 줄로 접혔다는 뜻이다.
+                    // 팀명이 접히면 행 높이가 들쭉날쭉해져 카드가 무너진다.
+                    lines: el.getClientRects().length});
       } else if(n.nodeType===1) walk(n);
     }
   };
@@ -87,6 +90,37 @@ def assert_korean_font(m: dict) -> None:
             "한글 폰트가 없어 카드가 두부(□)로 그려집니다. "
             f"font-family={m.get('family')} · 한글폭 {m['ko']:.1f} = 두부폭 {m['tofu']:.1f}. "
             "서버에 한글 폰트를 설치하세요 (우분투: apt-get install -y fonts-noto-cjk).")
+
+
+class NameWrapped(GateError):
+    """팀명이 두 줄로 접혔다 — 카드 행이 무너진다."""
+
+
+# 팀명·점수처럼 한 줄이어야 하는 칸. 여기가 접히면 행 높이가 들쭉날쭉해진다.
+ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt")
+
+
+def assert_no_wrapped_names(samples: list[dict]) -> None:
+    """한 줄이어야 하는 칸이 접혔으면 막는다.
+
+    **왜 게이트가 필요한가.** 팀명을 국내 표기로 바꾸자마자
+    '세인트루이스'(6자)와 '샌프란시스코'(7자)가 결과 카드에서 두 줄로 접혔다.
+    글자 수 상한(8자)은 통과했다 — 상한은 글자 수를 세지, 실제로 그려진 폭을
+    보지 않기 때문이다. 카드를 눈으로 보고서야 알았다.
+    이제 브라우저가 실제로 그린 줄 수를 재서 확인한다.
+    """
+    bad = []
+    for s in samples:
+        cls = str(s.get("cls") or "")
+        if not any(c in cls.split() for c in ONE_LINE_CLASSES):
+            continue
+        if int(s.get("lines") or 1) > 1:
+            bad.append(f"{s.get('t')!r}({cls}, {s.get('lines')}줄)")
+    if bad:
+        raise NameWrapped(
+            "한 줄이어야 하는 칸이 접혔습니다 — 행 높이가 무너집니다: "
+            + " · ".join(bad[:4])
+            + ". 표시명을 줄이거나 카드 CSS에서 크기를 낮추세요.")
 
 
 OUT = pathlib.Path(__file__).resolve().parent / "dryrun"
@@ -361,6 +395,18 @@ def render_morning(games: list[Game], day: str,
     return _card(body, lg)
 
 
+def _name_cls(name: str) -> str:
+    """긴 팀명을 한 줄에 담기 위한 크기 클래스.
+
+    국내 표기를 쓰면 '세인트루이스'(6자)·'샌프란시스코'(7자)가 나온다.
+    그대로 두면 결과 카드에서 두 줄로 접혀 행 높이가 무너진다
+    (2026-08-30 육안 점검에서 발견). 이름을 줄이는 대신 크기를 낮춘다 —
+    시청자가 쓰는 이름을 바꾸는 것보다 글자를 조금 작게 하는 편이 낫다.
+    """
+    n = len(name)
+    return " n6" if n == 6 else (" n7" if n >= 7 else "")
+
+
 def render_result(games: list[Game], day: str,
                   top_n: int = CARD_ROWS_MAX) -> str:
     d = datetime.strptime(day, "%Y-%m-%d")
@@ -369,16 +415,20 @@ def render_result(games: list[Game], day: str,
     for g in shown:
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
         if g.status is Status.CANCELED:
-            rows.append(f'<div class="res cx"><div class="n1">{a}</div><div class="s1">—</div>'
-                        f'<div class="s2">—</div><div class="n2">{h}</div>'
+            rows.append(f'<div class="res cx"><div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
+                        f'<div class="s1">—</div>'
+                        f'<div class="s2">—</div>'
+                        f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
                         f'<div class="st">{esc(g.meta.cancel_reason or "취소")}</div></div>')
         elif g.score:
             draw = g.is_draw()
             cls = "dr" if draw else ("w1" if g.score.away > g.score.home else "w2")
             st = "무승부" if draw else "종료"
-            rows.append(f'<div class="res {cls}"><div class="n1">{a}</div>'
+            rows.append(f'<div class="res {cls}">'
+                        f'<div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
                         f'<div class="s1">{g.score.away}</div><div class="s2">{g.score.home}</div>'
-                        f'<div class="n2">{h}</div><div class="st">{st}</div></div>')
+                        f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
+                        f'<div class="st">{st}</div></div>')
     fin = [g for g in games if g.status is Status.FINAL]
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
@@ -419,6 +469,7 @@ def render_png(card_html: str, out: pathlib.Path) -> tuple[int, int, int]:
         b.close()
     # 폰트부터 본다. 두부 카드는 다른 어떤 검사를 통과해도 내보낼 수 없다.
     assert_korean_font(font)
+    assert_no_wrapped_names(samples)
     assert_card_typography([(x["t"], x["fs"], x["cls"]) for x in samples])
     im = Image.open(out).convert("RGB")
     w, h = im.size

@@ -41,8 +41,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       Status, UnknownStatus, assert_home_away,
-                      assert_send_windows, day_schedule_scope, is_late,
-                      lookahead_for, stale_unresolved)
+                      assert_send_windows, assert_team_names_cover,
+                      day_schedule_scope, is_late, lookahead_for,
+                      stale_unresolved)
 import pipeline as P
 from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
 
@@ -269,6 +270,9 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 점수까지 함께 뒤집히면 승패를 반대로 내보낸다 — 되돌릴 수 없는 오보다.
             # 기계가 볼 수 있는 근거는 경기장뿐이다: 홈구장이 홈팀과 어긋나면 뒤집힌 것.
             assert_home_away(games)
+            # 표에 없는 팀 코드가 오면 카드에 코드가 그대로 찍힌다.
+            # 팀이 바뀌는 일은 드물지 않다(페퍼저축은행 -> SOOP, LCK 네이밍 스폰서).
+            assert_team_names_cover(games)
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,

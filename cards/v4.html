@@ -107,8 +107,14 @@ body{background:#c8ccd2;font-family:'Noto Sans CJK KR','Noto Sans KR',sans-serif
   padding:34px 34px;gap:14px;border-bottom:1px solid var(--line-soft);}
 .res:last-child{border-bottom:0;}
 .res:nth-child(even){background:var(--stripe);}
-.res .n1{font-size:45px;font-weight:900;text-align:right;}
-.res .n2{font-size:45px;font-weight:900;}
+/* 팀명은 **절대 두 줄로 접히지 않는다.** 접히면 행 높이가 들쭉날쭉해져
+   카드가 무너진다. 국내 표기를 쓰면 '세인트루이스'(6자)·'샌프란시스코'(7자)
+   처럼 긴 이름이 나오므로, 글자 수에 따라 크기를 낮춰 한 줄에 담는다.
+   (최소 폰트 게이트 28px보다 크게 유지한다.) */
+.res .n1{font-size:45px;font-weight:900;text-align:right;white-space:nowrap;}
+.res .n2{font-size:45px;font-weight:900;white-space:nowrap;}
+.res .n1.n6,.res .n2.n6{font-size:39px;}
+.res .n1.n7,.res .n2.n7{font-size:34px;}
 .res .s1,.res .s2{font-size:51px;font-weight:900;text-align:center;}
 .res .st{font-size:32px;font-weight:800;color:var(--sub);text-align:right;}
 .res.w1 .n1,.res.w1 .s1{color:var(--win);} .res.w1 .n2,.res.w1 .s2{color:var(--lose);}

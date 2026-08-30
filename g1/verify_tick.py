@@ -596,8 +596,13 @@ check("없는 기능을 안내하지 않는다 (예측 투표)", "예측 투표"
 # 경기장 이름 — 일본어가 그대로 나가면 한국 시청자는 못 읽는다
 check("일본 구장이 한국어로 바뀐다", venue_name("京セラD大阪") == "교세라돔")
 check("전각·사이 공백이 섞여도 맞춘다", venue_name("横 浜") == "요코하마")
+# 이 검사가 한 번 깨졌었다 — 예시로 쓰던 'Yankee Stadium'이 표에 등록되면서다.
+# 표에 정말 없는 이름으로 확인한다(중립 개최·신설 구장이 이렇게 들어온다).
 check("모르는 구장은 원문을 그대로 (빈칸으로 만들지 않는다)",
-      venue_name("Yankee Stadium") == "Yankee Stadium")
+      venue_name("Some New Ballpark") == "Some New Ballpark")
+check("MLB 구장도 한글로 바뀐다", venue_name("Yankee Stadium") == "양키 스타디움")
+check("잘려서 안 읽히던 긴 구장명도 한글로",
+      venue_name("American Family Field") == "아메리칸 패밀리 필드")
 check("경기장이 없으면 빈 문자열", venue_name(None) == "")
 
 # ── 13. 홈/원정 게이트 ────────────────────────────────────────
@@ -786,6 +791,97 @@ check("전부 취소된 날은 결과 카드를 만들지 않는다",
 _lag = (T.FETCH_EVERY_LIVE_SECONDS + 5 * 60) / 60      # 수집 주기 + 5분 시계
 check(f"연속 운전 시 종료 인지~발송이 1시간 안 ({_lag:.0f}분)", _lag <= 60,
       f"{_lag}분")
+
+# ── 16. 팀명 — 시청자가 쓰는 이름인가 ─────────────────────────
+# 대표님이 네이버 스포츠 화면을 붙여주고서야 알았다: MLB 국내 표준은 애칭
+# (양키스·레드삭스)이 아니라 **연고지**(보스턴·디트로이트)다. 게다가 내 표에는
+# '화삭스'·'D-백스' 같은 커뮤니티 축약어까지 섞여 있었다.
+# 카드는 시청자가 읽는 것이므로 내가 아는 이름이 아니라 시청자가 쓰는 이름을 쓴다.
+print("\n16. 팀명 — 표기와 커버리지")
+from contract import (TEAM_NAMES, assert_team_names_cover,                # noqa: E402
+                      unknown_team_codes)
+
+_mlb = TEAM_NAMES[League.MLB]
+check("MLB는 연고지 기준 (네이버 스포츠 표기)",
+      _mlb["BOS"] == "보스턴" and _mlb["DET"] == "디트로이트"
+      and _mlb["STL"] == "세인트루이스", str(_mlb.get("BOS")))
+check("같은 도시 두 팀만 구분자를 붙인다",
+      _mlb["NYY"] == "뉴욕양키스" and _mlb["NYM"] == "뉴욕메츠"
+      and _mlb["CHC"] == "시카고컵스" and _mlb["CWS"] == "시카고W"
+      and _mlb["LAD"] == "LA다저스" and _mlb["LAA"] == "LA에인절스")
+check("커뮤니티 축약어를 쓰지 않는다",
+      not ({"화삭스", "D-백스", "파이리츠"} & set(_mlb.values())),
+      str(sorted(set(_mlb.values()) & {"화삭스", "D-백스", "파이리츠"})))
+check("MLB 30팀이 전부 등록", len(_mlb) == 30, str(len(_mlb)))
+
+# 다른 리그는 이미 국내 표기와 같다 — 바꾸지 않았음을 고정한다
+check("KBO는 구단 통칭 그대로",
+      TEAM_NAMES[League.KBO]["OB"] == "두산"
+      and TEAM_NAMES[League.KBO]["HT"] == "KIA")
+check("K리그1은 연고 도시", TEAM_NAMES[League.KL1]["K09"] == "서울")
+check("V리그는 기업명", TEAM_NAMES[League.VLEAGUE_M]["KAL"] == "대한항공")
+check("인수로 바뀐 팀도 반영 (페퍼저축은행 -> SOOP)",
+      TEAM_NAMES[League.VLEAGUE_W]["SOOP"] == "SOOP"
+      and "PEPPER" in TEAM_NAMES[League.VLEAGUE_W],
+      "옛 코드도 남겨야 과거 경기에 코드가 안 찍힌다")
+
+# **커버리지 게이트** — 표에 없는 코드는 카드에 코드가 그대로 찍힌다
+_known = [mkgame(League.KBO, "LG", "OB", day="2026-08-29", hh=18)]
+check("표에 있는 팀만 있으면 통과", _no_raise(lambda: assert_team_names_cover(_known)))
+
+_ghost = mkgame(League.KBO, "LG", "OB", day="2026-08-29", hh=19)
+_ghost.away = C.TeamRef(League.KBO, "ZZZ")           # 소스가 새 코드를 보냈다
+check("표에 없는 코드를 잡는다", _raises(GateError,
+      lambda: assert_team_names_cover([_ghost])))
+check("어느 리그의 어떤 코드인지 알려준다",
+      "KBO:ZZZ" in _msg(lambda: assert_team_names_cover([_ghost])),
+      _msg(lambda: assert_team_names_cover([_ghost]))[:90])
+check("팀이 바뀌었을 수 있다고 안내한다",
+      "바뀌었을" in _msg(lambda: assert_team_names_cover([_ghost])))
+check("unknown_team_codes가 목록을 돌려준다",
+      unknown_team_codes([_ghost]) == [(League.KBO, "ZZZ")])
+
+# 표가 아예 없는 리그는 판정하지 않는다 (유럽 축구는 아직 표가 없다).
+# 표가 없는 것과 '표에 없는 코드'는 다르다 — 전자는 통과, 후자는 차단이다.
+_eu = mkgame(League.EPL, "AAA", "BBB", day="2026-08-29", hh=20)
+check("표가 아예 없는 리그는 통과 (유럽 축구)",
+      _no_raise(lambda: assert_team_names_cover([_eu])))
+check("표가 있는 리그의 모르는 코드는 차단 (국제 LoL)",
+      _raises(GateError, lambda: assert_team_names_cover(
+          [mkgame(League.INTL_LOL, "AAA", "BBB", day="2026-08-29", hh=20)])))
+
+# ── 17. 긴 팀명이 카드에서 접히지 않는가 ──────────────────────
+# 국내 표기로 바꾸자 '세인트루이스'(6자)·'샌프란시스코'(7자)가 결과 카드에서
+# 두 줄로 접혔다. 글자 수 상한(8자)은 통과했다 — 상한은 글자 수를 세지 실제로
+# 그려진 폭을 보지 않기 때문이다. 카드를 눈으로 보고서야 알았다.
+print("\n17. 긴 팀명 — 카드에서 두 줄로 접히지 않는가")
+check("6자 팀명에 축소 클래스가 붙는다", P._name_cls("세인트루이스") == " n6")
+check("6자 팀명은 n6 (MLB 최장이 6자: 샌프란시스코·세인트루이스)",
+      P._name_cls("샌프란시스코") == " n6" and len("샌프란시스코") == 6)
+check("7자 팀명에 더 작은 클래스 (IBK기업은행·디플러스 기아)",
+      P._name_cls("IBK기업은행") == " n7" and P._name_cls("디플러스 기아") == " n7")
+check("짧은 이름은 그대로", P._name_cls("보스턴") == "")
+check("접힘 감지가 한 줄은 통과",
+      _no_raise(lambda: P.assert_no_wrapped_names(
+          [{"t": "세인트루이스", "cls": "n1 n6", "lines": 1, "fs": 39}])))
+check("접힘 감지가 두 줄을 막는다",
+      _raises(P.NameWrapped, lambda: P.assert_no_wrapped_names(
+          [{"t": "세인트루이스", "cls": "n1", "lines": 2, "fs": 45}])))
+check("무엇이 접혔는지 알려준다",
+      "세인트루이스" in _msg(lambda: P.assert_no_wrapped_names(
+          [{"t": "세인트루이스", "cls": "n1", "lines": 2, "fs": 45}])))
+check("한 줄이 아니어도 되는 칸은 검사하지 않는다 (캡션 등)",
+      _no_raise(lambda: P.assert_no_wrapped_names(
+          [{"t": "긴 안내 문구", "cls": "sub", "lines": 3, "fs": 30}])))
+
+# 실제로 가장 긴 이름들로 결과 카드를 그려 게이트까지 통과하는지 본다
+_long = [mkgame(League.MLB, "SF", "ARI", day="2026-08-29", hh=14,
+                status=Status.FINAL, score=Score(7, 1, ScoreUnit.RUNS)),
+         mkgame(League.MLB, "STL", "PIT", day="2026-08-29", hh=15,
+                status=Status.FINAL, score=Score(2, 6, ScoreUnit.RUNS))]
+check("가장 긴 이름으로 실제 렌더해도 통과",
+      _no_raise(lambda: P.render_png(
+          P.render_result(_long, "2026-08-29"), TMP / "longnames.png")))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)

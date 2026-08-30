@@ -296,7 +296,11 @@ STATUS_MAP: dict[League, dict[str, Status]] = {
     },
     League.VLEAGUE_W: {
         "HK": "흥국생명", "HDE": "현대건설", "GS": "GS칼텍스", "KEC": "도로공사",
-        "IBK": "IBK기업은행", "KGC": "정관장", "PEPPER": "페퍼저축", "SOOP": "SOOP",
+        "IBK": "IBK기업은행", "KGC": "정관장", "SOOP": "SOOP",
+        # 페퍼저축은행은 2026년 SOOP에 인수되어 'SOOP 수퍼스'가 됐다.
+        # 지금 소스는 SOOP 코드만 보내지만, 과거 경기를 다시 긁을 때를 대비해 남긴다.
+        # (지우면 그 경기들의 팀명이 카드에 'PEPPER'로 찍힌다.)
+        "PEPPER": "페퍼저축",
     },
     League.NPB: {
         "YOG": "요미우리", "DEN": "DeNA", "HAN": "한신", "CHU": "주니치",
@@ -1359,7 +1363,11 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
     },
     League.VLEAGUE_W: {
         "HK": "흥국생명", "HDE": "현대건설", "GS": "GS칼텍스", "KEC": "도로공사",
-        "IBK": "IBK기업은행", "KGC": "정관장", "PEPPER": "페퍼저축", "SOOP": "SOOP",
+        "IBK": "IBK기업은행", "KGC": "정관장", "SOOP": "SOOP",
+        # 페퍼저축은행은 2026년 SOOP에 인수되어 'SOOP 수퍼스'가 됐다.
+        # 지금 소스는 SOOP 코드만 보내지만, 과거 경기를 다시 긁을 때를 대비해 남긴다.
+        # (지우면 그 경기들의 팀명이 카드에 'PEPPER'로 찍힌다.)
+        "PEPPER": "페퍼저축",
     },
     League.NPB: {
         "YOG": "요미우리", "DEN": "DeNA", "HAN": "한신", "CHU": "주니치",
@@ -1367,14 +1375,29 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
         "LOT": "지바롯데", "RAK": "라쿠텐", "ORI": "오릭스", "SEI": "세이부",
         "CEN": "센트럴", "PAC": "퍼시픽",
     },
+    # MLB — **네이버 스포츠 표기 그대로** (2026-08-30 대표님이 실제 화면으로 확인).
+    #
+    # 국내 표준은 애칭(양키스·레드삭스)이 아니라 **연고지**다: 보스턴·디트로이트·
+    # 세인트루이스. 같은 도시에 두 팀이 있을 때만 구분자를 붙인다 —
+    # 뉴욕양키스/뉴욕메츠, 시카고W/시카고컵스, LA다저스/LA에인절스.
+    # 애슬레틱스는 연고지가 임시(새크라멘토)라 팀명을 그대로 쓴다.
+    #
+    # 전에는 애칭으로 적어두었다가 '화삭스'·'D-백스' 같은 커뮤니티 축약어까지
+    # 섞여 있었다. 카드는 시청자가 읽는 것이므로 **내가 아는 이름이 아니라
+    # 시청자가 쓰는 이름**을 따른다. 30팀 전부 네이버 화면에서 확인했다.
     League.MLB: {
-        # 한국 중계·팬덤에서 쓰는 통칭
-        "NYY": "양키스", "BOS": "레드삭스", "TB": "레이스", "TOR": "블루제이스", "BAL": "오리올스",
-        "CLE": "가디언스", "MIN": "트윈스", "DET": "타이거스", "KC": "로열스", "CWS": "화이트삭스",
-        "HOU": "애스트로스", "SEA": "매리너스", "TEX": "레인저스", "LAA": "에인절스", "ATH": "애슬레틱스",
-        "ATL": "브레이브스", "NYM": "메츠", "PHI": "필리스", "MIA": "말린스", "WSH": "내셔널스",
-        "MIL": "브루어스", "CHC": "컵스", "STL": "카디널스", "CIN": "레즈", "PIT": "파이어리츠",
-        "LAD": "다저스", "SD": "파드리스", "SF": "자이언츠", "ARI": "다이아몬드백스", "COL": "로키스",
+        "BOS": "보스턴", "NYY": "뉴욕양키스", "TB": "탬파베이", "TOR": "토론토",
+        "BAL": "볼티모어",
+        "CLE": "클리블랜드", "MIN": "미네소타", "DET": "디트로이트", "KC": "캔자스시티",
+        "CWS": "시카고W",
+        "HOU": "휴스턴", "SEA": "시애틀", "TEX": "텍사스", "LAA": "LA에인절스",
+        "ATH": "애슬레틱스",
+        "ATL": "애틀랜타", "NYM": "뉴욕메츠", "PHI": "필라델피아", "MIA": "마이애미",
+        "WSH": "워싱턴",
+        "MIL": "밀워키", "CHC": "시카고컵스", "STL": "세인트루이스", "CIN": "신시내티",
+        "PIT": "피츠버그",
+        "LAD": "LA다저스", "SD": "샌디에이고", "SF": "샌프란시스코", "ARI": "애리조나",
+        "COL": "콜로라도",
     },
     # LCK — 표시명은 **중계에서 쓰는 공식 약어**다.
     # 소스 원문('Hanwha Life Esports')을 그대로 쓰면 카드에서 세 줄로 접혀 행이 깨진다
@@ -1469,8 +1492,43 @@ def team_name(team: "TeamRef") -> str:
 
     여기서 예외를 던지면 팀 하나 때문에 카드 전체가 안 나간다.
     이름을 모르는 것은 사실 오류가 아니므로 코드로 대체하고 넘어간다.
+    (대신 수집 단계의 `assert_team_names_cover()`가 미리 잡는다.)
     """
     return TEAM_NAMES.get(team.league, {}).get(team.team_code, team.team_code)
+
+
+def unknown_team_codes(games: "list[Game]") -> "list[tuple[League, str]]":
+    """표에 없는 팀 코드를 모은다. 그대로 두면 카드에 코드가 찍힌다."""
+    out = set()
+    for g in games:
+        tbl = TEAM_NAMES.get(g.league)
+        if not tbl:
+            continue                       # 표가 아예 없는 리그(국제 LoL 등)는 판정하지 않는다
+        for ref in (g.home, g.away):
+            if ref.team_code not in tbl:
+                out.add((g.league, ref.team_code))
+    return sorted(out, key=lambda x: (x[0].value, x[1]))
+
+
+def assert_team_names_cover(games: "list[Game]") -> None:
+    """수집한 경기의 팀이 전부 표에 있는지 본다.
+
+    **왜 게이트가 필요한가.** 표에 없는 코드는 `team_name()`이 코드를 그대로
+    돌려주므로 카드에 'K27'이나 'SOOP' 같은 것이 찍힌다. 오류도 경고도 없이,
+    시청자만 이상한 이름을 본다. 팀이 바뀌는 일은 드물지 않다 —
+    페퍼저축은행은 2026년 SOOP에 인수됐고, LCK는 네이밍 스폰서가 붙으면
+    시즌 중에도 이름이 바뀐다.
+
+    수집 단계에서 막으면 그 리그만 이번 틱을 건너뛰고, 다음 틱에 다시 시도한다.
+    카드에 코드가 찍혀 나가는 것보다 낫다.
+    """
+    bad = unknown_team_codes(games)
+    if bad:
+        raise GateError(
+            "표에 없는 팀 코드입니다 — 이대로면 카드에 코드가 그대로 찍힙니다: "
+            + " · ".join(f"{lg.value}:{code}" for lg, code in bad[:6])
+            + f"{' 외 ' + str(len(bad) - 6) + '건' if len(bad) > 6 else ''}. "
+            "TEAM_NAMES에 추가하세요(팀이 바뀌었을 수 있습니다).")
 
 
 # ── 경기장 이름 (한국어 표기) ────────────────────────────────
@@ -1493,6 +1551,43 @@ VENUE_NAMES: dict[str, str] = {
     "楽天モバイル": "라쿠텐모바일파크",
     "ZOZOマリン": "조조마린",
     "甲子園": "고시엔",
+    # ── MLB 30구장 (2026-08-30) ──
+    # ★ 표시는 대표님이 보내주신 네이버 스포츠 화면에서 그대로 확인한 것.
+    # 나머지는 같은 음차 규칙으로 옮겼다(국내 중계·기사에서 쓰는 표기).
+    "YankeeStadium": "양키 스타디움",              # ★
+    "ComericaPark": "코메리카 파크",               # ★
+    "TargetField": "타깃 필드",                    # ★
+    "BuschStadium": "부시 스타디움",               # ★
+    "WrigleyField": "리글리 필드",                 # ★
+    "RogersCentre": "로저스 센터",                 # ★
+    "OraclePark": "오라클 파크",                   # ★
+    "NationalsPark": "내셔널스 파크",              # ★
+    "CitiField": "시티 필드",                      # ★
+    "TropicanaField": "트로피카나 필드",           # ★
+    "ProgressiveField": "프로그레시브 필드",       # ★
+    "TruistPark": "트루이스트 파크",               # ★
+    "AmericanFamilyField": "아메리칸 패밀리 필드",  # ★
+    "SutterHealthPark": "서터 헬스 파크",          # ★
+    "FenwayPark": "펜웨이 파크",
+    "DodgerStadium": "다저 스타디움",
+    "UNIQLOFieldatDodgerStadium": "다저 스타디움",
+    "ChaseField": "체이스 필드",
+    "CoorsField": "쿠어스 필드",
+    "RateField": "레이트 필드",
+    "GuaranteedRateField": "레이트 필드",
+    "DaikinPark": "다이킨 파크",
+    "MinuteMaidPark": "다이킨 파크",
+    "KauffmanStadium": "카우프만 스타디움",
+    "loanDepotpark": "론디포 파크",
+    "PetcoPark": "펫코 파크",
+    "PNCPark": "PNC 파크",
+    "CitizensBankPark": "시티즌스 뱅크 파크",
+    "T-MobilePark": "T-모바일 파크",
+    "GlobeLifeField": "글로브 라이프 필드",
+    "OrioleParkatCamdenYards": "캠든 야즈",
+    "AngelStadium": "에인절 스타디움",
+    "GreatAmericanBallPark": "그레이트 아메리칸 볼파크",
+    "GeorgeM.SteinbrennerField": "스타인브레너 필드",
     # 지방 개최 구장
     "ほっと神戸": "홋토모토고베",
     "那覇": "나하",
