@@ -674,6 +674,19 @@ check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
       str(lookahead_for(ContentType.MORNING, 90 * 60)))
 check("시작 알림은 일찍부터 잡는다 (문구가 실시간이라 안전)",
       lookahead_for(ContentType.START_ALERT, 6 * 60) == 2 * 3600)
+# **결과 카드를 일찍 보내면 경기가 빠진다.** 예약 시각은 '마감'이고, 렌더는
+# "한 경기라도 끝났으면" 카드를 만든다. 앞창을 열면 5경기 중 1경기만 끝난
+# 시점에 카드가 나가고 나머지는 영영 빠진다(멱등키가 재발송을 막으므로).
+check("결과 카드는 마감보다 일찍 나가지 않는다 (앞창 0)",
+      lookahead_for(ContentType.LEAGUE_RESULT, 90 * 60) == 0,
+      str(lookahead_for(ContentType.LEAGUE_RESULT, 90 * 60)))
+check("순위 카드도 마찬가지",
+      lookahead_for(ContentType.STANDINGS, 90 * 60) == 0)
+# 기본 앞창을 아무리 넓혀도 잠긴 것은 열리지 않아야 한다
+check("기본 앞창을 크게 줘도 잠금이 이긴다",
+      all(lookahead_for(ct, 999 * 60) == 0
+          for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,
+                     ContentType.STANDINGS, ContentType.NIGHT_BRIEF)))
 
 # 사고 당시 설정을 되돌려 게이트가 그것을 잡는지 본다
 _saved = C.GRACE_SECONDS[ContentType.MORNING]
