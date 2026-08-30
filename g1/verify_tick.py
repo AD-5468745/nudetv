@@ -722,6 +722,71 @@ check("큐에 오르는 모든 종류가 빠짐없이 걸린다",
       QUEUED_CONTENT_TYPES <= _seen,
       f"놓친 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _seen))}")
 
+# ── 15. 결과 카드는 마지막 경기가 끝나면 곧바로 ────────────────
+# 대표님 지시: "같은 리그 마지막 경기가 종료되고 1시간 이내에 발송".
+# 마감(deadline)은 "이때까지는 소스가 결과를 채웠을 것"이라는 상한일 뿐,
+# 보내야 할 시각이 아니다. 일찍 끝난 날 그 시각까지 기다리면 몇 시간씩 늦는다.
+print("\n15. 결과 카드 — 마지막 경기가 끝나면 곧바로 나가는가")
+
+_RD = "2026-08-29"
+
+
+def _kbo(h, a, hh, st=Status.SCHEDULED, cancel=None):
+    return mkgame(League.KBO, h, a, day=_RD, hh=hh, status=st,
+                  score=(Score(5, 3, ScoreUnit.RUNS) if st is Status.FINAL else None),
+                  cancel=cancel)
+
+
+def _result_item(games):
+    q = [i for i in P.build_queue(games, NOW, "-100test", floor_hours=0)
+         if i.content_type is ContentType.LEAGUE_RESULT]
+    return q[0] if q else None
+
+
+# 전부 종결 → 지금 보낸다
+_all_done = [_kbo("LG", "OB", 14, Status.FINAL), _kbo("KT", "SS", 15, Status.FINAL)]
+_it = _result_item(_all_done)
+check("전부 끝난 날은 예약이 '지금'이다", _it is not None
+      and abs((_it.scheduled_utc - NOW).total_seconds()) < 60,
+      str(_it.scheduled_utc if _it else None))
+
+# 한 경기가 진행 중 → 마감까지 기다린다
+_live = [_kbo("LG", "OB", 14, Status.FINAL), _kbo("KT", "SS", 18, Status.LIVE)]
+_it2 = _result_item(_live)
+check("아직 진행 중이면 마감까지 기다린다 (일찍 보내면 경기가 빠진다)",
+      _it2 is not None and (_it2.scheduled_utc - NOW).total_seconds() > 3600,
+      str((_it2.scheduled_utc - NOW).total_seconds() / 60 if _it2 else None))
+
+# 예정만 남았어도 기다린다
+_sched = [_kbo("LG", "OB", 18), _kbo("KT", "SS", 18)]
+_it3 = _result_item(_sched)
+check("예정만 있으면 마감까지 기다린다",
+      _it3 is not None and (_it3.scheduled_utc - NOW).total_seconds() > 3600)
+
+# 취소도 '종결'이다 — 열리지 않은 경기를 기다릴 이유가 없다
+_mixed = [_kbo("LG", "OB", 14, Status.FINAL),
+          _kbo("KT", "SS", 15, Status.CANCELED, cancel="우천취소")]
+_it4 = _result_item(_mixed)
+check("취소 경기는 기다리지 않는다 (취소도 종결)",
+      _it4 is not None and abs((_it4.scheduled_utc - NOW).total_seconds()) < 60)
+
+# 시각이 바뀌어도 중복 방지 키는 그대로여야 한다
+check("예약 시각이 바뀌어도 멱등키는 같다 (중복 발송 없음)",
+      _it.idem_key == _it2.idem_key == _it3.idem_key,
+      f"{_it.idem_key} / {_it2.idem_key}")
+
+# 전부 취소된 날은 카드를 만들지 않는다 (빈 결과 카드를 내보내지 않는다)
+_off = [_kbo("LG", "OB", 14, Status.CANCELED, cancel="우천취소"),
+        _kbo("KT", "SS", 15, Status.CANCELED, cancel="우천취소")]
+_it5 = _result_item(_off)
+check("전부 취소된 날은 결과 카드를 만들지 않는다",
+      _it5 is None or T.render_for(_it5, _off) is None)
+
+# 마지막 경기 종료를 얼마나 빨리 알아차리는가 — 대표님 기준은 1시간
+_lag = (T.FETCH_EVERY_LIVE_SECONDS + 5 * 60) / 60      # 수집 주기 + 5분 시계
+check(f"연속 운전 시 종료 인지~발송이 1시간 안 ({_lag:.0f}분)", _lag <= 60,
+      f"{_lag}분")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

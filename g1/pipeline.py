@@ -186,12 +186,25 @@ def build_queue(games: list[Game], now: datetime, channel: str,
             continue
         if (now - deadline).total_seconds() > GRACE_SECONDS[ContentType.LEAGUE_RESULT]:
             continue
-        scope = f"{league.value}:{day}"
+
+        # **그날 경기가 전부 끝났으면 마감을 기다리지 않는다 (v1.11d, 대표님 지시:
+        # "같은 리그 마지막 경기가 종료되고 1시간 이내에 발송").**
+        #
+        # 마감(deadline)은 "이때까지는 소스가 결과를 채웠을 것"이라는 상한이지
+        # 보내야 할 시각이 아니다. 경기가 일찍 끝난 날에도 그 시각까지 기다리면
+        # 결과가 몇 시간씩 늦는다. 전부 종결된 것을 확인했다면 더 기다릴 이유가 없다.
+        #
+        # 마감은 **안전망으로 남긴다** — 우천 연기 등으로 마지막 경기가 영영
+        # 종결되지 않으면, 마감 시각에 그때까지의 결과로라도 내보낸다.
+        # (그러지 않으면 그날 결과가 통째로 사라진다.)
+        settled = league_day_settled(games, day)
+        at = now if settled else deadline
         items.append(QueueItem(
-            idem_key=idem_key(channel, ContentType.LEAGUE_RESULT, scope),
-            content_type=ContentType.LEAGUE_RESULT, scope=scope,
-            scheduled_utc=deadline, league=league, sports_day=day,
-            render_at_utc=deadline - timedelta(minutes=15)))
+            idem_key=idem_key(channel, ContentType.LEAGUE_RESULT,
+                              f"{league.value}:{day}"),
+            content_type=ContentType.LEAGUE_RESULT, scope=f"{league.value}:{day}",
+            scheduled_utc=at, league=league, sports_day=day,
+            render_at_utc=at - timedelta(minutes=15)))
 
     items.sort(key=lambda i: i.scheduled_utc)
     return items
