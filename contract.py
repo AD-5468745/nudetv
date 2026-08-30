@@ -682,8 +682,15 @@ GRACE_SECONDS: dict[ContentType, int] = {
     ContentType.ANALYSIS: 1800,
     ContentType.QUIZ: 1800,
     ContentType.MILESTONE: 1800,
-    ContentType.MORNING: 3600,
-    ContentType.NIGHT_BRIEF: 3600,
+    # **모닝 브리핑 유예는 시계 간격보다 넉넉해야 한다 (v1.11d에서 1h → 3h).**
+    # 실측: 깃허브 자동 시계가 5분이 아니라 약 100분마다 돈다. 유예가 1시간이면
+    # 07:30 예약이 08:30에 만료되는데, 그 사이에 시계가 안 들어오는 날이 많다.
+    # 실제로 첫날 모닝 브리핑 4건이 전부 이렇게 사라졌다(결과 카드는 유예 6시간이라 나갔다).
+    # 모닝 브리핑은 **늦게 나가도 유효하다** — 경기가 저녁이라 10시에 받아도 오늘 안내다.
+    # (반대로 일찍은 안 된다. 07:30보다 이르면 '모닝'이 아니다 — 그래서 앞창이 아니라
+    #  뒷창을 늘린다.)
+    ContentType.MORNING: 3 * 3600,
+    ContentType.NIGHT_BRIEF: 3 * 3600,   # 모닝과 같은 성격 — 늦게 나가도 유효하다
     ContentType.KOREAN_DAILY: 7200,
     ContentType.LEADERBOARD: 7200,
     ContentType.POLL_SETTLEMENT: 21600,
@@ -763,6 +770,83 @@ PACER_PRIORITY: dict[ContentType, int] = {
 # 실제 전송 시각 기준으로 유예를 재판정하는 콘텐츠 —
 # 문안에 시각이 박혀 있어 페이서 대기가 곧 거짓말이 되는 것들
 REJUDGE_AT_SEND = frozenset({ContentType.START_ALERT, ContentType.POLL_CLOSE})
+
+
+# ── 앞창: 예약보다 얼마나 일찍부터 처리하나 (v1.11d) ──────────────
+#
+# 발송 시각에는 앞뒤로 창이 있다.
+#   앞창 = 여기 있는 값      — 예약 시각 이 전부터 처리 대상에 넣는다(일찍 보낸다)
+#   뒷창 = GRACE_SECONDS     — 예약 시각 이 후까지는 보낸다(늦게 보낸다)
+#
+# **앞창 + 뒷창이 시계 간격보다 넓어야 한다.** 좁으면 시계가 그 창을 건너뛰어
+# 발행이 통째로 사라진다. 실측한 깃허브 자동 시계 간격은 약 100분이었다.
+#
+# 콘텐츠마다 어느 쪽으로 넓힐 수 있는지가 다르다:
+#   · 시작 알림 — 늦으면 거짓말이 된다(경기가 이미 시작). 그러나 **일찍은 괜찮다.**
+#     문구를 `render_start_alert`가 "N시간 M분 뒤 시작"으로 그때그때 계산하므로,
+#     언제 나가도 내용이 정확하다. → 앞창을 넓힌다.
+#   · 모닝 브리핑 — 일찍이면 '모닝'이 아니다. 늦게는 유효하다. → 뒷창(유예)을 넓혔다.
+#   · 결과 카드 — 유예가 6시간이라 이미 넉넉하다. 손대지 않는다.
+#
+# 여기 적힌 값은 **기본값을 덮어쓴다**(더 크게도, 더 작게도).
+# 0은 "일찍 보내지 않는다"는 뜻이며, 기본값이 아무리 커도 0이 이긴다.
+LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
+    # 일찍 보내도 된다 — 문구가 "N시간 M분 뒤 시작"으로 그때그때 계산된다.
+    ContentType.START_ALERT: 2 * 3600,
+    # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
+    # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
+    # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
+    ContentType.MORNING: 0,
+    ContentType.NIGHT_BRIEF: 0,
+}
+
+
+def lookahead_for(content_type: "ContentType", default_seconds: int) -> int:
+    """이 콘텐츠를 예약 시각 몇 초 전부터 처리 대상에 넣을지.
+
+    표에 값이 있으면 그 값이 이긴다 — 0(일찍 보내지 않음)도 유효한 값이므로
+    `max()`로 합치면 안 된다. 그렇게 하면 기본값을 넓히는 순간 모닝 브리핑이
+    새벽에 나간다.
+    """
+    v = LOOKAHEAD_SECONDS_BY_CONTENT.get(content_type)
+    return default_seconds if v is None else v
+
+
+def send_window_seconds(content_type: "ContentType", default_lookahead: int) -> int:
+    """앞창 + 뒷창. **이 값이 시계 간격보다 좁으면 발행이 사라진다.**"""
+    return lookahead_for(content_type, default_lookahead) + GRACE_SECONDS[content_type]
+
+
+# 지금 큐에 실제로 오르는 콘텐츠. 게이트는 이것만 본다 —
+# 아직 만들지 않은 콘텐츠까지 검사하면 오탐으로 발행 전체가 멈춘다.
+QUEUED_CONTENT_TYPES: frozenset = frozenset({
+    ContentType.MORNING, ContentType.START_ALERT, ContentType.LEAGUE_RESULT,
+})
+
+
+def assert_send_windows(tick_interval_seconds: int, default_lookahead: int) -> None:
+    """시계 간격에 비해 발송 창이 좁은 콘텐츠가 있으면 막는다.
+
+    **왜 게이트가 필요한가.** 창이 좁으면 아무 오류 없이 조용히 아무것도 안 나간다 —
+    로그는 "큐 14 · 지금 처리 0"으로 평온해 보인다. 실제로 첫날 모닝 브리핑 4건과
+    시작 알림 4건이 이렇게 하루 종일 사라졌고, 원인을 찾는 데 몇 시간이 걸렸다.
+    숫자를 상수로만 두면 나중에 누가 시계 간격을 바꿀 때 이 관계가 다시 깨진다.
+    (최소 폰트를 상수로만 두었다가 하루 만에 어긴 것과 같은 계열이다.)
+
+    여유를 1.5배 두는 이유: 시계 간격은 평균일 뿐이고 실제로는 들쭉날쭉하다.
+    """
+    need = int(tick_interval_seconds * 1.5)
+    bad = []
+    for ct in sorted(QUEUED_CONTENT_TYPES, key=lambda c: c.value):
+        w = send_window_seconds(ct, default_lookahead)
+        if w < need:
+            bad.append(f"{ct.value}: 창 {w // 60}분 < 필요 {need // 60}분 "
+                       f"(앞창 {lookahead_for(ct, default_lookahead) // 60}분 + "
+                       f"유예 {GRACE_SECONDS[ct] // 60}분)")
+    if bad:
+        raise GateError(
+            f"시계가 {tick_interval_seconds // 60}분마다 도는데 발송 창이 좁습니다 — "
+            f"이 콘텐츠는 조용히 사라집니다: " + " · ".join(bad))
 
 
 class ChangeKind(str, Enum):

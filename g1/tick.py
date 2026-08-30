@@ -41,7 +41,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       Status, UnknownStatus, assert_home_away,
-                      day_schedule_scope, is_late, stale_unresolved)
+                      assert_send_windows, day_schedule_scope, is_late,
+                      lookahead_for, stale_unresolved)
 import pipeline as P
 from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
 
@@ -68,6 +69,13 @@ RETRY_AFTER_FAIL_SECONDS = 15 * 60
 # 길면 필요 이상으로 일찍 보낸다. 정각 시계(무료 환경)면 60분이 맞다.
 # 5분 시계로 옮기면 TICK_LOOKAHEAD_MINUTES=6 으로 줄이면 된다.
 LOOKAHEAD_SECONDS = max(6, int(os.environ.get("TICK_LOOKAHEAD_MINUTES", "60"))) * 60
+
+# **시계가 실제로 몇 분마다 도는가.** 설정한 값이 아니라 실측값을 적는다.
+# 깃허브에 5분(*/5)을 걸어두었지만 실측 간격은 약 100분이었다(17시간에 10회).
+# 이 값으로 아래 게이트가 "발송 창이 시계 간격보다 넓은가"를 매 실행 확인한다.
+# 창이 좁으면 오류 없이 조용히 아무것도 안 나가므로, 사람이 눈치채기 전에 막는다.
+TICK_INTERVAL_SECONDS = max(60, int(
+    os.environ.get("TICK_INTERVAL_MINUTES", "100"))) * 60
 
 # 리그 하나가 이보다 오래 걸리면 틱 전체가 밀린다. 넘으면 알림에 올린다.
 SLOW_FETCH_SECONDS = 60
@@ -407,6 +415,11 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     print(f"[틱] {now.astimezone(KST):%Y-%m-%d %H:%M} KST"
           + (" · 드라이런" if dry_run else ""))
 
+    # **발송 창이 시계 간격보다 넓은지 먼저 본다.**
+    # 좁으면 아무 오류 없이 조용히 아무것도 안 나간다 — 로그는 "지금 처리 0"으로
+    # 평온해 보인다. 첫날 모닝 브리핑과 시작 알림이 이렇게 하루 종일 사라졌다.
+    assert_send_windows(TICK_INTERVAL_SECONDS, LOOKAHEAD_SECONDS)
+
     counts, errors, soft = collect(now, force=force_fetch)
     print("  [수집] " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for e in errors:
@@ -436,8 +449,11 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         print(f"  [커버리지] 리그 {cov.checked}개 이상 없음")
 
     items = build_all_queues(snaps, now, channel)
+    # 앞창은 콘텐츠마다 다르다 — 시작 알림은 일찍 보내도 되고(문구가 실시간 계산),
+    # 모닝 브리핑은 일찍 보내면 안 된다(대신 유예를 넓혀 늦게 보낸다).
     due = [i for i in items
-           if i.scheduled_utc <= now + timedelta(seconds=LOOKAHEAD_SECONDS)]
+           if i.scheduled_utc <= now + timedelta(
+               seconds=lookahead_for(i.content_type, LOOKAHEAD_SECONDS))]
     print(f"  [큐] 전체 {len(items)} · 지금 처리 {len(due)}")
 
     if dry_run:

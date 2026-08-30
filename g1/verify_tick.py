@@ -654,6 +654,61 @@ check("주요 리그에 홈구장 표가 있다 (KBO·NPB·MLB·K리그·V리그
        League.VLEAGUE_M, League.VLEAGUE_W} <= set(HOME_VENUES),
       str(sorted(l.value for l in HOME_VENUES)))
 
+# ── 14. 뜸한 시계에서도 발행이 살아남는가 ─────────────────────
+# **이번 사고 그 자체를 재현한다.**
+# 깃허브에 5분(*/5)을 걸었는데 실측 간격은 약 100분이었다. 처리 창이 6분이라
+# 예약 시각이 그 창에 안 들어왔고, 모닝 브리핑 4건과 시작 알림 4건이 하루 종일
+# 한 건도 못 나갔다. 오류는 없었다 — 로그는 "큐 14 · 지금 처리 0"으로 평온했다.
+# 그래서 여기서는 100분 간격 시계를 실제로 돌려보고 전부 걸리는지 확인한다.
+print("\n14. 뜸한 시계 — 100분마다 깨어나도 발행이 살아남는가")
+from contract import (assert_send_windows, lookahead_for,                # noqa: E402
+                      send_window_seconds, QUEUED_CONTENT_TYPES)
+
+check("시계 간격 상수가 실측값을 담는다 (설정값이 아니라)",
+      T.TICK_INTERVAL_SECONDS >= 60 * 60, f"{T.TICK_INTERVAL_SECONDS}초")
+check("현재 설정이 게이트를 통과한다",
+      _no_raise(lambda: assert_send_windows(T.TICK_INTERVAL_SECONDS,
+                                            T.LOOKAHEAD_SECONDS)))
+check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
+      lookahead_for(ContentType.MORNING, 90 * 60) == 0,
+      str(lookahead_for(ContentType.MORNING, 90 * 60)))
+check("시작 알림은 일찍부터 잡는다 (문구가 실시간이라 안전)",
+      lookahead_for(ContentType.START_ALERT, 6 * 60) == 2 * 3600)
+
+# 사고 당시 설정을 되돌려 게이트가 그것을 잡는지 본다
+_saved = C.GRACE_SECONDS[ContentType.MORNING]
+C.GRACE_SECONDS[ContentType.MORNING] = 3600            # 사고 당시 값
+check("사고 당시 설정(모닝 유예 1시간 · 100분 시계)을 게이트가 막는다",
+      _raises(GateError, lambda: assert_send_windows(100 * 60, 6 * 60)))
+check("막는 이유를 문구가 설명한다 (조용히 사라진다)",
+      "사라집니다" in _msg(lambda: assert_send_windows(100 * 60, 6 * 60)))
+C.GRACE_SECONDS[ContentType.MORNING] = _saved
+
+# **실제 시뮬레이션** — 100분마다 깨어나는 시계로 하루를 돌려본다.
+# 예약된 항목이 어느 틱에서든 한 번은 처리 대상(due)에 들어와야 한다.
+_sim_day = "2026-08-31"
+_sim = {"KBO": [mkgame(League.KBO, "LG", "OB", day=_sim_day, hh=18),
+                mkgame(League.KBO, "KT", "SS", day=_sim_day, hh=18)]}
+_base = datetime(2026, 8, 30, 20, 0, tzinfo=timezone.utc)   # KST 05:00
+_seen: set = set()
+for _step in range(20):                                     # 100분 x 20 = 33시간
+    _t = _base + timedelta(minutes=100 * _step)
+    for _it in T.build_all_queues(_sim, _t, "-100test"):
+        _win = lookahead_for(_it.content_type, T.LOOKAHEAD_SECONDS)
+        if (_it.scheduled_utc <= _t + timedelta(seconds=_win)
+                and not is_late(_it.scheduled_utc, _t, _it.content_type)):
+            _seen.add(_it.content_type)
+
+check(f"모닝 브리핑이 100분 시계에 걸린다", ContentType.MORNING in _seen,
+      str(sorted(c.value for c in _seen)))
+check("시작 알림이 100분 시계에 걸린다", ContentType.START_ALERT in _seen,
+      str(sorted(c.value for c in _seen)))
+check("결과 카드가 100분 시계에 걸린다", ContentType.LEAGUE_RESULT in _seen,
+      str(sorted(c.value for c in _seen)))
+check("큐에 오르는 모든 종류가 빠짐없이 걸린다",
+      QUEUED_CONTENT_TYPES <= _seen,
+      f"놓친 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _seen))}")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

@@ -119,21 +119,32 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         raise GateError("build_queue는 한 리그씩 부른다 — 섞으면 멱등키가 엉킨다")
 
     # 모닝 브리핑 — 대상 구간은 sports_day가 아니라 절대 시각 [07:30, 익일 07:30)
-    morning = now.astimezone(KST).replace(hour=7, minute=30, second=0, microsecond=0)
-    while morning < now.astimezone(KST):
-        morning += timedelta(days=1)
-    day = morning.strftime("%Y-%m-%d")
-    # 그날 경기가 없으면 모닝 브리핑도 없다. 큐에 넣어두고 렌더에서 버리면
-    # 매일 빈 항목이 쌓여 진짜 항목이 안 보인다(V리그는 시즌이 7개월 뒤다).
-    if (lo <= morning.astimezone(timezone.utc) <= hi
-            and any(g.sports_day == day for g in games)):
+    #
+    # **지나간 07:30도 유예 안이면 큐에 남긴다 (v1.11d).**
+    # 전에는 `while morning < now: morning += 1일`로 **항상 미래 것만** 잡았다.
+    # 그래서 시계가 07:30~08:30 창에 안 들어오면 그날 모닝은 큐에서 통째로
+    # 사라졌고, 유예를 아무리 늘려도 소용이 없었다 — 유예는 큐에 있는 항목에만
+    # 적용되기 때문이다. 실측 시계 간격이 100분이라 이 일이 매일 벌어졌다.
+    # (결과 카드는 같은 이유로 이미 '과거 마감도 큐에 포함'으로 고쳐져 있다.)
+    _base = now.astimezone(KST).replace(hour=7, minute=30, second=0, microsecond=0)
+    for _m in (_base, _base + timedelta(days=1)):
+        _m_utc = _m.astimezone(timezone.utc)
+        if _m_utc > hi:
+            continue
+        # 너무 늦은 것은 여기서 거른다. 남겨두면 매일 빈 항목이 쌓인다.
+        if (now - _m_utc).total_seconds() > GRACE_SECONDS[ContentType.MORNING]:
+            continue
+        day = _m.strftime("%Y-%m-%d")
+        # 그날 경기가 없으면 모닝 브리핑도 없다. 큐에 넣어두고 렌더에서 버리면
+        # 매일 빈 항목이 쌓여 진짜 항목이 안 보인다(V리그는 시즌이 7개월 뒤다).
+        if not any(g.sports_day == day for g in games):
+            continue
         scope = f"{league.value}:{day}"
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.MORNING, scope),
             content_type=ContentType.MORNING, scope=scope,
-            scheduled_utc=morning.astimezone(timezone.utc),
-            league=league, sports_day=day,
-            render_at_utc=morning.astimezone(timezone.utc) - timedelta(minutes=15)))
+            scheduled_utc=_m_utc, league=league, sports_day=day,
+            render_at_utc=_m_utc - timedelta(minutes=15)))
 
     # 시작 알림 — **그 리그의 하루 시간표를 한 번에** (v1.11c에서 바뀜).
     #
