@@ -32,6 +32,19 @@ DROP_RATIO = 0.4
 # 이 일수 안에 한 번도 경기가 없으면 비시즌으로 본다(오탐 방지).
 OFFSEASON_DAYS = 14
 
+# --- 정기 휴식일 (v1.11e) ---------------------------------------------------
+# KBO·K리그1·LCK는 월요일에 경기를 하지 않는다. NPB도 월요일은 거의 없다.
+# "어제와 오늘"만 비교하는 판정에는 요일 개념이 없어서, 매주 월요일마다
+# 리그 네 개가 동시에 "오늘 편성이 사라짐"으로 빨간불을 켰다. 하루 종일.
+# 그 소음에 진짜 사고가 묻히는 것이 이 파일이 막으려던 바로 그 병이다.
+#
+# 요일표를 손으로 적지 않는다. 적어둔 표는 리그가 일정을 바꾸면 조용히 틀리고,
+# 우리는 그걸 몇 주 뒤에나 안다. 대신 **수집된 실제 경기**에서 계산한다 —
+# "이 리그가 이 요일에 지금까지 경기를 했는가"는 데이터가 알고 있다.
+WEEKDAY_MIN_SAMPLE = 3      # 그 요일이 과거에 최소 이만큼 지나가야 판정한다
+WEEKDAY_QUIET_RATIO = 0.2   # 다른 요일 평균의 이 비율 미만이면 '쉬는 요일'
+_WEEKDAY_KO = "월화수목금토일"
+
 
 @dataclass
 class Finding:
@@ -42,9 +55,11 @@ class Finding:
     # 비시즌 리그의 수집 실패가 여기 해당한다 — 어차피 내보낼 경기가 없으므로
     # 이걸로 시계를 실패 처리하면, 8월마다 농구·롤이 울어 진짜 사고가 그 소음에 묻힌다.
     soft: bool = False
+    # 왜 참고로만 두는지. 기본값은 지금까지의 유일한 사유였던 비시즌이다.
+    soft_why: str = "비시즌"
 
     def __str__(self) -> str:
-        mark = "(비시즌 — 참고) " if self.soft else ""
+        mark = f"({self.soft_why} — 참고) " if self.soft else ""
         return f"[{self.league}] {mark}{self.kind} — {self.detail}"
 
 
@@ -71,6 +86,76 @@ def _counts_by_day(games: list) -> dict[str, int]:
     for g in games:
         out[g.sports_day] = out.get(g.sports_day, 0) + 1
     return out
+
+
+def _weekday_stats(by_day: dict[str, int],
+                   today: str) -> tuple[list[int], list[int], int] | None:
+    """지나간 날들을 '오늘과 같은 요일'과 '나머지'로 갈라 경기 수를 센다.
+
+    by_day에는 경기가 있는 날만 들어 있다. 그래서 키를 훑으면 안 된다 —
+    쉬는 요일은 애초에 키가 없어서 표본 0으로 잡히고, 판정이 정반대로 뒤집힌다.
+    수집 구간의 **첫날부터 어제까지 하루씩** 걸어가며 없는 날은 0으로 센다.
+    """
+    from datetime import date
+
+    past = sorted(d for d in by_day if d < today)
+    if not past:
+        return None
+    try:
+        start = date.fromisoformat(past[0])
+        end = date.fromisoformat(today) - timedelta(days=1)
+        wd = date.fromisoformat(today).weekday()
+    except ValueError:
+        return None
+    if end < start:
+        return None
+
+    same: list[int] = []
+    other: list[int] = []
+    day = start
+    while day <= end:
+        (same if day.weekday() == wd else other).append(
+            by_day.get(day.isoformat(), 0))
+        day += timedelta(days=1)
+    return same, other, wd
+
+
+def rest_weekday(by_day: dict[str, int], today: str) -> str:
+    """오늘과 같은 요일에 이 리그가 평소 경기를 하지 않는가.
+
+    쉬는 요일이면 근거 문구를, 아니면 빈 문자열을 돌려준다.
+    표본이 모자라거나 애매하면 **빈 문자열**(= 평소 경기하는 요일)로 본다 —
+    잘못 '쉬는 날'로 판정하면 진짜 사고를 못 보고 넘기기 때문이다.
+    """
+    st = _weekday_stats(by_day, today)
+    if not st:
+        return ""
+    same, other, wd = st
+    if len(same) < WEEKDAY_MIN_SAMPLE or not other:
+        return ""
+    avg_same = sum(same) / len(same)
+    avg_other = sum(other) / len(other)
+    if avg_other <= 0 or avg_same >= avg_other * WEEKDAY_QUIET_RATIO:
+        return ""
+    return (f"{_WEEKDAY_KO[wd]}요일은 평소 쉬는 날 — 지난 {_WEEKDAY_KO[wd]}요일 "
+            f"{len(same)}번 평균 {avg_same:.1f}경기 "
+            f"(다른 요일 평균 {avg_other:.1f}경기)")
+
+
+def weekday_normal(by_day: dict[str, int], today: str) -> float | None:
+    """오늘과 같은 요일의 평소 경기 수. 표본이 모자라면 None.
+
+    이게 없으면 판정 기준이 '어제'뿐인데, 어제가 마침 휴식일이면
+    오늘 리그가 통째로 사라져도 "어제 0경기 → 오늘 0경기"라 아무 말도 못 한다.
+    KBO·K리그1처럼 월요일을 쉬는 리그의 **화요일**이 정확히 그 구멍이었다.
+    """
+    st = _weekday_stats(by_day, today)
+    if not st:
+        return None
+    same, _other, _wd = st
+    if len(same) < WEEKDAY_MIN_SAMPLE:
+        return None
+    return sum(same) / len(same)
 
 
 def _off_season(name: str, now: datetime) -> bool:
@@ -120,12 +205,29 @@ def check_league(name: str, games: list, now: datetime) -> list[Finding]:
         return out
 
     t, y = by_day.get(today, 0), by_day.get(yesterday, 0)
-    if y and not t:
-        out.append(Finding(name, "오늘 편성이 사라짐",
-                           f"어제 {y}경기 → 오늘 0경기"))
-    elif y and t < y * DROP_RATIO:
-        out.append(Finding(name, "편성이 급감",
-                           f"어제 {y}경기 → 오늘 {t}경기"))
+    why = rest_weekday(by_day, today)
+
+    if why:
+        # 정기 휴식일이면 0이 정상이다. 지우지는 않는다 — 참고로 남겨
+        # "왜 오늘 조용한지"가 로그에 보이게 한다. 다만 빨간불로는 안 올린다.
+        # 어제도 0이었으면 아무도 이상하다 생각하지 않으니 조용히 넘어간다.
+        if y and not t:
+            out.append(Finding(name, "오늘 편성이 사라짐",
+                               f"어제 {y}경기 → 오늘 0경기 · {why}",
+                               soft=True, soft_why="정기 휴식일"))
+    else:
+        # 기준은 '같은 요일의 평소 경기 수'다. 어제만 보면, 월요일을 쉬는 리그가
+        # 화요일에 통째로 사라져도 "어제 0 → 오늘 0"이라 침묵한다.
+        norm = weekday_normal(by_day, today)
+        base = norm if norm is not None else float(y)
+        base_txt = (f"평소 이 요일 {norm:.1f}경기" if norm is not None
+                    else f"어제 {y}경기")
+        if base >= 1 and not t:
+            out.append(Finding(name, "오늘 편성이 사라짐",
+                               f"{base_txt} → 오늘 0경기"))
+        elif base >= 1 and t < base * DROP_RATIO:
+            out.append(Finding(name, "편성이 급감",
+                               f"{base_txt} → 오늘 {t}경기"))
 
     # 종결되지 않은 지난 경기 — 소스가 결과를 안 채우고 있다
     from contract import stale_unresolved
