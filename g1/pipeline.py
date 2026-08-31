@@ -18,13 +18,14 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       ContentType, Game, GateError, League, LEAGUE_COLORS,
                       TELEGRAM_TEXT_MAX,
                       QueueItem, SEND_JPEG_QUALITY, SEND_JPEG_SUBSAMPLING,
-                      GRACE_SECONDS, STALE_SCHEDULED_GRACE_SECONDS,
+                      GRACE_SECONDS,
                       Status, assert_card_geometry, esc, format_kickoff,
                       START_ALERT_LEAD_MINUTES,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
-                      start_alert_lead_text, venue_name)
+                      start_alert_lead_text, venue_name,
+                      assert_result_deadline, kst_day_label, result_deadline)
 from contract import assert_card_typography, team_name
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
@@ -204,15 +205,21 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     for g in games:
         by_day[g.sports_day].append(g)
     for day, gs in by_day.items():
-        last = max(x.start_utc for x in gs)
-        # **마감은 그 소스가 결과를 채우는 속도에 맞춘다 (v1.11c).**
-        # 전에는 전 리그 6시간 고정이었다. NPB는 소스가 익일에야 점수를 채우므로
-        # 6시간 뒤엔 아직 '예정'이고, 그 상태로 마감이 지나면 **결과 카드가 영영 안 나간다.**
+        # **마감은 '마지막 경기가 끝나는 시각'에서 잡는다 (v1.11f).**
+        #
+        # 전에는 `첫 경기의 UTC 자정 + 26시간`이라는 상한이 함께 걸려 있었다.
+        # UTC 자정은 리그 현지 시간대를 모르는 값이라, MLB 야간 슬레이트에서는
+        # **마지막 경기가 시작하는 시각**이 마감이 됐다(실측: 마지막 경기 10:40 시작,
+        # 마감 11:00 KST). 그때 시계가 돌았다면 1회 진행 중인 경기를 빼고
+        # '전 경기 결과'를 내보냈을 것이다 — 사실 오류다.
+        #
+        # 소스가 결과를 늦게 채우는 리그(NPB)를 위한 여유는 그대로 살린다.
+        # 둘 중 **늦은 쪽**을 쓴다 — 마감은 '이때까지는 낸다'는 상한이지
+        # 보내야 할 시각이 아니고, 실제 발송은 아래 `settled`가 앞당긴다.
+        base = result_deadline(gs)
         grace = stale_grace_for(league)
-        extra = timedelta(seconds=grace - STALE_SCHEDULED_GRACE_SECONDS)
-        deadline = min(last + timedelta(seconds=grace),
-                       gs[0].start_utc.replace(hour=0, minute=0)
-                       + timedelta(hours=26) + extra)
+        deadline = max(base, max(x.start_utc for x in gs) + timedelta(seconds=grace))
+        assert_result_deadline(gs, deadline)
         # 과거 마감도 큐에 넣는다 — 소스가 늦게 채우면 마감이 지난 뒤에야 카드가 만들어진다.
         # 너무 늦은 것은 is_late()가 버리고, 이미 보낸 것은 멱등키가 막는다.
         # (전에는 `lo <= deadline` 이라 마감이 1분만 지나도 그날 결과가 통째로 사라졌다)
@@ -293,12 +300,20 @@ OUTDOOR_LEAGUES = frozenset({
 
 
 def _hdr(lg: str, ink: str, pill: str, kind: str, dt: str, h1: str, sub: str = "",
-         league: League = League.KBO) -> str:
+         league: League = League.KBO, dt_local: str = "") -> str:
+    """dt는 **한국 날짜**, dt_local은 현지 날짜 병기(다를 때만).
+
+    MLB 현지 8/30 슬레이트는 한국시각 8/31 새벽~오전에 열린다. 헤더에 현지 날짜만
+    찍으면 8월 31일에 도착한 카드가 "8.30"이라고 말해 하루 묵은 것처럼 보인다.
+    """
     icon = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
             + _LEAGUE_ICON.get(league, _ICON_BALL) + '</svg>')
+    dt_html = (f'<span class="dt">{esc(dt)}</span>' if not dt_local else
+               f'<span class="dtw"><span class="dt">{esc(dt)}</span>'
+               f'<span class="dtl">{esc(dt_local)}</span></span>')
     s = (f'<div class="strip"></div><div class="hdr"><div class="hdr-top">'
          f'<span class="pill">{icon}{esc(pill)}</span>'
-         f'<span class="kind">{esc(kind)}</span><span class="dt">{esc(dt)}</span></div>'
+         f'<span class="kind">{esc(kind)}</span>{dt_html}</div>'
          f'<h1>{h1}</h1>')
     if sub:
         s += f'<div class="sub">{esc(sub)}</div>'
@@ -353,7 +368,6 @@ def render_morning(games: list[Game], day: str,
     '오늘 KBO 1경기 / 5경기 편성'처럼 자기모순인 카드가 나왔다(실제 채널에 나갔다).
     열리는 경기 = 취소·연기가 아닌 경기다.
     """
-    d = datetime.strptime(day, "%Y-%m-%d")
     off = {Status.CANCELED, Status.POSTPONED}
     playable = [g for g in games if g.status not in off]
     dropped = [g for g in games if g.status in off]
@@ -387,8 +401,9 @@ def render_morning(games: list[Game], day: str,
     sub = " · ".join(bits) if bits else start_alert_lead_text()
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
+    _dtk, _dtl = kst_day_label(games, day)
     body = (_hdr(*LEAGUE_COLORS[lg], lgname, "모닝 브리핑",
-                 f'{d.month}.{d.day} {_WD[d.weekday()]}', h1, sub, league=lg) +
+                 _dtk, h1, sub, league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
             f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
@@ -409,7 +424,6 @@ def _name_cls(name: str) -> str:
 
 def render_result(games: list[Game], day: str,
                   top_n: int = CARD_ROWS_MAX) -> str:
-    d = datetime.strptime(day, "%Y-%m-%d")
     shown = sorted(games, key=lambda x: x.start_utc)[:top_n]
     rows = []
     for g in shown:
@@ -435,11 +449,12 @@ def render_result(games: list[Game], day: str,
     # 우천취소가 없는 종목에 '취소 경기 안내'를 쓰지 않는다.
     tk = ("취소 경기는 편성 확정 시 안내" if lg in OUTDOOR_LEAGUES
           else f"{lgname} 공식 결과")
+    _dtk, _dtl = kst_day_label(games, day)
     body = (_hdr(*LEAGUE_COLORS[lg], lgname, "경기 결과",
-                 f'{d.month}.{d.day} {_WD[d.weekday()]}',
+                 _dtk,
                  f'{esc(lgname)} <em>{len(fin)}경기</em> 종료',
                  f"아래에 나머지 {len(games) - len(shown)}경기" if len(games) > len(shown) else "",
-                 league=lg) +
+                 league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
             f'<div class="foot"><div class="tk">{esc(tk)}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
@@ -530,11 +545,25 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
 
     # 현지 시간 병기가 필요한 리그(해외)는 첫 경기 기준으로 한 줄 덧붙인다
     _, loc = format_kickoff(ordered[0])
-    tail = f"\n첫 경기 {esc(when)} 시작" + (f" · 현지 {esc(loc)}" if loc else "")
+    first_kst = ordered[0].start_kst
+    tail = (f"\n첫 경기 {first_kst:%H:%M} 시작 ({esc(when)})"
+            + (f" · 현지 {esc(loc)}" if loc else ""))
+
+    # **'오늘'은 발송 시점 한국 날짜 기준으로 말한다 (v1.11f).**
+    # MLB 알림은 한국시각 밤 10시에 나가는데 첫 경기는 다음날 새벽 1시다.
+    # 그걸 "오늘 MLB 14경기"라고 부르면 거짓말이고, 아침에 읽는 사람에게는
+    # 이미 다 끝난 경기 목록이 '오늘 경기'로 보인다(대표님 지적 2026-08-31).
+    days = (first_kst.date() - now.astimezone(KST).date()).days
+    if days <= 0:
+        head_when = "오늘"
+    elif days == 1:
+        head_when = "내일 새벽" if first_kst.hour < 6 else "내일"
+    else:
+        head_when = f"{first_kst.month}월 {first_kst.day}일"
 
     emoji = LEAGUE_EMOJI.get(lg, "🏟")
     label = LEAGUE_LABEL.get(lg, lg.value)
-    head = f"{emoji} <b>오늘 {esc(label)} {len(gs)}경기</b>\n"
+    head = f"{emoji} <b>{head_when} {esc(label)} {len(gs)}경기</b>\n"
     # 경기가 많으면(MLB 15경기) 접고펼치기로 채널 스크롤을 아낀다
     return head + quote(lines, expandable=len(lines) > QUOTE_EXPANDABLE_THRESHOLD_LINES) + tail
 

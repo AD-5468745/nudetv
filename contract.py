@@ -1203,6 +1203,125 @@ def format_kickoff(game: "Game", with_weekday: Optional[bool] = None) -> tuple[s
     return kst, loc
 
 
+# ── 표시 날짜: 묶는 기준은 현지, 보여주는 날짜는 한국 (v1.11f) ──────────
+#
+# sports_day는 **홈 현지 캘린더 날짜**다. 그래야 미국 하루 슬레이트가 KST 06시 경계에서
+# 반으로 쪼개지지 않는다(v1.8에서 실제로 겪은 사고). 그 정의는 옳고 바꾸지 않는다.
+#
+# 그런데 그 날짜를 카드에 그대로 찍으면 한국 시청자에게는 틀린 말이 된다.
+# MLB 현지 8/30 슬레이트는 한국시각 **8/31 01:15~11:20**에 열린다. 8월 31일 오후에
+# "8.30 일" 결과 카드가 도착하면 하루 묵은 카드로 보인다(대표님 지적 2026-08-31).
+#
+# 그래서 **묶는 기준(sports_day)과 표시 날짜를 가른다.** 멱등키·scope·큐는 그대로 두고,
+# 사람이 읽는 자리에만 이 함수를 쓴다. 둘을 한 값으로 합치려 들면 슬레이트가 다시 쪼개진다.
+def kst_day_label(games: "list[Game]", sports_day: "Optional[str]" = None) -> tuple[str, str]:
+    """(한국 날짜 라벨, 현지 병기 문구). 현지와 같은 날이면 병기는 빈 문자열.
+
+    예) MLB 현지 2026-08-30 → ("8.31 월", "현지 8.30")
+        KBO 2026-08-29     → ("8.29 토", "")
+    """
+    if not games:
+        if not sports_day:
+            return "", ""
+        d = datetime.strptime(sports_day, "%Y-%m-%d")
+        return f"{d.month}.{d.day} {_WD[d.weekday()]}", ""
+
+    ordered = sorted(games, key=lambda g: g.start_utc)
+    first, last = ordered[0].start_kst, ordered[-1].start_kst
+    day = sports_day or ordered[0].sports_day
+
+    if first.date() == last.date():
+        label = f"{first.month}.{first.day} {_WD[first.weekday()]}"
+    else:
+        # 한 슬레이트가 한국 날짜 둘에 걸친다(유럽 주말 경기가 이렇다).
+        # 한쪽만 찍으면 나머지 절반이 다른 날 경기로 보인다.
+        label = f"{first.month}.{first.day}~{last.month}.{last.day}"
+
+    local = ""
+    if day != first.strftime("%Y-%m-%d"):
+        d = datetime.strptime(day, "%Y-%m-%d")
+        local = f"현지 {d.month}.{d.day}"
+    return label, local
+
+
+# ── 경기 소요 시간: 결과 카드 마감의 근거 (v1.11f) ──────────────────────
+#
+# 대표님 지시: "그날 같은 리그 마지막 경기가 종료되고 1시간 이내에 발송."
+# 그러려면 **마지막 경기가 언제 끝나는지**를 알아야 하는데, 소스는 종료 시각을 주지 않는다.
+# 시작 시각 + 그 종목의 통상 소요 시간으로 잡는다.
+#
+# 여기 적은 값은 "넉넉하게" 잡은 상한이다. 짧게 잡으면 마감이 경기 종료보다 일러지고,
+# 그러면 **마지막 경기가 빠진 '전 경기 결과' 카드**가 나간다 — 사실 오류다.
+# 길게 잡아 봐야 늦어지는 것뿐인데, 그마저도 `league_day_settled()`가
+# "전부 종결됐으면 마감을 기다리지 않는다"로 대부분 흡수한다.
+# 즉 이 값은 **안전망의 두께**이지 평소 발송 시각이 아니다.
+GAME_DURATION_SECONDS: dict[League, int] = {
+    League.KBO: int(3.5 * 3600),        # 야구 — 연장 포함 넉넉히
+    League.MLB: int(3.5 * 3600),
+    League.NPB: int(3.5 * 3600),
+    League.KL1: int(2.2 * 3600),        # 축구 — 추가시간·하프타임 포함
+    League.EPL: int(2.2 * 3600),
+    League.LALIGA: int(2.2 * 3600),
+    League.SERIEA: int(2.2 * 3600),
+    League.BUNDESLIGA: int(2.2 * 3600),
+    League.LIGUE1: int(2.2 * 3600),
+    League.UCL: int(2.2 * 3600),
+    League.KBL: int(2.5 * 3600),        # 농구 — 연장 포함
+    League.VLEAGUE_M: int(2.5 * 3600),  # 배구 — 5세트 풀
+    League.VLEAGUE_W: int(2.5 * 3600),
+    League.LCK: int(4.0 * 3600),        # LoL — BO3/BO5 한 매치
+    League.INTL_LOL: int(4.0 * 3600),
+}
+DEFAULT_GAME_DURATION_SECONDS = int(4.0 * 3600)   # 모르는 리그는 넉넉한 쪽
+
+
+def game_duration_for(league: "League") -> int:
+    return GAME_DURATION_SECONDS.get(league, DEFAULT_GAME_DURATION_SECONDS)
+
+
+# 마지막 경기가 끝나고 이만큼 안에 결과 카드를 낸다(대표님 지시).
+RESULT_AFTER_LAST_GAME_SECONDS = 3600
+
+
+def result_deadline(games: "list[Game]") -> datetime:
+    """그날 그 리그 결과 카드의 **마감**(= 이때까지는 무조건 낸다).
+
+    전에는 `첫 경기의 UTC 자정 + 26시간`이었다. UTC 자정은 리그 현지 시간대를
+    모르는 값이라, MLB 야간 슬레이트에서는 **마지막 경기가 시작하는 시각**이
+    마감으로 잡혔다(실측 2026-09-01: 마지막 경기 10:40 시작 · 마감 11:00 KST).
+    그 시각에 시계가 돌았다면 1회 진행 중인 경기를 빼놓고 '전 경기 결과'를
+    내보냈을 것이다 — 사실 오류다.
+    """
+    ordered = sorted(games, key=lambda g: g.start_utc)
+    last = ordered[-1].start_utc
+    league = ordered[0].league
+    return (last + timedelta(seconds=game_duration_for(league))
+            + timedelta(seconds=RESULT_AFTER_LAST_GAME_SECONDS))
+
+
+class ResultDeadlineTooEarly(GateError):
+    """마감이 마지막 경기 종료보다 이르다 — 그 카드는 경기를 빠뜨린다."""
+
+
+def assert_result_deadline(games: "list[Game]", deadline: datetime) -> None:
+    """마감이 마지막 경기 예상 종료보다 이르면 차단한다.
+
+    규칙만 있고 검사기가 없으면 반드시 어긴다 — 이 프로젝트에서 이미 두 번 겪었다.
+    """
+    if not games:
+        return
+    ordered = sorted(games, key=lambda g: g.start_utc)
+    ends = ordered[-1].start_utc + timedelta(
+        seconds=game_duration_for(ordered[0].league))
+    if deadline < ends:
+        raise ResultDeadlineTooEarly(
+            f"{ordered[0].league.value} {ordered[0].sports_day}: 결과 카드 마감이 "
+            f"마지막 경기 종료 예상보다 이릅니다 "
+            f"(마감 {deadline.astimezone(KST):%m-%d %H:%M} KST < "
+            f"종료 예상 {ends.astimezone(KST):%m-%d %H:%M} KST). "
+            f"그대로 두면 마지막 경기가 빠진 '전 경기 결과'가 나갑니다.")
+
+
 def day_schedule_scope(game: "Game") -> str:
     """시작 알림의 범위 — **리그 하루 한 건** (v1.11c에서 바뀜).
 

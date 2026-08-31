@@ -76,6 +76,12 @@ body{background:#c8ccd2;font-family:'Noto Sans CJK KR','Noto Sans KR',sans-serif
 .pill svg{width:30px;height:30px;}
 .hdr-top .kind{font-size:28px;color:var(--sub);font-weight:700;}
 .hdr-top .dt{margin-left:auto;font-size:30px;font-weight:800;color:var(--sub);}
+/* 현지 날짜 병기 — 한국 날짜가 주(主), 현지는 그 아래 한 줄.
+   최소 폰트 28px 규칙을 지킨다(28px 미만은 타이포 게이트가 막는다). */
+.hdr-top .dtw{margin-left:auto;text-align:right;line-height:1.15;}
+.hdr-top .dtw .dt{margin-left:0;display:block;}
+.hdr-top .dtw .dtl{display:block;font-size:28px;font-weight:700;
+  color:var(--sub);opacity:.72;margin-top:2px;white-space:nowrap;}
 .hdr h1{font-size:60px;font-weight:900;line-height:1.14;letter-spacing:-.028em;}
 .hdr h1 em{font-style:normal;color:var(--lg);}
 .hdr .sub{font-size:29px;color:var(--sub);margin-top:14px;font-weight:700;}
