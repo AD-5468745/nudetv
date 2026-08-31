@@ -228,6 +228,33 @@ check("국내 리그는 '오늘' 그대로", txt4.splitlines()[0].startswith("�
 check("국내 리그엔 현지 시각 병기 없음", "현지" not in txt4, txt4.splitlines()[-1])
 
 
+# ── 6. 수집 월 창 — 월말에 내일이 보이는가 ──────────────────────────────
+print("6. 수집 월 창 — 월말에 다음 달이 보이는가")
+
+import tick as T  # noqa: E402
+
+
+def months(day: str) -> tuple[int, list[str]]:
+    return T.fetch_months(datetime.fromisoformat(day + "T12:00:00+09:00"))
+
+
+check("월말에는 다음 달을 함께 긁는다", months("2026-08-31")[1] == ["07", "08", "09"],
+      str(months("2026-08-31")))
+check("말일 하루 전에도 다음 달이 보인다", "09" in months("2026-08-30")[1],
+      str(months("2026-08-30")))
+check("평소에는 두 달만 (요청을 늘리지 않는다)", months("2026-09-15")[1] == ["08", "09"],
+      str(months("2026-09-15")))
+check("1일에는 지난달이 남아 있다 (말일 결과 카드)", "08" in months("2026-09-01")[1],
+      str(months("2026-09-01")))
+check("12월 말에 다음 해 1월을 긁지 않는다", "01" not in months("2026-12-30")[1],
+      str(months("2026-12-30")))
+check("1월 1일에 작년 12월을 긁지 않는다", months("2026-01-01")[1] == ["01"],
+      str(months("2026-01-01")))
+check("연도는 항상 그 해", months("2026-12-31")[0] == 2026)
+check("2월 말(28일)에도 3월이 보인다", "03" in months("2026-02-27")[1],
+      str(months("2026-02-27")))
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

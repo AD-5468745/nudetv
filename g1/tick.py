@@ -90,6 +90,29 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def fetch_months(today: datetime) -> tuple[int, list[str]]:
+    """월 단위로 일정을 주는 소스(KBO·K리그1·NPB)에 요청할 (연도, 월 목록).
+
+    **월말에는 다음 달을 함께 긁는다 (v1.11f).**
+    전에는 `이전 달 + 이번 달`뿐이었다. 그래서 **매달 말일에는 내일 경기를
+    아예 볼 수 없었다** — 큐 지평선은 30시간인데 데이터 지평선이 0시간이 된다.
+    2026-08-31 실측: KBO·K리그1·NPB 스냅샷의 마지막 편성일이 전부 08-30이고
+    9월 편성이 한 건도 없었다. (그날이 마침 월요일 휴식일이라 티가 안 났다.)
+
+    이전 달을 함께 두는 이유는 반대쪽이다 — 1일 아침에 어제(말일) 결과 카드를
+    만들어야 한다.
+
+    연도가 넘어가는 달은 넣지 않는다. 소스가 연도 하나만 받으므로 12→1월에
+    1월을 넣으면 **작년 1월**을 긁는다. 세 리그 다 그때는 비시즌이라 잃는 것이 없고,
+    엉뚱한 해를 긁는 것보다 안 긁는 편이 낫다.
+    """
+    y = today.year
+    cands = [today.replace(day=1) - timedelta(days=1),   # 지난달
+             today,
+             today + timedelta(days=2)]                  # 월말이면 다음 달
+    return y, sorted({f"{d.month:02d}" for d in cands if d.year == y})
+
+
 # ── 수집 대상 ─────────────────────────────────────────────────
 # 리그를 늘릴 때 여기만 고친다. 실패해도 다른 리그에 영향이 없도록 각각 독립이다.
 def _jobs() -> dict[str, tuple[League, callable]]:
@@ -101,9 +124,7 @@ def _jobs() -> dict[str, tuple[League, callable]]:
     from adapters.npb import NpbAdapter
 
     today = datetime.now(KST)
-    y, mm = today.year, f"{today.month:02d}"
-    prev = (today.replace(day=1) - timedelta(days=1))
-    months = sorted({f"{prev.month:02d}", mm})
+    y, months = fetch_months(today)
 
     jobs = {
         "KBO": (League.KBO, lambda: KboAdapter().fetch(y, months)),
