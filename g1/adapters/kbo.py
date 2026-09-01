@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch
 from contract import (Game, GameMeta, League, Score, ScoreUnit, Status, TeamRef,
                       GateError, UnknownStatus, KBO_NOTE_NORMAL,
-                      KBO_KNOWN_CANCEL_REASONS)
+                      KBO_KNOWN_CANCEL_REASONS, KBO_RELAY_DONE)
 
 KST = ZoneInfo("Asia/Seoul")
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -162,12 +162,29 @@ class KboAdapter:
                 # 다만 조용히 넘기지도 않는다. 운영에서는 이 목록이 DM으로 나간다.
                 self.unknown_notes.add(note)
 
+        # **점수가 있다고 끝난 것이 아니다 (v1.11g).**
+        #
+        # KBO 일정 페이지는 **진행 중인 경기에도 점수 칸을 채운다.**
+        # 18:30에 시작한 경기가 18:40에 "한화 0 vs 0 KT"로 보인다.
+        # 전에는 "점수가 있으면 종료"로 읽어서, 2026-09-01 19:18에
+        # **"KBO 5경기 종료 · 전부 0:0 무승부"** 카드가 채널로 나갔다.
+        # 야구에서 0:0 종료는 존재하지 않는다 — 명백한 허위 보도였다.
+        #
+        # 소스에는 정확한 구분 신호가 있다(2026년 8월 130행 실측):
+        #     relay='리뷰'    → 종료      (점수 있는 86경기 전부)
+        #     relay=''       → 진행 중    (점수 있음)
+        #     relay='프리뷰'  → 예정      (점수 없음)
+        #     비고 != '-'    → 취소      (점수 없음)
+        # '점수의 존재'가 아니라 **소스가 종료라고 말하는지**를 본다.
+        relay = next((t for c, t in cells if c == "relay"), "").strip()
         score = None
         if cancel_reason:
             status = Status.CANCELED
         elif home_sc is not None and away_sc is not None:
-            status = Status.FINAL
             score = Score(home_sc, away_sc, ScoreUnit.RUNS)
+            # 종료 표시가 없으면 진행 중이다. LIVE는 종결이 아니므로
+            # 결과 카드가 이 경기를 기다린다(league_day_settled).
+            status = Status.FINAL if relay == KBO_RELAY_DONE else Status.LIVE
         else:
             status = Status.SCHEDULED
 

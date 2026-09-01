@@ -295,6 +295,76 @@ check("2월 말(28일)에도 3월이 보인다", "03" in months("2026-02-27")[1]
       str(months("2026-02-27")))
 
 
+# ── 7. '종료'를 너무 일찍 믿지 않는가 ───────────────────────────────────
+# 2026-09-01 19:18, 18:30에 시작한 KBO 5경기가 전부 '종료 0:0'으로 카드에 실려
+# 채널로 나갔다. KBO 일정 페이지가 **진행 중인 경기에도 점수를 채우기** 때문이고,
+# 어댑터가 "점수가 있으면 종료"로 읽었기 때문이다.
+# 아래 둘을 함께 친다: ① 어댑터가 신호를 제대로 읽는가 ② 계약이 못 믿을 값을 막는가
+print("7. '종료' 판정 — 진행 중 경기를 끝났다고 하지 않는가")
+
+from contract import (MIN_GAME_SECONDS, assert_final_not_too_early,  # noqa: E402
+                      game_duration_for as _dur)
+
+_start = datetime(2026, 9, 1, 18, 30, tzinfo=KST)
+
+
+def kbo_at(minutes_after: int, status=Status.FINAL) -> tuple[list, datetime]:
+    g = mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+           status=status,
+           score=Score(0, 0, ScoreUnit.RUNS) if status is Status.FINAL else None)
+    return [g], (_start + timedelta(minutes=minutes_after)).astimezone(timezone.utc)
+
+
+gs, at = kbo_at(48)
+check("시작 48분 뒤 '종료'는 차단", _raised(lambda: assert_final_not_too_early(gs, at)))
+gs, at = kbo_at(240)
+check("4시간 뒤 '종료'는 통과", not _raised(lambda: assert_final_not_too_early(gs, at)))
+gs, at = kbo_at(48, status=Status.LIVE)
+check("진행 중(LIVE)은 검사 대상이 아니다",
+      not _raised(lambda: assert_final_not_too_early(gs, at)))
+gs, at = kbo_at(10, status=Status.CANCELED)
+check("취소는 시작 직후여도 통과",
+      not _raised(lambda: assert_final_not_too_early(gs, at)))
+check("빈 입력", not _raised(lambda: assert_final_not_too_early([], send)))
+check("종목마다 하한이 다르다 (야구 > LoL)",
+      MIN_GAME_SECONDS[League.KBO] > MIN_GAME_SECONDS[League.LCK])
+check("하한은 통상 소요시간보다 짧다 (콜드게임을 막지 않는다)",
+      all(MIN_GAME_SECONDS[lg] < _dur(lg) for lg in MIN_GAME_SECONDS))
+
+# 어댑터가 소스 신호를 제대로 읽는가 — 네트워크 없이 행만 넣어 본다
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "adapters"))
+from adapters.kbo import KboAdapter  # noqa: E402
+
+
+def kbo_row(play: str, relay: str, note: str = "-"):
+    cells = [("time", "18:30"), ("play", play), ("relay", relay),
+             ("", ""), ("", "SPO-T"), ("", ""), ("", "잠실"), ("", note)]
+    return {"row": [{"Class": c, "Text": t} for c, t in cells]}
+
+
+ad = KboAdapter()
+_, g_live = ad._parse_row(kbo_row("LG 0 vs 0 두산", ""), 2026, "20260901")
+check("진행 중(중계 칸 빈칸) → LIVE", g_live.status is Status.LIVE,
+      g_live.status.value)
+check("진행 중이어도 점수는 담는다", g_live.score is not None)
+_, g_fin = ad._parse_row(kbo_row("LG 2 vs 5 두산", "리뷰"), 2026, "20260901")
+check("종료(중계 칸 '리뷰') → FINAL", g_fin.status is Status.FINAL, g_fin.status.value)
+check("종료 점수가 맞다", g_fin.score.away == 2 and g_fin.score.home == 5,
+      str(g_fin.score))
+_, g_sch = ad._parse_row(kbo_row("LG vs 두산", "프리뷰"), 2026, "20260902")
+check("예정('프리뷰') → SCHEDULED", g_sch.status is Status.SCHEDULED, g_sch.status.value)
+_, g_cx = ad._parse_row(kbo_row("LG vs 두산", "", "우천취소"), 2026, "20260901")
+check("취소는 그대로 CANCELED", g_cx.status is Status.CANCELED, g_cx.status.value)
+
+# 진행 중 경기가 섞이면 결과 카드가 만들어지면 안 된다
+mixed = [mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+            status=Status.FINAL, score=Score(3, 1, ScoreUnit.RUNS)),
+         mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="SS", a="LT",
+            status=Status.LIVE)]
+check("한 경기라도 진행 중이면 결과 카드를 안 만든다",
+      not P.league_day_settled(mixed, "2026-09-01"))
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

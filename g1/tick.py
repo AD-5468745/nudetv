@@ -40,7 +40,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
-                      Status, UnknownStatus, assert_home_away,
+                      Status, UnknownStatus, assert_final_not_too_early,
+                      assert_home_away,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
                       stale_unresolved)
@@ -294,6 +295,11 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 표에 없는 팀 코드가 오면 카드에 코드가 그대로 찍힌다.
             # 팀이 바뀌는 일은 드물지 않다(페퍼저축은행 -> SOOP, LCK 네이밍 스폰서).
             assert_team_names_cover(games)
+            # **'종료'라는데 아직 끝났을 리 없는 경기**를 막는다.
+            # KBO 일정 페이지가 진행 중 경기에도 점수를 채우는 바람에
+            # 18:30 시작 5경기가 19:18에 '종료 0:0'으로 카드가 나갔다(2026-09-01).
+            # 리그를 가리지 않는 게이트라, 다른 소스가 같은 실수를 해도 여기서 멈춘다.
+            assert_final_not_too_early(games, now)
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,

@@ -352,6 +352,15 @@ KL_LIVE_PREFIXES = ("1s", "2s", "3s", "4s")
 KBO_NOTE_NORMAL = "-"
 KBO_KNOWN_CANCEL_REASONS = frozenset({"우천취소", "폭염취소", "그라운드사정"})
 
+# KBO 편성표의 '중계' 셀 — **경기가 끝났는지 알려주는 유일한 신호**.
+#
+# 점수 칸은 진행 중에도 채워진다. "점수가 있으면 종료"로 읽었다가
+# 2026-09-01 19:18에 "KBO 5경기 종료 · 전부 0:0 무승부" 카드가 채널로 나갔다
+# (경기는 18:30 시작, 그때 1~2회 진행 중이었다).
+# 2026년 8월 130행 실측: 점수 있는 86경기는 **전부** relay='리뷰'였다.
+KBO_RELAY_DONE = "리뷰"
+KBO_RELAY_PREVIEW = "프리뷰"
+
 # ★ 연기·취소를 상태값으로 감지할 수 없는 리그 — 스냅샷 diff가 유일한 수단
 DIFF_ONLY_CANCELLATION = frozenset({League.KL1, League.LCK, League.INTL_LOL})
 
@@ -1297,6 +1306,56 @@ def result_deadline(games: "list[Game]") -> datetime:
     league = ordered[0].league
     return (last + timedelta(seconds=game_duration_for(league))
             + timedelta(seconds=RESULT_AFTER_LAST_GAME_SECONDS))
+
+
+# 한 경기가 아무리 빨라도 이만큼은 걸린다. **어댑터를 믿지 않기 위한 하한**이다.
+# 실제 소요시간(GAME_DURATION_SECONDS)의 절반쯤으로 넉넉히 잡는다 —
+# 콜드게임·강우 단축까지 통과시키되, "시작 30분 만에 종료"는 잡아낸다.
+MIN_GAME_SECONDS: dict[League, int] = {
+    League.KBO: 4500, League.MLB: 4500, League.NPB: 4500,          # 야구 75분
+    League.KL1: 5400, League.EPL: 5400, League.LALIGA: 5400,       # 축구 90분
+    League.SERIEA: 5400, League.BUNDESLIGA: 5400,
+    League.LIGUE1: 5400, League.UCL: 5400,
+    League.KBL: 4500, League.VLEAGUE_M: 3000, League.VLEAGUE_W: 3000,
+    League.LCK: 1800, League.INTL_LOL: 1800,                       # LoL 1세트 30분
+}
+DEFAULT_MIN_GAME_SECONDS = 1800
+
+
+class FinalTooEarly(GateError):
+    """시작한 지 얼마 안 된 경기가 '종료'로 왔다 — 소스를 잘못 읽고 있다."""
+
+
+def assert_final_not_too_early(games: "list[Game]",
+                               now_utc: "Optional[datetime]" = None) -> None:
+    """'종료'라는데 아직 끝났을 리 없는 경기가 있으면 수집 단계에서 막는다.
+
+    **왜 필요한가 (2026-09-01 사고).**
+    KBO 일정 페이지는 진행 중인 경기에도 점수를 채운다. 어댑터가 "점수가 있으면
+    종료"로 읽어, 18:30에 시작한 5경기가 19:18에 전부 '종료 0:0'이 되었고
+    **"KBO 5경기 종료 · 전부 무승부" 카드가 채널로 나갔다.**
+
+    이 게이트는 리그를 가리지 않는다. 어느 어댑터가 같은 실수를 해도
+    카드가 만들어지기 전에 멈춘다 — 소스마다 다시 겪을 사고를 한 번에 막는다.
+    """
+    now = now_utc or datetime.now(timezone.utc)
+    bad = []
+    for g in games:
+        if g.status is not Status.FINAL:
+            continue
+        floor = MIN_GAME_SECONDS.get(g.league, DEFAULT_MIN_GAME_SECONDS)
+        elapsed = (now - g.start_utc).total_seconds()
+        if elapsed < floor:
+            bad.append(g)
+    if bad:
+        g = bad[0]
+        mins = int((now - g.start_utc).total_seconds() // 60)
+        raise FinalTooEarly(
+            f"{g.league.value}: 시작한 지 {mins}분밖에 안 된 경기가 '종료'로 왔습니다 "
+            f"({len(bad)}건, 예: {g.away.team_code} @ {g.home.team_code} "
+            f"{g.start_kst:%m-%d %H:%M} KST). "
+            f"소스가 진행 중 경기에도 점수를 채우는지 확인하세요 — "
+            f"'점수가 있으면 종료'는 틀린 규칙입니다.")
 
 
 class ResultDeadlineTooEarly(GateError):
