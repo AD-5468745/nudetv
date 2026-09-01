@@ -361,7 +361,7 @@ def _card(body: str, league: League = League.KBO) -> str:
 
 
 def render_morning(games: list[Game], day: str,
-                   top_n: int = CARD_ROWS_MAX) -> str:
+                   top_n: int = CARD_ROWS_MAX, now: datetime | None = None) -> str:
     """오늘 편성 브리핑.
 
     v1.10 수정: 헤드라인이 SCHEDULED 개수를 세고 있었다. 그래서 취소가 섞이면
@@ -388,7 +388,7 @@ def render_morning(games: list[Game], day: str,
             + (f'<div class="l">현지 {esc(loc)}</div>' if loc else "") + "</div></div>")
 
     _lg = games[0].league if games else League.KBO
-    h1 = f'오늘 {esc(LEAGUE_LABEL.get(_lg, _lg.value))} <em>{len(playable)}경기</em>'
+    h1 = f'{day_word(games, now)} {esc(LEAGUE_LABEL.get(_lg, _lg.value))} <em>{len(playable)}경기</em>'
     more = len(games) - len(shown)
     bits = []
     if dropped:
@@ -408,6 +408,29 @@ def render_morning(games: list[Game], day: str,
             f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, lg)
+
+
+def day_word(games: list[Game], now: datetime | None = None) -> str:
+    """'오늘 / 내일 아침 / 내일 새벽 / 9월 3일' — **보내는 순간** 기준으로 고른다.
+
+    **'오늘'을 문자열로 박아두면 리그마다 다른 방식으로 거짓말한다 (v1.11f).**
+      · 시작 알림: 한국시각 밤 10시에 나가는데 첫 경기는 다음날 새벽 1시였다.
+      · 모닝 브리핑: 07:30에 나가는데 MLB 슬레이트는 **다음날 아침** 07:40 시작이다
+        (미국 현지 날짜로 묶기 때문). "오늘 MLB 15경기"는 하루를 착각하게 만든다.
+    둘 다 같은 병이라 판정을 한 군데로 모은다. 카드·캡션·알림이 전부 이걸 쓴다.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not games:
+        return "오늘"
+    first = min(g.start_utc for g in games).astimezone(KST)
+    days = (first.date() - now.astimezone(KST).date()).days
+    if days <= 0:
+        return "오늘"
+    if days == 1:
+        if first.hour < 6:
+            return "내일 새벽"
+        return "내일 아침" if first.hour < 12 else "내일"
+    return f"{first.month}월 {first.day}일"
 
 
 def _name_cls(name: str) -> str:
@@ -549,17 +572,7 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
     tail = (f"\n첫 경기 {first_kst:%H:%M} 시작 ({esc(when)})"
             + (f" · 현지 {esc(loc)}" if loc else ""))
 
-    # **'오늘'은 발송 시점 한국 날짜 기준으로 말한다 (v1.11f).**
-    # MLB 알림은 한국시각 밤 10시에 나가는데 첫 경기는 다음날 새벽 1시다.
-    # 그걸 "오늘 MLB 14경기"라고 부르면 거짓말이고, 아침에 읽는 사람에게는
-    # 이미 다 끝난 경기 목록이 '오늘 경기'로 보인다(대표님 지적 2026-08-31).
-    days = (first_kst.date() - now.astimezone(KST).date()).days
-    if days <= 0:
-        head_when = "오늘"
-    elif days == 1:
-        head_when = "내일 새벽" if first_kst.hour < 6 else "내일"
-    else:
-        head_when = f"{first_kst.month}월 {first_kst.day}일"
+    head_when = day_word(ordered, now)
 
     emoji = LEAGUE_EMOJI.get(lg, "🏟")
     label = LEAGUE_LABEL.get(lg, lg.value)
@@ -879,7 +892,8 @@ def _cont(lines: list[str]) -> str:
     return "<b>(이어서)</b>\n" + quote(lines, expandable=True)
 
 
-def caption_morning(games: list[Game], day: str, *, as_parts: bool = False):
+def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
+                    now: datetime | None = None):
     """오늘 편성 전체. 카드에 상위 N만 실렸어도 여기엔 전부 있다.
 
     as_parts=True면 [캡션, 이어지는 텍스트...] 목록을 준다(발송 경로가 쓴다).
@@ -891,7 +905,8 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False):
         mark = f" · {esc(g.meta.cancel_reason or '취소')}" if g.status in off else ""
         lines.append(f"{esc(kst)}  {esc(team_name(g.away))} vs {esc(team_name(g.home))}{mark}")
     lg = games[0].league if games else League.KBO
-    head = f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} 오늘 전체 편성 {len(games)}경기</b>\n"
+    head = (f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} "
+            f"{day_word(games, now)} 전체 편성 {len(games)}경기</b>\n")
     tail = start_alert_lead_text()
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 

@@ -358,8 +358,10 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
     tag = item.idem_key.replace("|", "_").replace(":", "-")[:80]
 
     if item.content_type is ContentType.MORNING:
-        html = P.render_morning(todays, day)
-        parts = P.caption_morning(todays, day, as_parts=True)
+        # '오늘/내일'은 **보내는 순간** 기준으로 판정해야 한다 — 안 넘기면
+        # MLB 모닝 브리핑이 내일 아침 경기를 "오늘"이라고 부른다.
+        html = P.render_morning(todays, day, now=_now())
+        parts = P.caption_morning(todays, day, as_parts=True, now=_now())
     elif item.content_type is ContentType.LEAGUE_RESULT:
         if not any(g.status is Status.FINAL for g in todays):
             return None                     # 아직 결과가 없다 — 다음 틱에 다시 본다

@@ -228,6 +228,46 @@ check("국내 리그는 '오늘' 그대로", txt4.splitlines()[0].startswith("�
 check("국내 리그엔 현지 시각 병기 없음", "현지" not in txt4, txt4.splitlines()[-1])
 
 
+# ── 5-2. 모닝 브리핑도 같은 규칙을 쓰는가 ───────────────────────────────
+# 시작 알림만 고치고 모닝 브리핑을 빼먹었다가, 배포 뒤 실채널에서
+# "오늘 MLB 15경기"(실제로는 내일 아침 경기)가 나간 것을 보고 찾았다.
+# 한 군데를 고치면 같은 병을 앓는 모든 곳을 함께 훑는다.
+print("5-2. 모닝 브리핑 — '오늘'을 발송 시점으로 판정하는가")
+
+import re  # noqa: E402
+
+send = datetime(2026, 9, 1, 7, 50, tzinfo=KST).astimezone(timezone.utc)
+mlb_next = [mk(League.MLB, "2026-09-01", 18, 40, tz="America/New_York", h="ATL", a="SF"),
+            mk(League.MLB, "2026-09-01", 22, 10, tz="America/New_York", h="LAD", a="DET")]
+check("MLB 슬레이트가 한국시각 다음날 아침",
+      min(g.start_kst for g in mlb_next).strftime("%Y-%m-%d") == "2026-09-02")
+
+html = P.render_morning(mlb_next, "2026-09-01", now=send)
+h1 = re.sub("<[^>]+>", "", re.search(r"<h1>(.*?)</h1>", html, re.S).group(1)).strip()
+check("모닝 카드가 '오늘'이라 하지 않는다", "오늘" not in h1, h1)
+check("모닝 카드가 '내일 아침'이라 한다", h1.startswith("내일 아침"), h1)
+
+cap = P.caption_morning(mlb_next, "2026-09-01", now=send)
+check("모닝 캡션도 같은 말을 한다", "내일 아침" in cap.splitlines()[0],
+      cap.splitlines()[0])
+
+kbo_today = [mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="LG", a="OB")]
+h1k = re.sub("<[^>]+>", "", re.search(
+    r"<h1>(.*?)</h1>", P.render_morning(kbo_today, "2026-09-01", now=send), re.S).group(1)).strip()
+check("국내 리그 모닝은 '오늘' 그대로", h1k.startswith("오늘 KBO"), h1k)
+
+# day_word 자체의 경계
+check("day_word 같은 날", P.day_word(kbo_today, send) == "오늘")
+check("day_word 다음날 새벽",
+      P.day_word([mk(League.MLB, "2026-09-01", 12, 15, tz="America/New_York", h="ATL", a="SF")],
+                 send) == "내일 새벽",
+      P.day_word([mk(League.MLB, "2026-09-01", 12, 15, tz="America/New_York", h="ATL", a="SF")], send))
+check("day_word 이틀 뒤는 날짜로",
+      P.day_word([mk(League.KBO, "2026-09-03", 18, 30, tz="Asia/Seoul", h="LG", a="OB")],
+                 send) == "9월 3일")
+check("day_word 빈 입력", P.day_word([], send) == "오늘")
+
+
 # ── 6. 수집 월 창 — 월말에 내일이 보이는가 ──────────────────────────────
 print("6. 수집 월 창 — 월말에 다음 달이 보이는가")
 

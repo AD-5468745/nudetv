@@ -77,15 +77,25 @@ check("지평선 상한 +30h 준수", all(i.scheduled_utc <= hi for i in q))
 # 결과 카드만 과거 마감을 허용한다: 소스가 결과를 늦게 채우면 마감이 지난 뒤에야
 # 카드를 만들 수 있는데, 하한으로 막으면 **그날 결과가 통째로 사라진다.**
 # 대신 유예(6시간)를 넘은 것은 is_late()가 버리고, 이미 보낸 것은 멱등키가 막는다.
+#
+# **모닝 브리핑도 하한을 안 받는다 (v1.11d).** 전에는 `while morning < now: +1일`로
+# 항상 미래 07:30만 잡아, 07:30이 지나면 그날 모닝이 큐에서 통째로 사라졌다.
+# 시계가 뜸한 환경에서 이것이 매일 벌어졌다 — 지금은 유예(3시간) 안이면 남긴다.
+#
+# 이 검증은 원래 "과거 항목은 결과 카드뿐"이었다. 그 규칙은 v1.11d에서 바뀌었는데
+# 검증이 따라오지 않았고, **하필 07:30~13:30 사이에 돌린 적이 없어 계속 통과했다.**
+# 2026-09-01 09:00에 처음 걸렸다. 시각에 따라 결과가 달라지는 검증은
+# '통과'가 증거가 되지 못한다 — 기준을 시각과 무관하게 다시 적는다.
+_floor_free = {ContentType.LEAGUE_RESULT, ContentType.MORNING}
 _past = [i for i in q if i.scheduled_utc < lo]
-check("과거 항목은 결과 카드뿐",
-      all(i.content_type is ContentType.LEAGUE_RESULT for i in _past),
+check("하한을 벗어난 항목은 결과 카드·모닝뿐",
+      all(i.content_type in _floor_free for i in _past),
       str([i.content_type.value for i in _past[:3]]))
-check("과거 결과 카드도 유예 안에 있다",
+check("지나간 항목은 각자의 유예 안에 있다",
       all((now - i.scheduled_utc).total_seconds() <= C.GRACE_SECONDS[i.content_type]
-          for i in _past))
-check("나머지는 하한 +6h 준수",
-      all(i.scheduled_utc >= lo for i in q if i.content_type is not ContentType.LEAGUE_RESULT))
+          for i in _past if i.scheduled_utc < now))
+check("시작 알림은 하한 +6h를 지킨다",
+      all(i.scheduled_utc >= lo for i in q if i.content_type not in _floor_free))
 
 print("\n4. 카드 렌더 (기존 2종)")
 day = max(g.sports_day for g in fin)
