@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
@@ -373,6 +373,18 @@ KBL_SEASON_CATEGORY_ALLOW = {
     "AS": "올스타게임",
     "EA": "EASL",           # 동아시아 슈퍼리그 — 별도 대회로 표기
 }
+
+# **발행 대상 카테고리** — 이 다섯 중 실제로 카드를 만드는 것은 셋뿐이다.
+#
+# EASL(EA)에는 뉴타이베이킹스·우츠노미야브렉스 같은 외국 구단이, 올스타(AS)에는
+# 팀아시아·팀루키 같은 가상팀이 나온다. 둘 다 KBL 10개 구단 표에 없으므로
+# `assert_team_names_cover`에 걸려 **KBL 리그 전체 수집이 막힌다.**
+# 실측(2025-26): EASL 13경기(10/22~3/18) · 올스타 2경기(1/17·1/18).
+# 수집 창이 21일이라 그중 한 경기가 시즌 절반 동안 KBL을 침묵시킨다.
+#
+# 외국 구단·가상팀 이름을 표에 채워 넣는 대신 **발행 대상에서 뺀다** —
+# 우리 채널이 다루는 것은 KBL 국내 경기다.
+KBL_PUBLISH_CATEGORIES = frozenset({"R", "PO", "CP"})
 KBL_SEASON_CATEGORY_DENY = {"D1": "D리그(2군)", "OM": "OPEN MATCH DAY(프리시즌)"}
 
 
@@ -620,7 +632,8 @@ class Game:
         unit = SCORE_UNIT_BY_LEAGUE[self.league]
         if self.meta.decided_by not in DECIDED_BY_ALLOWED[unit]:
             raise GateError(
-                f"{self.game_id}: {unit.value} 리그에 {self.meta.decided_by.value}는 불가")
+                f"{self.game_id}: {unit.value} 리그에 "
+                f"{getattr(self.meta.decided_by, 'value', self.meta.decided_by)}는 불가")
         if self.meta.decided_by == DecidedBy.PSO and self.meta.penalties is None:
             raise GateError(f"{self.game_id}: 승부차기인데 penalties가 없다")
 
@@ -803,6 +816,28 @@ REJUDGE_AT_SEND = frozenset({ContentType.START_ALERT, ContentType.POLL_CLOSE})
 #
 # 여기 적힌 값은 **기본값을 덮어쓴다**(더 크게도, 더 작게도).
 # 0은 "일찍 보내지 않는다"는 뜻이며, 기본값이 아무리 커도 0이 이긴다.
+# **한국시각 심야에는 시작 알림을 울리지 않는다 (v1.11h, 대표님 결정).**
+#
+# MLB는 한국시각 새벽~오전에 열려서, 2시간 전 알림이 새벽 3~5시에 울렸다
+# (실측 09-01 03:12 발송). 대표님 선택: "밤 10시에 보내되 말투를 고친다."
+# 예약 시각이 이 구간에 걸리면 **전날 밤 이 시각으로 앞당긴다.**
+# 문구는 발송 순간에 계산되므로("내일 새벽 MLB 12경기 · 첫 경기 01:15 시작")
+# 앞당겨도 거짓말이 되지 않는다.
+START_ALERT_QUIET_FROM_HOUR = 0     # 이 시각부터
+START_ALERT_QUIET_TO_HOUR = 6       # 이 시각 전까지 (KST)
+START_ALERT_EVENING_HOUR = 22       # 앞당겨 보낼 시각 (전날 KST)
+
+
+def shift_out_of_quiet_hours(at_utc: datetime) -> datetime:
+    """예약 시각이 한국시각 심야면 전날 밤으로 앞당긴다."""
+    k = at_utc.astimezone(KST)
+    if START_ALERT_QUIET_FROM_HOUR <= k.hour < START_ALERT_QUIET_TO_HOUR:
+        moved = (k - timedelta(days=1)).replace(
+            hour=START_ALERT_EVENING_HOUR, minute=0, second=0, microsecond=0)
+        return moved.astimezone(timezone.utc)
+    return at_utc
+
+
 LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 일찍 보내도 된다 — 문구가 "N시간 M분 뒤 시작"으로 그때그때 계산된다.
     ContentType.START_ALERT: 2 * 3600,
@@ -1358,6 +1393,40 @@ def assert_final_not_too_early(games: "list[Game]",
             f"'점수가 있으면 종료'는 틀린 규칙입니다.")
 
 
+def demote_impossible_finals(games: "list[Game]",
+                             now_utc: "Optional[datetime]" = None
+                             ) -> "tuple[list[Game], list[str]]":
+    """'종료'라는데 아직 끝났을 리 없는 경기를 **LIVE로 되돌린다.**
+
+    막지 않고 고치는 이유:
+    `assert_final_not_too_early`는 예외를 던져 그 리그의 수집을 통째로 중단시킨다.
+    한 경기 때문에 리그 전체가 침묵하는 것은 원래 막으려던 사고보다 나쁘다.
+    여기서는 **그 경기만** 진행 중으로 되돌리고, 사람에게는 경고로 알린다.
+
+    이 한 함수가 KBO·NPB·V리그·LCK를 동시에 덮는다. 어느 소스가
+    "점수가 있으니 끝났다"고 잘못 말해도 카드에는 결과로 실리지 않는다.
+    (돌려주는 목록은 원본을 바꾸지 않은 새 리스트다.)
+    """
+    now = now_utc or datetime.now(timezone.utc)
+    out: list[Game] = []
+    notes: list[str] = []
+    for g in games:
+        if g.status is not Status.FINAL:
+            out.append(g)
+            continue
+        floor = MIN_GAME_SECONDS.get(g.league, DEFAULT_MIN_GAME_SECONDS)
+        elapsed = (now - g.start_utc).total_seconds()
+        if elapsed >= floor:
+            out.append(g)
+            continue
+        notes.append(
+            f"{g.league.value} {g.away.team_code}@{g.home.team_code} "
+            f"{g.start_kst:%m-%d %H:%M}: 시작 {int(elapsed // 60)}분 만에 '종료' — "
+            f"진행 중으로 되돌림")
+        out.append(replace(g, status=Status.LIVE, score=None))
+    return out, notes
+
+
 class ResultDeadlineTooEarly(GateError):
     """마감이 마지막 경기 종료보다 이르다 — 그 카드는 경기를 빠뜨린다."""
 
@@ -1715,6 +1784,7 @@ def assert_team_names_cover(games: "list[Game]") -> None:
 # 박힌다. 한국 시청자에게는 읽히지 않는 글자다 — 카드에 넣을 이유가 없다.
 # 아는 것만 바꾸고, 모르는 것은 원문을 그대로 둔다(빈칸보다는 낫다).
 VENUE_NAMES: dict[str, str] = {
+    "秋田": "아키타",
     # NPB 12구단 홈구장
     "バンテリンドーム": "반테린돔",
     "京セラD大阪": "교세라돔",

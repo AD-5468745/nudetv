@@ -40,8 +40,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
-                      Status, UnknownStatus, assert_final_not_too_early,
-                      assert_home_away,
+                      Status, UnknownStatus, assert_home_away,
+                      demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
                       stale_unresolved)
@@ -85,6 +85,54 @@ SLOW_FETCH_SECONDS = 60
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+TICK_LOG = None          # ROOT 확정 후 아래에서 채운다
+
+
+def _tick_log_path() -> pathlib.Path:
+    return ROOT / "ticks.json"
+
+
+def _record_tick(now: datetime) -> None:
+    """이 틱의 시각을 남긴다. 다음 틱이 '실제 간격'을 알기 위한 유일한 근거다."""
+    p = _tick_log_path()
+    try:
+        hist = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (json.JSONDecodeError, OSError):
+        hist = []
+    hist.append(_iso(now))
+    hist = hist[-30:]
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(hist), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _measured_interval_seconds(now: datetime) -> int:
+    """**실측** 틱 간격(초). 기록이 모자라면 0.
+
+    설정값(TICK_INTERVAL_MINUTES)은 사람이 적은 숫자라 현실을 모른다.
+    깃허브 무료 스케줄러 실측은 30분~4시간 불규칙이었다.
+    최근 기록 중 **가장 긴 간격**을 쓴다 — 최악을 기준으로 창을 검사해야 한다.
+    """
+    p = _tick_log_path()
+    try:
+        hist = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (json.JSONDecodeError, OSError):
+        return 0
+    ts = []
+    for x in hist[-12:]:
+        try:
+            ts.append(datetime.fromisoformat(x))
+        except ValueError:
+            continue
+    ts.append(now)
+    if len(ts) < 3:
+        return 0
+    gaps = [(b - a).total_seconds() for a, b in zip(ts, ts[1:]) if b > a]
+    return int(max(gaps)) if gaps else 0
 
 
 def _iso(dt: datetime) -> str:
@@ -178,8 +226,26 @@ def _snap_path(name: str) -> pathlib.Path:
     return SNAP_DIR / f"{name}.json"
 
 
+class SnapshotWipe(GateError):
+    """멀쩡하던 스냅샷을 0건으로 덮으려 한다 — 소스가 조용히 비었을 가능성이 높다."""
+
+
 def _save_games(name: str, games: list) -> None:
+    """스냅샷 저장. **있던 것을 0건으로 덮지 않는다 (v1.11h).**
+
+    KBO·KBL 어댑터는 0건에 게이트가 없어 빈 리스트를 그대로 돌려준다
+    (`json.loads(raw).get("rows", [])` — 응답 구조가 바뀌면 조용히 0건이 된다).
+    그대로 저장하면 그 리그의 그날 콘텐츠가 통째로 사라진다.
+    커버리지 감시가 뒤늦게 잡아도 그때는 이미 스냅샷이 지워진 뒤다.
+    파일을 지키는 쪽이 언제나 안전하다 — 다음 틱에 제대로 수집되면 갱신된다.
+    """
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    if not games:
+        prev = _load_raw(name)
+        if prev:
+            raise SnapshotWipe(
+                f"{name}: 수집 0건인데 기존 스냅샷은 {len(prev)}건입니다 — "
+                f"덮어쓰지 않고 이전 것을 유지합니다(소스 응답 구조 변경 의심)")
     rows = [{
         "league": g.league.value, "season": g.season, "source_key": g.source_key,
         "home": g.home.team_code, "away": g.away.team_code,
@@ -187,17 +253,41 @@ def _save_games(name: str, games: list) -> None:
         "status": g.status.value,
         "score": ([g.score.home, g.score.away, g.score.unit.value] if g.score else None),
         "venue": g.venue, "sports_day": g.sports_day,
+        "start_rev": g.start_rev,
+        # **meta를 세 필드만 저장하다가 카드가 거짓말을 했다 (v1.11h).**
+        # decided_by·aggregate가 유실되면 `is_draw()`가 승부차기·합산 승부를
+        # '무승부'로 판정한다. gender가 유실되면 V리그 남/여가 섞여
+        # 되읽은 스냅샷 1,000건 중 252건이 validate에 실패했다.
         "cancel_reason": g.meta.cancel_reason, "best_of": g.meta.best_of,
         "season_category": g.meta.season_category,
+        "gender": g.meta.gender,
+        "decided_by": g.meta.decided_by.value if g.meta.decided_by else None,
+        "aggregate": list(g.meta.aggregate) if g.meta.aggregate else None,
+        "penalties": list(g.meta.penalties) if g.meta.penalties else None,
+        "set_scores": [list(x) for x in g.meta.set_scores] if g.meta.set_scores else None,
+        "doubleheader_seq": g.meta.doubleheader_seq,
+        "is_dome": g.meta.is_dome,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     tmp.replace(_snap_path(name))          # 원자적 교체 — 중간에 죽어도 반쪽 파일이 남지 않는다
 
 
+def _load_raw(name: str) -> list:
+    """스냅샷 원본(dict 목록). 존재·건수 확인용 — Game으로 되돌리지 않는다."""
+    p = _snap_path(name)
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
 def _load_games(name: str) -> list:
     """스냅샷을 Game으로 되돌린다. 카드 렌더는 이것만 있으면 된다."""
-    from contract import Game, GameMeta, Score, ScoreUnit, Status, TeamRef
+    from contract import (DecidedBy, Game, GameMeta, Score, ScoreUnit,
+                          Status, TeamRef)
     p = _snap_path(name)
     if not p.exists():
         return []
@@ -212,9 +302,30 @@ def _load_games(name: str) -> list:
             start_utc=datetime.fromisoformat(d["start_utc"]),
             home_tz=d["home_tz"], status=Status(d["status"]), score=sc,
             venue=d.get("venue"), sports_day_fixed=d.get("sports_day"),
+            start_rev=int(d.get("start_rev") or 0),
             meta=GameMeta(cancel_reason=d.get("cancel_reason"),
                           best_of=d.get("best_of"),
-                          season_category=d.get("season_category"))))
+                          season_category=d.get("season_category"),
+                          gender=d.get("gender"),
+                          # 없으면 기본값(REGULAR)을 쓴다. None을 넣으면
+                          # validate가 "결정 방식 불가"로 전건을 막는다.
+                          decided_by=(DecidedBy(d["decided_by"])
+                                      if d.get("decided_by") else DecidedBy.REGULAR),
+                          aggregate=(tuple(d["aggregate"])
+                                     if d.get("aggregate") else None),
+                          penalties=(tuple(d["penalties"])
+                                     if d.get("penalties") else None),
+                          set_scores=[tuple(x) for x in (d.get("set_scores") or [])],
+                          doubleheader_seq=d.get("doubleheader_seq"),
+                          is_dome=bool(d.get("is_dome")))))
+
+    # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
+    # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나
+    # 예전 버전이 남긴 스냅샷은 게이트를 통과하지 않은 채 카드가 된다.
+    # 실제로 2026-09-01 사고를 스냅샷 경로로 재현하면 카드가 그대로 만들어졌다.
+    out, notes = demote_impossible_finals(out)
+    for n in notes:
+        print(f"  [스냅샷 보정] {n}")
     return out
 
 
@@ -295,11 +406,14 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 표에 없는 팀 코드가 오면 카드에 코드가 그대로 찍힌다.
             # 팀이 바뀌는 일은 드물지 않다(페퍼저축은행 -> SOOP, LCK 네이밍 스폰서).
             assert_team_names_cover(games)
-            # **'종료'라는데 아직 끝났을 리 없는 경기**를 막는다.
+            # **'종료'라는데 아직 끝났을 리 없는 경기**를 되돌린다.
             # KBO 일정 페이지가 진행 중 경기에도 점수를 채우는 바람에
             # 18:30 시작 5경기가 19:18에 '종료 0:0'으로 카드가 나갔다(2026-09-01).
-            # 리그를 가리지 않는 게이트라, 다른 소스가 같은 실수를 해도 여기서 멈춘다.
-            assert_final_not_too_early(games, now)
+            # 막지 않고 고치는 이유: 예외를 던지면 그 경기 하나 때문에
+            # 리그 전체가 그 틱을 통째로 건너뛴다 — 원래 사고보다 나쁘다.
+            games, _demoted = demote_impossible_finals(games, now)
+            for _n in _demoted:
+                soft.append(f"{name}: {_n}")
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,
@@ -369,8 +483,13 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
         html = P.render_morning(todays, day, now=_now())
         parts = P.caption_morning(todays, day, as_parts=True, now=_now())
     elif item.content_type is ContentType.LEAGUE_RESULT:
-        if not any(g.status is Status.FINAL for g in todays):
-            return None                     # 아직 결과가 없다 — 다음 틱에 다시 본다
+        # **전 경기 취소된 날도 알려야 한다 (v1.11h).**
+        # 전에는 FINAL이 0건이면 조용히 건너뛰었고, 큐 항목은 유예가 지나
+        # "시각을 놓쳐 취소"로 사라졌다. 구독자는 취소 사실을 채널에서 못 본다
+        # (모닝은 07:30에 나가고 취소는 그 뒤에 발표된다).
+        # 실측: KBO 2026-08-05·06·07·09·28 — 5경기 전 경기 폭염취소.
+        if not any(g.is_terminal for g in todays):
+            return None                     # 아직 아무것도 안 끝났다 — 다음 틱에 다시 본다
         html = P.render_result(todays, day)
         parts = P.caption_result(todays, day, as_parts=True)
     elif item.content_type is ContentType.START_ALERT:
@@ -451,7 +570,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # **발송 창이 시계 간격보다 넓은지 먼저 본다.**
     # 좁으면 아무 오류 없이 조용히 아무것도 안 나간다 — 로그는 "지금 처리 0"으로
     # 평온해 보인다. 첫날 모닝 브리핑과 시작 알림이 이렇게 하루 종일 사라졌다.
-    assert_send_windows(TICK_INTERVAL_SECONDS, LOOKAHEAD_SECONDS)
+    # **게이트가 틱을 죽이면 위반보다 나쁘다 (v1.11h).**
+    # 전에는 여기서 GateError가 나면 수집·큐·발송·알림이 전부 실행되지 않았다
+    # (alert는 함수 말미에 있다). 부분 누락을 전면 정지로 바꾸는 셈이다.
+    # 그리고 검사 기준이 **사람이 손으로 적은 100분**이라 실측 30분~4시간을 못 봤다.
+    # → 실측 간격으로 검사하고, 위반은 경고로 남겨 알림에 싣는다.
+    window_warnings: list[str] = []
+    measured = _measured_interval_seconds(now)
+    try:
+        assert_send_windows(max(measured, TICK_INTERVAL_SECONDS), LOOKAHEAD_SECONDS)
+    except GateError as e:
+        window_warnings.append(str(e))
+        print(f"  ⚠️ [발송 창] {e}")
+    _record_tick(now)
 
     counts, errors, soft = collect(now, force=force_fetch)
     print("  [수집] " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
@@ -517,7 +648,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
 
     led = Ledger(LEDGER)
     tr = Transport(load_token())
+    # **알림 목적지가 없으면 구독 채널로 흘리지 않는다 (v1.11h).**
+    # 전에는 비면 발행 채널로 폴백해서, 구독자가
+    # "⚠️ 시계 점검 필요 — 수집 실패" 같은 내부 장애 메시지를 봤다.
+    # 조용히 실패하는 설정이라 눈치채기도 어렵다.
     alert_to = os.environ.get("ALERT_CHAT_ID", "").strip() or None
+    if not alert_to:
+        print("  ⚠️ ALERT_CHAT_ID가 없습니다 — 오류 알림을 보내지 않습니다"
+              "(구독 채널로 흘리지 않기 위해서입니다)")
     snd = Sender(tr, led, channel, alert_chat_id=alert_to,
                  worker_id=os.environ.get("WORKER_ID") or None)
 
@@ -578,6 +716,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     lines = []
     if errors:
         lines += [f"수집 실패 — {e}" for e in errors[:5]]
+    if window_warnings:
+        lines += [f"발송 창 경고 — {w}" for w in window_warnings[:2]]
+    if getattr(led, "broken_lines", 0):
+        # 대장 줄을 건너뛰었다 = '이미 보냄'을 잃었다 = 중복 발송 위험이다.
+        lines.append(f"⚠️ 발송 대장 {led.broken_lines}줄을 읽지 못했습니다 — "
+                     f"중복 발송 위험. 사람이 확인해야 합니다.")
+    _needs = led.needs_human() if hasattr(led, "needs_human") else []
+    if _needs:
+        lines.append(f"사람 확인 필요 {len(_needs)}건 (자동 재발송 금지 상태)")
     if soft:
         lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
     if failed:

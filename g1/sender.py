@@ -104,12 +104,21 @@ class Ledger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._rows: dict[str, SendRecord] = {}
+        # **깨진 줄 하나가 전체 발행을 죽이지 않게 한다 (v1.11h).**
+        # 전에는 `json.loads`가 그대로 터져 틱 전체가 죽었다(실측: 잘린 마지막 줄,
+        # 필드 빠진 줄 둘 다 재현). 대장은 append-only라 앞선 줄은 여전히 유효하다.
+        # **다만 조용히 넘기지 않는다** — 건너뛴 줄은 '이미 보냄'을 잃은 것이므로
+        # 중복 발송 위험이다. 반드시 사람에게 올린다.
+        self.broken_lines = 0
         if self.path.exists():
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
                     continue
-                d = json.loads(line)
-                self._rows[d["idem_key"]] = self._decode(d)
+                try:
+                    d = json.loads(line)
+                    self._rows[d["idem_key"]] = self._decode(d)
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                    self.broken_lines += 1
 
     @staticmethod
     def _decode(d: dict) -> SendRecord:
@@ -329,7 +338,7 @@ class SendOutcome:
 
 class Sender:
     def __init__(self, transport, ledger: Ledger, chat_id: str, *,
-                 worker_id: Optional[str] = None, daily_max: int = 20,
+                 worker_id: Optional[str] = None, daily_max: int = 60,
                  pacer: Optional[Pacer] = None,
                  alert_chat_id: Optional[str] = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
@@ -337,10 +346,17 @@ class Sender:
         self.led = ledger
         self.chat_id = chat_id
         self.worker_id = worker_id or f"w-{uuid.uuid4().hex[:8]}"
+        # **하루 발송 상한** — 폭주 차단기이지 편성 상한이 아니다.
+        # 20이던 시절 실측: 시즌 리그 5개로 이미 15건(리그당 모닝·시작알림·결과 3건).
+        # 11월 KBL·V리그가 열리면 7리그 21건, 유럽 키까지 들어오면 15리그 45건이라
+        # **정상 편성이 상한에 막힌다.** 9리그 정상치(27) + 유럽까지(45)를 넘고
+        # 폭주는 여전히 잡는 값으로 둔다.
         self.daily_max = daily_max
         self.pacer = pacer or Pacer()
         # 알림 목적지. 시트의 ALERT_TARGET이 '발행 채널'이면 chat_id와 같다.
-        self.alert_chat_id = alert_chat_id or chat_id
+        # 폴백하지 않는다. 없으면 알림을 보내지 않는다 —
+        # 내부 장애 메시지가 구독 채널에 나가는 것이 더 나쁘다.
+        self.alert_chat_id = alert_chat_id
         self.now = now
 
     # ── 클레임 ──────────────────────────────────────────────
@@ -377,20 +393,34 @@ class Sender:
 
     # ── 발송 ────────────────────────────────────────────────
 
+    def _release(self, rec: "SendRecord") -> None:
+        """클레임을 반납해 QUEUED로 되돌린다.
+
+        **클레임한 뒤 예외가 나면 그 항목은 영구 격리된다.** 리스가 만료되면
+        `claim()`이 NEEDS_HUMAN으로 못 박기 때문이다 — 한 번도 안 보냈는데도.
+        게다가 워커 ID가 실행마다 달라(`gha-{run_id}`) "내가 잡은 것 이어서"
+        분기는 절대 안 탄다. 그래서 보내지 못했으면 **반드시 반납**한다.
+        """
+        self.led.put(replace(rec, state=SendState.QUEUED,
+                             claimed_by=None, lease_expires_utc=None))
+
     def send(self, item: QueueItem, payload: Payload) -> SendOutcome:
+        # **보내기 전 검사는 클레임 전에 한다.** 클레임 뒤에 터지면
+        # 그 항목이 영구 격리된다(실측: 캡션 1200자 → 3시간 뒤 needs_human).
+        payload.gate()
+
+        day = self.now().astimezone(KST).strftime("%Y-%m-%d")
+        if (item.content_type not in UNPLANNED_CONTENT
+                and self.led.count_sent_today(day) >= self.daily_max):
+            return SendOutcome(SendState.QUEUED, [],
+                               "하루 발송 상한 도달 (폭주 방지) — 다음 날 재시도")
+
         rec = self.claim(item)
         if rec is None:
             prev = self.led.get(item.idem_key)
             return SendOutcome(prev.state if prev else SendState.SUPERSEDED,
                                prev.message_ids if prev else [], "이미 처리됨",
                                already=True)
-
-        payload.gate()
-
-        day = self.now().astimezone(KST).strftime("%Y-%m-%d")
-        if (item.content_type not in UNPLANNED_CONTENT
-                and self.led.count_sent_today(day) >= self.daily_max):
-            return self._finish(rec, SendState.FAILED, [], "하루 발송 상한 도달 (폭주 방지)")
 
         self.pacer.wait()
 
@@ -412,10 +442,20 @@ class Sender:
                                 f"응답 유실 — 발송 여부 불명: {e}")
         except TelegramError as e:
             if e.status == 429:
-                self.led.put(replace(rec, retry_429_count=rec.retry_429_count + 1,
+                # 클레임을 **반납**한다. 잡아둔 채로 두면 다음 실행(다른 워커 ID)이
+                # "남이 작업 중"으로 건너뛰다가 리스 만료와 함께 영구 격리된다.
+                self.led.put(replace(rec, state=SendState.QUEUED,
+                                     claimed_by=None, lease_expires_utc=None,
+                                     retry_429_count=rec.retry_429_count + 1,
                                      last_error=f"429 retry_after={e.retry_after}"))
                 return SendOutcome(SendState.QUEUED, [], f"레이트리밋 — {e.retry_after}초 뒤 재시도")
             return self._finish(rec, SendState.FAILED, [], f"{e}")
+        except (PartialSend, AmbiguousSend, TelegramError):
+            raise
+        except Exception as e:                                  # noqa: BLE001
+            # 예상 못 한 예외로 클레임이 남으면 그 발행은 영구히 죽는다.
+            self._release(rec)
+            raise
 
         return self._finish(rec, SendState.SENT, ids, "")
 
@@ -489,6 +529,10 @@ class Sender:
         내용이 달라지면(새 문제가 생기면) 유예와 무관하게 바로 나간다 —
         조용해지는 것이 아니라 '같은 말을 반복하지 않는' 것이다.
         """
+        if not self.alert_chat_id:
+            # 목적지가 없으면 보내지 않는다. 발행 채널로 폴백하면
+            # 구독자가 내부 장애 메시지를 본다.
+            return False
         body = f"⚠️ <b>{esc(title)}</b>\n" + quote([esc(x) for x in lines])
         gap = ALERT_REPEAT_SECONDS if repeat_after is None else repeat_after
         fp = _hashlib.sha256("\n".join([title] + list(lines)).encode()).hexdigest()[:16]

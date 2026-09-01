@@ -114,12 +114,27 @@ class KovoAdapter:
         start = datetime(int(gd[:4]), int(gd[5:7]), int(gd[8:10]),
                          int(hh), int(mm), tzinfo=KST)
 
+        # **세트 하나 땄다고 끝난 것이 아니다 (v1.11h).**
+        #
+        # 전에는 `hspoint`(획득 세트 수)가 0이 아니면 FINAL이었다. 그러면
+        # 1세트가 끝나는 순간(보통 25~30분) "1:0 종료"가 성립한다.
+        # 배구 하한 50분을 넘긴 2세트 중반부터는 안전망 게이트도 못 막는다.
+        #
+        # 소스에는 종결 신호가 따로 있다: `getime`(경기 종료 시각).
+        # 실측(남자부 3,202행): 완료 경기 3,034행이 (점수·score문자열·getime)을
+        # 동시에 갖고, 미래 경기 126행은 셋 다 비어 있다.
         hs, as_ = r.get("hspoint"), r.get("aspoint")
-        # 상태값이 따로 없다. 세트 스코어가 둘 다 0이고 결과 문자열이 비면 아직 안 한 경기다.
-        played = bool(str(r.get("score") or "").strip()) or bool(hs or as_)
-        status = Status.FINAL if played else Status.SCHEDULED
+        ended = bool(str(r.get("getime") or "").strip())
+        has_score = bool(str(r.get("score") or "").strip()) or bool(hs or as_)
+        if ended:
+            status = Status.FINAL
+        elif has_score:
+            status = Status.LIVE          # 세트는 진행됐지만 경기는 안 끝났다
+        else:
+            status = Status.SCHEDULED
         score = (Score(int(hs), int(as_), ScoreUnit.SETS)
-                 if played and hs is not None and as_ is not None else None)
+                 if status is Status.FINAL and hs is not None and as_ is not None
+                 else None)
 
         sets: list[tuple[int, int]] = []
         for i in range(1, 6):

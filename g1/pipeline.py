@@ -25,7 +25,9 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
                       start_alert_lead_text, venue_name,
-                      assert_result_deadline, kst_day_label, result_deadline)
+                      assert_result_deadline, kst_day_label, result_deadline,
+                      SCORE_UNIT_BY_LEAGUE, ScoreUnit,
+                      shift_out_of_quiet_hours)
 from contract import assert_card_typography, team_name
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
@@ -43,7 +45,10 @@ _TYPO_JS = """
                     cls:(el.className||'').toString().slice(0,24),
                     // 줄 수 — 2 이상이면 그 요소가 두 줄로 접혔다는 뜻이다.
                     // 팀명이 접히면 행 높이가 들쭉날쭉해져 카드가 무너진다.
-                    lines: el.getClientRects().length});
+                    lines: el.getClientRects().length,
+                    // 말줄임(…)으로 잘린 칸. 줄바꿈이 아니라 잘리는 자리는
+                    // 기존 검사에 하나도 안 걸렸다 — 구장명이 "에인…"으로 나갔다.
+                    clipped: el.scrollWidth > el.clientWidth + 1});
       } else if(n.nodeType===1) walk(n);
     }
   };
@@ -100,6 +105,11 @@ class NameWrapped(GateError):
 # 팀명·점수처럼 한 줄이어야 하는 칸. 여기가 접히면 행 높이가 들쭉날쭉해진다.
 ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt")
 
+# **잘리면 안 되는 칸.** 이 칸들은 CSS가 줄바꿈 대신 말줄임(…)으로 처리하므로
+# 줄 수 검사에 아무것도 안 걸린다. 실측: MLB 모닝 8행 중 5행이 구장명 잘림
+# ("에인…", "다저 …", "그레이트…"). 잘린 이름은 정보가 아니다.
+NO_CLIP_CLASSES = ("meta", "p")
+
 
 def assert_no_wrapped_names(samples: list[dict]) -> None:
     """한 줄이어야 하는 칸이 접혔으면 막는다.
@@ -122,6 +132,25 @@ def assert_no_wrapped_names(samples: list[dict]) -> None:
             "한 줄이어야 하는 칸이 접혔습니다 — 행 높이가 무너집니다: "
             + " · ".join(bad[:4])
             + ". 표시명을 줄이거나 카드 CSS에서 크기를 낮추세요.")
+
+
+class TextClipped(GateError):
+    """이름이 말줄임으로 잘렸다 — 잘린 이름은 정보가 아니다."""
+
+
+def assert_not_clipped(samples: list[dict]) -> None:
+    """구장명·선수명이 …으로 잘렸으면 막는다."""
+    bad = []
+    for s in samples:
+        cls = str(s.get("cls") or "")
+        if not any(c in cls.split() for c in NO_CLIP_CLASSES):
+            continue
+        if s.get("clipped"):
+            bad.append(f"{s.get('t')!r}({cls})")
+    if bad:
+        raise TextClipped(
+            "이름이 잘려 나갑니다(…): " + " · ".join(bad[:5])
+            + ". 짧은 표기를 쓰거나 카드에서 그 칸을 빼세요.")
 
 
 OUT = pathlib.Path(__file__).resolve().parent / "dryrun"
@@ -186,13 +215,32 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     # 전에는 같은 시각(±5분) 경기를 묶어 시각마다 따로 보냈다. 리그가 아홉이 되자
     # 실측 **하루 26건**, 그중 17건이 MLB 새벽 1~3시대였다. 채널 도배다.
     # 이제 리그마다 하루 한 건, 그 리그 첫 경기의 리드타임(기본 2시간) 전에 보낸다.
-    by_sched: dict[str, list[Game]] = defaultdict(list)
+    # **예약 시각은 그날 첫 경기에 고정한다 (v1.11h).**
+    #
+    # 전에는 `SCHEDULED`인 경기만 모아 그중 첫 경기 기준으로 잡았다.
+    # 경기가 시작되면 그 경기가 집합에서 빠지므로 **예약 시각이 틱마다 뒤로 밀린다.**
+    # 멱등키는 그대로라 알림 한 건이 하루 종일 미끄러졌다 — 실측(MLB 08-29):
+    # 첫 경기 02:05인데 09:00에도 처리 대상이었고, 그때 알림은 이미 14경기 중
+    # 3경기만 남은 시간표였다. 리드 -420분(시작 7시간 뒤)까지 나갈 수 있었다.
+    #
+    # 예약 시각이 움직이면 유예·지각 판정 자체가 무의미해진다. 상태와 무관하게
+    # **그날 첫 경기**로 고정하고, 늦은 것은 is_late()가 버린다.
+    by_day: dict[str, list[Game]] = defaultdict(list)
     for g in games:
-        if g.status is Status.SCHEDULED:
-            by_sched[day_schedule_scope(g)].append(g)
-    for scope, gs in by_sched.items():
-        at = min(x.start_utc for x in gs) - timedelta(minutes=START_ALERT_LEAD_MINUTES)
-        if not (lo <= at <= hi):
+        by_day[day_schedule_scope(g)].append(g)
+    for scope, gs_all in by_day.items():
+        gs = [g for g in gs_all if g.status is Status.SCHEDULED]
+        if not gs:
+            continue                      # 전부 시작했거나 취소됐다 — 알릴 것이 없다
+        at = shift_out_of_quiet_hours(
+            min(x.start_utc for x in gs_all)
+            - timedelta(minutes=START_ALERT_LEAD_MINUTES))
+        # 지나간 예약도 큐에 남긴다. 유예(리드-5분)는 큐에 있는 항목에만 걸리므로,
+        # 여기서 잘라내면 유예가 한 번도 쓰이지 않는다 — 실측 창이 235분이 아니라
+        # 125분이었던 이유다. 너무 늦은 것은 is_late()가 버린다.
+        if at > hi:
+            continue
+        if (now - at).total_seconds() > GRACE_SECONDS[ContentType.START_ALERT]:
             continue
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.START_ALERT, scope,
@@ -368,21 +416,26 @@ def render_morning(games: list[Game], day: str,
     '오늘 KBO 1경기 / 5경기 편성'처럼 자기모순인 카드가 나왔다(실제 채널에 나갔다).
     열리는 경기 = 취소·연기가 아닌 경기다.
     """
+    # **취소와 연기는 다른 말이다 (v1.11h).** 둘을 한 낱말로 부르면
+    # 연기 경기를 "취소"라고 발표하게 된다.
     off = {Status.CANCELED, Status.POSTPONED}
     playable = [g for g in games if g.status not in off]
-    dropped = [g for g in games if g.status in off]
+    canceled = [g for g in games if g.status is Status.CANCELED]
+    postponed = [g for g in games if g.status is Status.POSTPONED]
+    dropped = canceled + postponed
 
     shown = sorted(games, key=lambda x: x.start_utc)[:top_n]
     rows = []
     for g in shown:
         kst, loc = format_kickoff(g)
         gone = g.status in off
-        reason = (g.meta.cancel_reason or "취소") if gone else ""
+        reason = (g.meta.cancel_reason
+                  or ("연기" if g.status is Status.POSTPONED else "취소")) if gone else ""
         rows.append(
             f'<div class="row{" off" if gone else ""}"><div class="mt">'
             f'{esc(team_name(g.away))}<span class="sep">vs</span>'
             f'{esc(team_name(g.home))}</div>'
-            f'<div class="meta">{esc(venue_name(g.venue))}'
+            f'<div class="meta">{esc(_card_venue(g))}'
             + (f' <span class="hook">{esc(reason)}</span>' if gone else "") +
             f'</div><div class="tm"><div class="k">{esc(kst)}</div>'
             + (f'<div class="l">현지 {esc(loc)}</div>' if loc else "") + "</div></div>")
@@ -392,13 +445,21 @@ def render_morning(games: list[Game], day: str,
     more = len(games) - len(shown)
     bits = []
     if dropped:
-        bits.append(f"{len(games)}경기 편성 · {len(dropped)}경기 취소")
+        _d = [f"{len(games)}경기 편성"]
+        if canceled:
+            _d.append(f"{len(canceled)}경기 취소")
+        if postponed:
+            _d.append(f"{len(postponed)}경기 연기")
+        bits.append(" · ".join(_d))
     if more:
         bits.append(f"아래에 나머지 {more}경기")
     # 안내 문구는 **실제로 하는 일**만 적는다. 예전에는 아직 없는 기능
     # ("예측 투표는 경기 3시간 전")을 안내하고 있었다 — 카드가 거짓말을 하면
     # 카드 전체를 못 믿게 된다.
-    sub = " · ".join(bits) if bits else start_alert_lead_text()
+    #
+    # 기본값으로 푸터와 같은 문장을 쓰지 않는다 — 같은 카드에 같은 말이 두 번
+    # 찍혀 있었다(헤드라인 아래와 푸터). 쓸 말이 없으면 비운다.
+    sub = " · ".join(bits)
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
     _dtk, _dtl = kst_day_label(games, day)
@@ -408,6 +469,37 @@ def render_morning(games: list[Game], day: str,
             f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, lg)
+
+
+# 카드 한 행의 가운데 칸(.meta)은 팀명 다음에 남는 자리라 아주 좁다.
+# 팀명이 긴 리그(MLB: '뉴욕양키스 vs LA에인절스')에서는 경기장이 들어갈 자리가 없어
+# "에인…", "그레이트…"로 잘려 나갔다 — 잘린 이름은 정보가 아니다.
+# **자리에 안 들어가면 카드에서 빼고 캡션에 남긴다.** 지어내서 줄이지 않는다.
+# 값은 짐작이 아니라 **실렌더로 맞췄다.** 게이트(assert_not_clipped)가 판정한다.
+CARD_VENUE_NAME_BUDGET = 8         # 양 팀 표시명 글자 수 합
+CARD_VENUE_MAX_LEN = 5             # 경기장 표시명 글자 수
+
+
+def _card_venue(g: Game) -> str:
+    """카드 행에 넣을 경기장. 자리에 안 들어가면 빈 문자열."""
+    v = venue_name(g.venue)
+    if not v:
+        return ""
+    names = len(team_name(g.away)) + len(team_name(g.home))
+    if names > CARD_VENUE_NAME_BUDGET or len(v) > CARD_VENUE_MAX_LEN:
+        return ""
+    return v
+
+
+def _dh(g: Game) -> str:
+    """더블헤더 표시. 같은 대진이 하루 두 번 나오면 오보로 보인다.
+
+    실측(MLB 2026-08-29): "보스턴 6:0 뉴욕양키스"와 "보스턴 2:9 뉴욕양키스"가
+    같은 캡션에 나란히 찍혔다. 어댑터는 `gameNumber`를 뽑아 두는데
+    스냅샷이 버리고 렌더도 안 썼다(둘 다 v1.11h에서 고침).
+    """
+    n = g.meta.doubleheader_seq
+    return f" ({n}차전)" if n and n > 1 else ""
 
 
 def day_word(games: list[Game], now: datetime | None = None) -> str:
@@ -424,7 +516,10 @@ def day_word(games: list[Game], now: datetime | None = None) -> str:
         return "오늘"
     first = min(g.start_utc for g in games).astimezone(KST)
     days = (first.date() - now.astimezone(KST).date()).days
-    if days <= 0:
+    if days < 0:
+        # 지난 날짜다. '오늘'이라 하면 하루 묵은 카드가 오늘 것으로 보인다.
+        return f"{first.month}월 {first.day}일"
+    if days == 0:
         return "오늘"
     if days == 1:
         if first.hour < 6:
@@ -482,22 +577,38 @@ def render_result(games: list[Game], day: str,
                         f'<div class="s1">{g.score.away}</div><div class="s2">{g.score.home}</div>'
                         f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
                         f'<div class="st">{st}</div></div>')
-    fin = [g for g in games if g.status is Status.FINAL]
+    # **점수 없는 FINAL은 '종료'로 세지 않는다.** 소스가 Final인데 점수를 빼면
+    # 그 경기는 행에도 없고 미확정에도 없어 카드에서 통째로 사라졌다 —
+    # 헤드라인만 "N경기 종료"로 남아 숫자와 본문이 어긋났다.
+    fin = [g for g in games if g.status is Status.FINAL and g.score]
+    canceled = [g for g in games if g.status is Status.CANCELED]
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
-    # 우천취소가 없는 종목에 '취소 경기 안내'를 쓰지 않는다.
-    tk = ("취소 경기는 편성 확정 시 안내" if lg in OUTDOOR_LEAGUES
-          else f"{lgname} 공식 결과")
+    # **실제로 하지 않는 일을 안내하지 않는다 (v1.11h).**
+    # "취소 경기는 편성 확정 시 안내"가 야외 리그 결과 카드에 무조건 박혀 있었다.
+    # 재편성을 안내하는 콘텐츠도 큐도 발송 경로도 없다 —
+    # "예측 투표는 경기 3시간 전"과 같은 계열의 거짓말이다.
+    # 대신 점수의 **단위**를 밝힌다: LCK 0:3이 맵 스코어라는 표시가 없었다.
+    tk = f"{lgname} 공식 결과"
+    _unit = SCORE_UNIT_BY_LEAGUE.get(lg)
+    _unit_ko = {ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어"}.get(_unit)
+    if _unit_ko:
+        tk += f" · {_unit_ko}"
     _dtk, _dtl = kst_day_label(games, day)
     _bits = []
     if len(done) > len(shown):
         _bits.append(f"아래에 나머지 {len(done) - len(shown)}경기")
+    if canceled:
+        # 모닝 카드는 취소를 밝히는데 결과 카드는 안 밝혔다 —
+        # "3경기 종료"인데 본문이 5행이면 읽는 사람이 센 수와 안 맞는다.
+        _bits.append(f"{len(canceled)}경기 취소")
     if pending:
         # 빠진 경기를 숨기지 않는다. 숨기면 '전 경기 결과'가 거짓이 된다.
         _bits.append(f"{len(pending)}경기는 아직 결과 미확정")
     body = (_hdr(*LEAGUE_COLORS[lg], lgname, "경기 결과",
                  _dtk,
-                 f'{esc(lgname)} <em>{len(fin)}경기</em> 종료',
+                 (f'{esc(lgname)} <em>전 경기 취소</em>' if (not fin and canceled)
+                  else f'{esc(lgname)} <em>{len(fin)}경기</em> 종료'),
                  " · ".join(_bits),
                  league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
@@ -530,6 +641,7 @@ def render_png(card_html: str, out: pathlib.Path) -> tuple[int, int, int]:
     # 폰트부터 본다. 두부 카드는 다른 어떤 검사를 통과해도 내보낼 수 없다.
     assert_korean_font(font)
     assert_no_wrapped_names(samples)
+    assert_not_clipped(samples)
     assert_card_typography([(x["t"], x["fs"], x["cls"]) for x in samples])
     im = Image.open(out).convert("RGB")
     w, h = im.size
@@ -566,9 +678,13 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
     first = ordered[0].start_utc
 
     # 같은 시각 경기는 한 줄 아래 모은다. 15경기가 15줄이면 읽히지 않는다.
+    # **그룹 키에 요일을 포함한다 (v1.11h).** `%H:%M`만 쓰면 한국 날짜가
+    # 다른 두 경기가 한 줄로 합쳐지고, 카드는 "일 01:30"이라 쓰는데
+    # 알림만 "01:30"이라 같은 사실을 다르게 말한다(유럽 주말 슬레이트).
     by_time: dict[str, list[Game]] = defaultdict(list)
     for g in ordered:
-        by_time[g.start_kst.strftime("%H:%M")].append(g)
+        _k, _ = format_kickoff(g)
+        by_time[_k].append(g)
 
     lines: list[str] = []
     for t, group in by_time.items():
@@ -925,10 +1041,20 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
     for g in sorted(games, key=lambda x: x.start_utc):
         kst, _ = format_kickoff(g)
         mark = f" · {esc(g.meta.cancel_reason or '취소')}" if g.status in off else ""
-        lines.append(f"{esc(kst)}  {esc(team_name(g.away))} vs {esc(team_name(g.home))}{mark}")
+        # 카드에서 자리가 없어 뺀 경기장을 여기서 살린다 — 캡션은 자리가 넉넉하다.
+        place = venue_name(g.venue)
+        vv = f" · {esc(place)}" if place else ""
+        lines.append(f"{esc(kst)}  {esc(team_name(g.away))} vs "
+                     f"{esc(team_name(g.home))}{vv}{mark}")
     lg = games[0].league if games else League.KBO
+    # **카드와 같은 수를 말한다 (v1.11h).** 카드 헤드라인은 열리는 경기 수,
+    # 캡션은 전체 수를 쓰고 있었다. 사진과 캡션은 한 메시지로 함께 나가므로
+    # "오늘 KBO 0경기 / 전체 편성 5경기"가 한 화면에 보였다(실측 불일치 16일).
+    _play = [g for g in games if g.status not in {Status.CANCELED, Status.POSTPONED}]
+    _off = len(games) - len(_play)
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} "
-            f"{day_word(games, now)} 전체 편성 {len(games)}경기</b>\n")
+            f"{day_word(games, now)} 편성 {len(_play)}경기"
+            + (f" (+{_off}경기 취소·연기)" if _off else "") + "</b>\n")
     tail = start_alert_lead_text()
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
@@ -941,7 +1067,7 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
         if g.status is Status.CANCELED:
             lines.append(f"{a} — {h} · {esc(g.meta.cancel_reason or '취소')}")
         elif g.status is Status.FINAL and g.score:
-            lines.append(f"{a} {g.score.away} : {g.score.home} {h}")
+            lines.append(f"{a} {g.score.away} : {g.score.home} {h}{_dh(g)}")
     # 결과가 안 나온 경기는 **점수 없이** 이름만 남긴다. 빼버리면 그날 편성이
     # 통째로 줄어든 것처럼 보이고, 점수를 적으면 진행 중 점수가 결과가 된다.
     pending = [g for g in sorted(games, key=lambda x: x.start_utc)
@@ -949,8 +1075,14 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
     for g in pending:
         lines.append(f"{esc(team_name(g.away))} — {esc(team_name(g.home))} · 결과 미확정")
     lg = games[0].league if games else League.KBO
-    fin = [g for g in games if g.status is Status.FINAL]
-    head = f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} 전 경기 결과 {len(fin)}경기</b>\n"
+    fin = [g for g in games if g.status is Status.FINAL and g.score]
+    cx = [g for g in games if g.status is Status.CANCELED]
+    _name = esc(LEAGUE_LABEL.get(lg, lg.value))
+    if not fin and cx:
+        head = f"📋 <b>{_name} 전 경기 취소 {len(cx)}경기</b>\n"
+    else:
+        head = (f"📋 <b>{_name} 전 경기 결과 {len(fin)}경기</b>"
+                + (f" (+{len(cx)}경기 취소)" if cx else "") + "\n")
     return _clip_parts(head, lines) if as_parts else _clip(head, lines)
 
 

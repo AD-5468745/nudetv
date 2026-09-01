@@ -43,7 +43,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch, make_opener
 
-from contract import (GateError, Game, GameMeta, KBL_SEASON_CATEGORY_ALLOW, League,
+from contract import (GateError, Game, GameMeta, KBL_SEASON_CATEGORY_ALLOW,
+                      KBL_PUBLISH_CATEGORIES, League,
                       SOURCE_RESULTLESS_CATEGORIES, STALE_SCHEDULED_GRACE_SECONDS,
                       Score, ScoreUnit, Status, TeamRef, UnknownStatus)
 
@@ -98,10 +99,27 @@ class KblAdapter:
         resultless = SOURCE_RESULTLESS_CATEGORIES.get(League.KBL, frozenset())
         out: list[Game] = []
         self.unresolved = []
+        self.skipped_categories = 0
         for r in rows:
+            # **1군인지 먼저 본다 (v1.11h).**
+            # `seasonCategory`만으로는 D리그를 못 거른다 — D리그가 PO·CP 코드를
+            # 그대로 쓰기 때문이다. 실측(2025-26 전 시즌): grade=2(D리그)에
+            # PO 5경기 · CP 1경기가 있고, 그 경기들이 카테고리 필터를 통과해
+            # 상무(2군 팀)가 KBL 경기로 들어왔다.
+            # 구분 신호는 `seasonGrade`(1=KBL · 2=D리그)와 `seasonName1`이다.
+            if int(r.get("seasonGrade") or 1) != 1:
+                self.skipped_categories += 1
+                continue
             cat = (r.get("seasonCategory") or "").strip()
             if cat not in KBL_SEASON_CATEGORY_ALLOW:
-                continue                       # D리그·오픈매치는 여기서 걸러진다
+                continue                       # 오픈매치 등은 여기서 걸러진다
+            # **EASL·올스타는 발행 대상이 아니다 (v1.11h).**
+            # 외국 구단(뉴타이베이킹스…)·가상팀(팀아시아…)이 등장해
+            # `assert_team_names_cover`가 **KBL 리그 전체 수집을 막는다.**
+            # 수집 창이 21일이라 그 경기 하나가 3주간 KBL을 침묵시킨다.
+            if cat not in KBL_PUBLISH_CATEGORIES:
+                self.skipped_categories += 1
+                continue
             g = self._parse(r, cat)
 
             # ── 소스 소관 밖의 지난 경기는 '예정'으로 내보내지 않는다 ──

@@ -67,9 +67,18 @@ def _team(node: dict) -> str:
     return code
 
 
+# 발행 대상 경기 종류. R=정규 · F/D/L/W=포스트시즌.
+# A(올스타)·E(시범)·S(스프링)·I(인터리그 연습) 등은 제외한다.
+_GAME_TYPES = frozenset({"R", "F", "D", "L", "W"})
+
+
 class MlbAdapter:
     """일정·결과."""
     league = League.MLB
+
+    def __init__(self) -> None:
+        self.skipped_types = 0
+        self.skipped_unknown: list[str] = []
 
     def fetch(self, start: str, end: str) -> list[Game]:
         url = (f"{_API}/schedule?sportId=1&startDate={start}&endDate={end}"
@@ -83,7 +92,21 @@ class MlbAdapter:
         out: list[Game] = []
         for day in dates:
             for g in day.get("games", []):
-                out.append(self._parse(g))
+                # **올스타전·시범경기는 우리 대상이 아니다 (v1.11h).**
+                # 전에는 걸러내지 않아 'National League All-Stars'·대학팀 같은
+                # 미등록 팀 id에서 `UnknownStatus`가 나고 **MLB 수집 전체가 죽었다**
+                # (실측: 7/11~7/17 올스타 주간, 2월 시범경기 기간 전체 결번).
+                if str(g.get("gameType") or "R") not in _GAME_TYPES:
+                    self.skipped_types += 1
+                    continue
+                try:
+                    out.append(self._parse(g))
+                except UnknownStatus as e:
+                    # 한 경기의 미등록 값이 리그 전체를 침묵시키지 않게 한다.
+                    self.skipped_unknown.append(str(e)[:120])
+                    continue
+        if not out:
+            raise GateError(f"MLB: 파싱 후 0건 ({start}~{end}) — 0건은 항상 의심")
         return out
 
     def _parse(self, g: dict) -> Game:
@@ -107,7 +130,7 @@ class MlbAdapter:
             home=TeamRef(League.MLB, _team(home_n["team"])),
             away=TeamRef(League.MLB, _team(away_n["team"])),
             start_utc=start.astimezone(timezone.utc),
-            home_tz=_venue_tz(g.get("venue", {}).get("id")),
+            home_tz=_team_tz(_team(home_n["team"])),
             status=status, score=score,
             venue=g.get("venue", {}).get("name"),
             # MLB가 홈 현지 캘린더 날짜를 직접 준다. 계산하지 않는다.
@@ -121,17 +144,32 @@ class MlbAdapter:
 
 
 # 구장 → 시간대. 현지시간 병기에만 쓰인다(sports_day는 officialDate를 그대로 쓴다).
-_VENUE_TZ = {
-    2394: "America/Detroit", 3309: "America/New_York", 15: "America/Denver",
-    1: "America/New_York", 2: "America/Chicago", 3: "America/New_York",
-    4: "America/New_York", 5: "America/New_York", 7: "America/New_York",
-    12: "America/New_York", 13: "America/New_York", 14: "America/Toronto",
-    17: "America/Chicago", 19: "America/Chicago", 22: "America/Los_Angeles",
-    31: "America/Chicago", 32: "America/New_York", 680: "America/Los_Angeles",
-    2392: "America/New_York", 2395: "America/New_York", 2680: "America/Los_Angeles",
-    2681: "America/Chicago", 2889: "America/Phoenix", 3289: "America/New_York",
-    4169: "America/New_York", 5325: "America/Los_Angeles", 5340: "America/Chicago",
-    2602: "America/New_York", 2532: "America/Chicago", 10: "America/Los_Angeles",
+# **홈 구단의 시간대**. 전에는 구장 id 표를 썼는데, 표가 낡아서
+# 2026시즌 정규경기 98건 중 **45건(46%)의 현지 시각이 최대 3시간 어긋났다**
+# (에인절 스타디움·글로브 라이프·타깃 필드·카우프만·체이스 필드 …).
+# 구장 id는 이전·개보수·임시 홈에서 계속 바뀌지만 **구단의 연고 시간대는 안 바뀐다.**
+# 그래서 기준을 구장이 아니라 팀으로 옮긴다.
+_TEAM_TZ = {
+    # 아메리칸리그 동부
+    "BAL": "America/New_York", "BOS": "America/New_York", "NYY": "America/New_York",
+    "TB": "America/New_York", "TOR": "America/Toronto",
+    # 아메리칸리그 중부
+    "CWS": "America/Chicago", "CLE": "America/New_York", "DET": "America/Detroit",
+    "KC": "America/Chicago", "MIN": "America/Chicago",
+    # 아메리칸리그 서부
+    "HOU": "America/Chicago", "LAA": "America/Los_Angeles",
+    "ATH": "America/Los_Angeles",          # 새크라멘토 임시 홈 (구 오클랜드)
+    "SEA": "America/Los_Angeles", "TEX": "America/Chicago",
+    # 내셔널리그 동부
+    "ATL": "America/New_York", "MIA": "America/New_York", "NYM": "America/New_York",
+    "PHI": "America/New_York", "WSH": "America/New_York",
+    # 내셔널리그 중부
+    "CHC": "America/Chicago", "CIN": "America/New_York", "MIL": "America/Chicago",
+    "PIT": "America/New_York", "STL": "America/Chicago",
+    # 내셔널리그 서부
+    "ARI": "America/Phoenix",              # 애리조나는 서머타임이 없다
+    "COL": "America/Denver", "LAD": "America/Los_Angeles",
+    "SD": "America/Los_Angeles", "SF": "America/Los_Angeles",
 }
 
 
@@ -152,9 +190,20 @@ def _display_name(person: dict, peers: list[dict]) -> str:
     return last
 
 
-def _venue_tz(vid) -> str:
-    """모르면 뉴욕으로 둔다 — 현지시간 병기가 한 시간 어긋날 뿐 사실이 깨지지 않는다."""
-    return _VENUE_TZ.get(vid, "America/New_York")
+class UnknownTeamTz(GateError):
+    """홈 팀의 시간대를 모른다 — 현지 시각을 지어내지 않는다."""
+
+
+def _team_tz(code: str) -> str:
+    """홈 팀 코드로 현지 시간대를 찾는다.
+
+    **모르면 조용히 뉴욕으로 두지 않는다.** 그 폴백 때문에 절반이 틀린 채로
+    매일 카드에 찍히고 있었다. 30개 표는 팀이 바뀌지 않는 한 완전하므로,
+    빠지면 그것 자체가 사고 신호다."""
+    tz = _TEAM_TZ.get(code)
+    if not tz:
+        raise UnknownTeamTz(f"MLB: 홈 팀 {code!r}의 시간대를 모릅니다 — _TEAM_TZ에 추가하세요")
+    return tz
 
 
 class MlbRecordAdapter:

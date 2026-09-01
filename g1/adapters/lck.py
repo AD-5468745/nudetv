@@ -286,12 +286,26 @@ class LckAdapter:
             self.skipped_placeholder = getattr(self, "skipped_placeholder", 0) + 1
             return None                       # 대진 미발행(토너먼트 등록만 된 상태)
 
+        # **끝났는지는 Winner만이 안다 (v1.11h).**
+        #
+        # Leaguepedia는 `Team1Score`/`Team2Score`를 **세트가 끝날 때마다 갱신한다.**
+        # 전에는 `winner or 점수있음`으로 판정해서, BO5 1세트가 끝나는 순간
+        # "T1 1-0 BNK FEARX 종료"가 성립했다. 실제 캐시에 그 순간이 남아 있다
+        # (lck_be5519f46fada1a9.json: Team1Score=1, Team2Score=0, Winner='' —
+        #  같은 매치의 최종 결과는 3-2). KBO의 "점수 있으면 종료"와 같은 계열이다.
+        #
+        # 점수는 결과가 아니라 진행 상황이다. 종결 신호는 Winner 하나뿐이다.
         s1, s2 = r.get("Team1Score"), r.get("Team2Score")
         winner = str(r.get("Winner") or "").strip()
-        played = bool(winner) or (s1 not in (None, "") and s2 not in (None, ""))
-        status = Status.FINAL if played else Status.SCHEDULED
+        has_score = s1 not in (None, "") and s2 not in (None, "")
+        if winner:
+            status = Status.FINAL
+        elif has_score:
+            status = Status.LIVE          # 세트는 진행됐지만 매치는 안 끝났다
+        else:
+            status = Status.SCHEDULED
         score = None
-        if played and s1 not in (None, "") and s2 not in (None, ""):
+        if status is Status.FINAL and has_score:
             # LoL은 세트(맵) 스코어다. team1=홈 자리로 둔다(중립 경기가 많다).
             score = Score(int(float(s1)), int(float(s2)), ScoreUnit.MAPS)
 
@@ -304,7 +318,11 @@ class LckAdapter:
             away=TeamRef(self.league, _team_code(t2, self.league)),
             start_utc=start,
             # 국제대회는 개최지가 옮겨 다닌다. 한국 대회는 KST가 홈 시간대다.
-            home_tz="Asia/Seoul" if self.league is League.LCK else "UTC",
+            # **국제 대회 개최지 시간대를 모르면 UTC를 '현지'라고 부르지 않는다.**
+            # 전에는 UTC를 넣어 카드에 "현지 07:30"이 찍혔다 — 그 시각은
+            # 어느 개최지의 시각도 아니다. 개최지 tz를 못 받으므로
+            # 한국 시간대로 두고, 현지 병기 자체를 끈다(needs_local_time이 꺼진다).
+            home_tz="Asia/Seoul",
             status=status, score=score, venue=None,
             meta=GameMeta(season_category=r.get("Name") or None,
                           best_of=int(bo) if str(bo).isdigit() else None),

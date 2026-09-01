@@ -413,6 +413,112 @@ _, g_fin2 = ad._parse_row(kbo_row("LG 2 vs 5 두산", "리뷰"), 2026, "20260901
 check("종료 경기에는 점수를 붙인다", g_fin2.score is not None)
 
 
+# ── 9. 정밀진단(2026-09-01)에서 나온 것들 ───────────────────────────────
+print("9. 정밀진단 수정 — 시각·문구·안전")
+
+from contract import (demote_impossible_finals,  # noqa: E402
+                      shift_out_of_quiet_hours)
+
+# (1) '종료'가 불가능한 경기는 막지 말고 되돌린다 — 리그 전체를 죽이지 않는다
+early = [mk(League.KBO, "2026-09-02", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+            status=Status.FINAL, score=Score(0, 0, ScoreUnit.RUNS)),
+         mk(League.KBO, "2026-09-02", 18, 30, tz="Asia/Seoul", h="SS", a="KT",
+            status=Status.FINAL, score=Score(7, 4, ScoreUnit.RUNS))]
+at48 = (datetime(2026, 9, 2, 19, 18, tzinfo=KST)).astimezone(timezone.utc)
+fixed, notes = demote_impossible_finals(early, at48)
+check("불가능한 '종료'를 LIVE로 되돌린다",
+      all(g.status is Status.LIVE for g in fixed), str([g.status.value for g in fixed]))
+check("되돌린 경기의 점수는 지운다", all(g.score is None for g in fixed))
+check("무엇을 되돌렸는지 사람에게 알린다", len(notes) == 2, str(notes))
+check("원본을 바꾸지 않는다", all(g.status is Status.FINAL for g in early))
+late = (datetime(2026, 9, 2, 23, 0, tzinfo=KST)).astimezone(timezone.utc)
+kept, notes2 = demote_impossible_finals(early, late)
+check("정상 종료는 건드리지 않는다",
+      all(g.status is Status.FINAL for g in kept) and not notes2)
+
+# (2) 한국시각 심야에는 시작 알림을 울리지 않는다
+for hh, expect in ((5, 22), (3, 22), (0, 22), (6, 6), (23, 23), (16, 16)):
+    src = datetime(2026, 9, 3, hh, 5, tzinfo=KST).astimezone(timezone.utc)
+    got = shift_out_of_quiet_hours(src).astimezone(KST)
+    check(f"심야 판정 {hh:02d}시", got.hour == expect, f"{got:%m-%d %H:%M}")
+check("심야면 전날로 옮긴다",
+      shift_out_of_quiet_hours(
+          datetime(2026, 9, 3, 3, 0, tzinfo=KST).astimezone(timezone.utc)
+      ).astimezone(KST).day == 2)
+
+# (3) 시작 알림 예약은 첫 경기에 고정된다 (경기가 시작돼도 밀리지 않는다)
+slate = [mk(League.MLB, "2026-09-10", 13, 5, tz="America/New_York", h="ATL", a="SF"),
+         mk(League.MLB, "2026-09-10", 19, 10, tz="America/New_York", h="NYY", a="BOS")]
+first_utc = min(g.start_utc for g in slate)
+q1 = P.build_queue(slate, first_utc - timedelta(hours=5), "ch",
+                   floor_hours=0, horizon_hours=72)
+sa1 = [i for i in q1 if i.content_type is C.ContentType.START_ALERT]
+check("시작 알림이 큐에 있다", bool(sa1))
+# 첫 경기가 시작돼 FINAL이 되어도 예약 시각은 그대로여야 한다
+started = [mk(League.MLB, "2026-09-10", 13, 5, tz="America/New_York", h="ATL", a="SF",
+              status=Status.FINAL, score=Score(1, 2, ScoreUnit.RUNS)),
+           slate[1]]
+q2 = P.build_queue(started, first_utc + timedelta(hours=3), "ch",
+                   floor_hours=0, horizon_hours=72)
+sa2 = [i for i in q2 if i.content_type is C.ContentType.START_ALERT]
+check("경기가 시작돼도 예약 시각이 밀리지 않는다",
+      (not sa2) or sa1[0].scheduled_utc == sa2[0].scheduled_utc,
+      f"{sa1[0].scheduled_utc} vs {sa2[0].scheduled_utc if sa2 else None}")
+
+# (4) 결과 카드: 전 경기 취소 / 취소 건수 / 없는 기능 안내 제거
+cx_day = [mk(League.KBO, "2026-08-05", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+             status=Status.CANCELED),
+          mk(League.KBO, "2026-08-05", 18, 30, tz="Asia/Seoul", h="SS", a="KT",
+             status=Status.CANCELED)]
+for g in cx_day:
+    g.meta.cancel_reason = "폭염취소"
+h_cx = _re2.sub("<[^>]+>", " ", P.render_result(cx_day, "2026-08-05"))
+check("전 경기 취소된 날은 '전 경기 취소'라 한다", "전 경기 취소" in h_cx, h_cx[:0])
+check("'0경기 종료'라는 무의미한 말을 안 한다", "0경기 종료" not in h_cx)
+check("없는 기능을 안내하지 않는다", "편성 확정 시 안내" not in h_cx)
+check("캡션도 같은 말을 한다",
+      "전 경기 취소" in P.caption_result(cx_day, "2026-08-05").splitlines()[0])
+
+mixed2 = cx_day + [mk(League.KBO, "2026-08-05", 18, 30, tz="Asia/Seoul", h="HH", a="NC",
+                      status=Status.FINAL, score=Score(3, 5, ScoreUnit.RUNS))]
+h_mx = _re2.sub("<[^>]+>", " ", P.render_result(mixed2, "2026-08-05"))
+check("결과 카드가 취소 건수를 밝힌다", "2경기 취소" in h_mx, h_mx[:0])
+
+# (5) 카드와 캡션이 같은 경기 수를 말한다
+mor = _re2.sub("<[^>]+>", " ", P.render_morning(mixed2, "2026-08-05",
+                                                now=datetime(2026, 8, 5, 7, 30, tzinfo=KST)))
+cap_m = P.caption_morning(mixed2, "2026-08-05",
+                          now=datetime(2026, 8, 5, 7, 30, tzinfo=KST))
+check("카드 헤드라인은 열리는 경기 수", "1경기" in mor, mor[:0])
+check("캡션도 같은 수를 말한다", "편성 1경기" in cap_m, cap_m.splitlines()[0])
+check("캡션이 취소 수를 병기한다", "2경기 취소" in cap_m.splitlines()[0],
+      cap_m.splitlines()[0])
+
+# (6) 지난 날짜를 '오늘'이라 하지 않는다
+past = [mk(League.KBO, "2026-08-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG")]
+check("지난 날짜는 날짜로 말한다",
+      P.day_word(past, datetime(2026, 9, 1, 12, 0, tzinfo=KST)) == "8월 1일",
+      P.day_word(past, datetime(2026, 9, 1, 12, 0, tzinfo=KST)))
+
+# (7) 더블헤더 표시
+dh = [mk(League.MLB, "2026-08-29", 13, 5, tz="America/New_York", h="NYY", a="BOS",
+         status=Status.FINAL, score=Score(6, 0, ScoreUnit.RUNS)),
+      mk(League.MLB, "2026-08-29", 19, 5, tz="America/New_York", h="NYY", a="BOS",
+         status=Status.FINAL, score=Score(2, 9, ScoreUnit.RUNS))]
+dh[1].meta.doubleheader_seq = 2
+cap_dh = P.caption_result(dh, "2026-08-29")
+check("더블헤더 2차전을 표시한다", "(2차전)" in cap_dh, cap_dh)
+check("1차전에는 안 붙인다", cap_dh.count("차전") == 1)
+
+# (8) 점수 없는 FINAL을 '종료'로 세지 않는다
+noscore = [mk(League.KBO, "2026-08-29", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+              status=Status.FINAL, score=Score(3, 1, ScoreUnit.RUNS)),
+           mk(League.KBO, "2026-08-29", 18, 30, tz="Asia/Seoul", h="SS", a="KT",
+              status=Status.LIVE)]
+h_ns = _re2.sub("<[^>]+>", " ", P.render_result(noscore, "2026-08-29"))
+check("헤드라인과 본문 행 수가 맞는다", "1경기" in h_ns and "미확정" in h_ns, h_ns[:0])
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

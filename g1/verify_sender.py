@@ -227,7 +227,14 @@ snd = Sender(tr, led, CHAT, daily_max=3,
 states = [snd.send(q(ContentType.EVERGREEN, f"e{i}"), Payload(text=f"글 {i}")).state
           for i in range(5)]
 check("상한 3에서 멈춤", states.count(SendState.SENT) == 3, states)
-check("초과분은 FAILED", states.count(SendState.FAILED) == 2)
+# 초과분은 **FAILED가 아니라 QUEUED**다 (v1.11h).
+# FAILED로 못 박으면 그 항목은 매 틱 다시 시도해 매 틱 다시 실패하고,
+# 대장에 실패 줄만 무한히 쌓인다(실측 26건). 상한은 "오늘은 그만"이지
+# "이 발행은 실패"가 아니다 — 유예 안이면 다음 날 나가야 한다.
+check("초과분은 QUEUED로 남는다", states.count(SendState.QUEUED) == 2, states)
+check("초과분은 대장에 실패로 못 박히지 않는다",
+      all(r.state is not SendState.FAILED for r in led._rows.values()),
+      str([r.state.value for r in led._rows.values()]))
 n_before = len(tr.sent)
 check("정정 안내는 상한과 무관하게 나감",
       snd.send(q(ContentType.CORRECTION, "fix1"), Payload(text="정정")).state is SendState.SENT)
@@ -236,7 +243,10 @@ check("정정 안내는 상한과 무관하게 나감",
 print("\nH. 오류 알림")
 tr = Fake()
 led = Ledger(pathlib.Path(tmp) / "alert.jsonl")
-snd = Sender(tr, led, CHAT, daily_max=1,
+# 알림 목적지를 **명시**한다. v1.11h부터 목적지가 없으면 알림을 보내지 않는다 —
+# 발행 채널로 폴백하면 구독자가 내부 장애 메시지를 본다.
+ALERT_TO = "-100999"
+snd = Sender(tr, led, CHAT, daily_max=1, alert_chat_id=ALERT_TO,
              pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: NOW)
 snd.send(q(ContentType.MORNING, "d1"), Payload(text="본문"))       # 상한 소진
 sent_ok = snd.alert("KBO 수집 실패", ["소스 응답 0건", "09:20 대사에서 감지"])
@@ -244,7 +254,14 @@ check("상한을 다 써도 알림은 나감", sent_ok)
 last = tr.calls[-1]
 check("알림은 텍스트로 나감 (카드 아님)", last[0] == "sendMessage")
 check("⚠️ 접두 + 인용블록", "⚠️" in last[1]["text"] and "<blockquote" in last[1]["text"])
-check("알림 목적지 기본 = 발행 채널", last[1]["chat_id"] == CHAT)
+check("알림은 알림 채널로 간다 (발행 채널 아님)",
+      last[1]["chat_id"] == ALERT_TO and last[1]["chat_id"] != CHAT)
+# 목적지가 아예 없으면 **보내지 않는다** (v1.11h) — 구독 채널로 흘리지 않는다.
+snd_noalert = Sender(tr, Ledger(pathlib.Path(tmp) / "na.jsonl"), CHAT, alert_chat_id=None,
+                     pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: NOW)
+_before = len(tr.calls)
+check("알림 목적지가 없으면 안 보낸다",
+      snd_noalert.alert("테스트", ["본문"]) is False and len(tr.calls) == _before)
 
 tr2 = Fake(["403"])
 snd2 = Sender(tr2, Ledger(pathlib.Path(tmp) / "a2.jsonl"), CHAT,

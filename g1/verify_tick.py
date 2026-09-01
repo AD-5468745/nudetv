@@ -780,12 +780,27 @@ check("예약 시각이 바뀌어도 멱등키는 같다 (중복 발송 없음)"
       _it.idem_key == _it2.idem_key == _it3.idem_key,
       f"{_it.idem_key} / {_it2.idem_key}")
 
-# 전부 취소된 날은 카드를 만들지 않는다 (빈 결과 카드를 내보내지 않는다)
+# **전부 취소된 날도 알린다 (v1.11h에서 바뀜).**
+# 전에는 FINAL이 0건이면 카드를 안 만들었다. 그래서 여름 KBO 우천·폭염
+# 종일 취소(실측 5일)에 구독자는 취소 사실을 채널에서 못 봤다 —
+# 모닝은 07:30에 나가고 취소는 그 뒤에 발표되기 때문이다.
+# 이제 "전 경기 취소" 카드를 낸다.
 _off = [_kbo("LG", "OB", 14, Status.CANCELED, cancel="우천취소"),
         _kbo("KT", "SS", 15, Status.CANCELED, cancel="우천취소")]
 _it5 = _result_item(_off)
-check("전부 취소된 날은 결과 카드를 만들지 않는다",
-      _it5 is None or T.render_for(_it5, _off) is None)
+check("전부 취소된 날도 결과 카드를 만든다", _it5 is not None)
+_r5 = T.render_for(_it5, _off) if _it5 else None
+check("그 카드는 '전 경기 취소'라고 말한다",
+      bool(_r5) and "전 경기 취소" in "".join(_r5[1]),
+      str(_r5[1])[:120] if _r5 else "None")
+check("취소 사유가 실린다", bool(_r5) and "우천취소" in "".join(_r5[1]))
+
+# 아무것도 끝나지 않은 날(전부 예정·진행 중)은 여전히 카드를 안 만든다
+_pending = [_kbo("LG", "OB", 14, Status.SCHEDULED),
+            _kbo("KT", "SS", 15, Status.SCHEDULED)]
+_it6 = _result_item(_pending)
+check("아무것도 종결 안 됐으면 결과 카드를 안 만든다",
+      _it6 is None or T.render_for(_it6, _pending) is None)
 
 # 마지막 경기 종료를 얼마나 빨리 알아차리는가 — 대표님 기준은 1시간
 _lag = (T.FETCH_EVERY_LIVE_SECONDS + 5 * 60) / 60      # 수집 주기 + 5분 시계
