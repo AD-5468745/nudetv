@@ -445,9 +445,25 @@ def _name_cls(name: str) -> str:
     return " n6" if n == 6 else (" n7" if n >= 7 else "")
 
 
+# 결과 카드에 실을 수 있는 상태 — **결과가 확정된 것만**.
+# LIVE(진행 중)·SCHEDULED는 결과가 아니다. 이 구분이 없어서 2026-09-01에
+# 진행 중인 KBO 5경기가 "0:0 무승부 종료"로 카드에 실려 채널에 나갔다.
+SETTLED_FOR_RESULT = frozenset({Status.FINAL, Status.CANCELED})
+
+
 def render_result(games: list[Game], day: str,
                   top_n: int = CARD_ROWS_MAX) -> str:
-    shown = sorted(games, key=lambda x: x.start_utc)[:top_n]
+    """그날 결과 카드.
+
+    **결과가 확정된 경기만 싣는다.** 진행 중 경기를 빼는 것이 아니라,
+    애초에 결과가 아닌 것을 결과라고 부르지 않는 것이다.
+    보통은 `league_day_settled()`가 전부 끝난 뒤에만 이 카드를 만들지만,
+    우천 연기 등으로 영영 종결되지 않는 경기가 있으면 마감 시각에 그때까지의
+    결과로 내보낸다 — 그때 빠진 경기 수를 카드에 **명시한다**.
+    """
+    done = [g for g in games if g.status in SETTLED_FOR_RESULT]
+    pending = [g for g in games if g.status not in SETTLED_FOR_RESULT]
+    shown = sorted(done, key=lambda x: x.start_utc)[:top_n]
     rows = []
     for g in shown:
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
@@ -457,7 +473,7 @@ def render_result(games: list[Game], day: str,
                         f'<div class="s2">—</div>'
                         f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
                         f'<div class="st">{esc(g.meta.cancel_reason or "취소")}</div></div>')
-        elif g.score:
+        elif g.status is Status.FINAL and g.score:
             draw = g.is_draw()
             cls = "dr" if draw else ("w1" if g.score.away > g.score.home else "w2")
             st = "무승부" if draw else "종료"
@@ -473,10 +489,16 @@ def render_result(games: list[Game], day: str,
     tk = ("취소 경기는 편성 확정 시 안내" if lg in OUTDOOR_LEAGUES
           else f"{lgname} 공식 결과")
     _dtk, _dtl = kst_day_label(games, day)
+    _bits = []
+    if len(done) > len(shown):
+        _bits.append(f"아래에 나머지 {len(done) - len(shown)}경기")
+    if pending:
+        # 빠진 경기를 숨기지 않는다. 숨기면 '전 경기 결과'가 거짓이 된다.
+        _bits.append(f"{len(pending)}경기는 아직 결과 미확정")
     body = (_hdr(*LEAGUE_COLORS[lg], lgname, "경기 결과",
                  _dtk,
                  f'{esc(lgname)} <em>{len(fin)}경기</em> 종료',
-                 f"아래에 나머지 {len(games) - len(shown)}경기" if len(games) > len(shown) else "",
+                 " · ".join(_bits),
                  league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
             f'<div class="foot"><div class="tk">{esc(tk)}</div>'
@@ -918,8 +940,14 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
         if g.status is Status.CANCELED:
             lines.append(f"{a} — {h} · {esc(g.meta.cancel_reason or '취소')}")
-        elif g.score:
+        elif g.status is Status.FINAL and g.score:
             lines.append(f"{a} {g.score.away} : {g.score.home} {h}")
+    # 결과가 안 나온 경기는 **점수 없이** 이름만 남긴다. 빼버리면 그날 편성이
+    # 통째로 줄어든 것처럼 보이고, 점수를 적으면 진행 중 점수가 결과가 된다.
+    pending = [g for g in sorted(games, key=lambda x: x.start_utc)
+               if g.status not in SETTLED_FOR_RESULT]
+    for g in pending:
+        lines.append(f"{esc(team_name(g.away))} — {esc(team_name(g.home))} · 결과 미확정")
     lg = games[0].league if games else League.KBO
     fin = [g for g in games if g.status is Status.FINAL]
     head = f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} 전 경기 결과 {len(fin)}경기</b>\n"

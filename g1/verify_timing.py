@@ -346,7 +346,9 @@ ad = KboAdapter()
 _, g_live = ad._parse_row(kbo_row("LG 0 vs 0 두산", ""), 2026, "20260901")
 check("진행 중(중계 칸 빈칸) → LIVE", g_live.status is Status.LIVE,
       g_live.status.value)
-check("진행 중이어도 점수는 담는다", g_live.score is not None)
+# 앞서 이 자리에는 "진행 중이어도 점수는 담는다"가 있었다. 틀린 가정이었다 —
+# KBO가 진행 중에 채우는 값은 러닝 스코어가 아니라 0-0 자리표시자다(2회 관측 확인).
+check("진행 중 경기에는 점수를 담지 않는다", g_live.score is None, str(g_live.score))
 _, g_fin = ad._parse_row(kbo_row("LG 2 vs 5 두산", "리뷰"), 2026, "20260901")
 check("종료(중계 칸 '리뷰') → FINAL", g_fin.status is Status.FINAL, g_fin.status.value)
 check("종료 점수가 맞다", g_fin.score.away == 2 and g_fin.score.home == 5,
@@ -363,6 +365,52 @@ mixed = [mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
             status=Status.LIVE)]
 check("한 경기라도 진행 중이면 결과 카드를 안 만든다",
       not P.league_day_settled(mixed, "2026-09-01"))
+
+
+# ── 8. 결과 카드는 '결과가 확정된 것'만 싣는가 ──────────────────────────
+# 어댑터를 고쳐 진행 중 경기를 LIVE로 바로잡았는데, **렌더는 여전히 score만 보고**
+# 그렸다. 그래서 상태를 고쳐도 카드에는 "0:0 무승부"가 그대로 실렸다.
+# 한쪽만 고치면 사고는 안 막힌다 — 상태·렌더·캡션을 함께 친다.
+print("8. 결과 카드 — 진행 중 경기를 결과로 그리지 않는가")
+
+import re as _re2  # noqa: E402
+
+live_day = [
+    mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+       status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS)),
+    mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="SS", a="LT",
+       status=Status.LIVE),
+    mk(League.KBO, "2026-09-01", 18, 30, tz="Asia/Seoul", h="KT", a="HH",
+       status=Status.LIVE, score=Score(0, 0, ScoreUnit.RUNS)),   # 자리표시자가 남아도
+]
+html = P.render_result(live_day, "2026-09-01")
+txt = _re2.sub("<[^>]+>", " ", html)
+check("종료 경기는 실린다", "LG" in txt and "5" in txt)
+check("진행 중 경기를 '무승부'로 그리지 않는다", "무승부" not in txt, txt[:0])
+check("헤드라인이 종료 경기 수만 센다", "1경기" in txt, txt[:0])
+check("빠진 경기 수를 숨기지 않는다", "2경기는 아직 결과 미확정" in txt, txt[:0])
+
+cap = P.caption_result(live_day, "2026-09-01")
+check("캡션도 진행 중을 점수로 적지 않는다", "0 : 0" not in cap, cap)
+check("캡션이 진행 중 경기를 통째로 빼지도 않는다", cap.count("결과 미확정") == 2, cap)
+check("캡션 헤드라인도 종료 경기 수", "결과 1경기" in cap, cap.splitlines()[0])
+
+# 전부 끝난 날은 예전과 똑같이 나온다 (회귀 방지)
+all_done = [mk(League.KBO, "2026-08-29", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
+               status=Status.FINAL, score=Score(8, 3, ScoreUnit.RUNS)),
+            mk(League.KBO, "2026-08-29", 17, 0, tz="Asia/Seoul", h="SS", a="KT",
+               status=Status.CANCELED)]
+all_done[1].meta.cancel_reason = "우천취소"
+h2 = _re2.sub("<[^>]+>", " ", P.render_result(all_done, "2026-08-29"))
+check("전부 종결된 날엔 '미확정' 문구가 안 붙는다", "미확정" not in h2, h2[:0])
+check("취소 경기는 그대로 실린다", "우천취소" in h2)
+
+# 어댑터: 진행 중이면 점수를 저장하지 않는다 (KBO는 0:0 자리표시자를 준다)
+_, g_live2 = ad._parse_row(kbo_row("LG 0 vs 0 두산", ""), 2026, "20260901")
+check("진행 중 경기에는 점수를 붙이지 않는다", g_live2.score is None,
+      str(g_live2.score))
+_, g_fin2 = ad._parse_row(kbo_row("LG 2 vs 5 두산", "리뷰"), 2026, "20260901")
+check("종료 경기에는 점수를 붙인다", g_fin2.score is not None)
 
 
 if __name__ == "__main__":

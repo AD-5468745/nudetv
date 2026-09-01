@@ -181,10 +181,16 @@ class KboAdapter:
         if cancel_reason:
             status = Status.CANCELED
         elif home_sc is not None and away_sc is not None:
-            score = Score(home_sc, away_sc, ScoreUnit.RUNS)
-            # 종료 표시가 없으면 진행 중이다. LIVE는 종결이 아니므로
-            # 결과 카드가 이 경기를 기다린다(league_day_settled).
-            status = Status.FINAL if relay == KBO_RELAY_DONE else Status.LIVE
+            if relay == KBO_RELAY_DONE:
+                status = Status.FINAL
+                score = Score(home_sc, away_sc, ScoreUnit.RUNS)
+            else:
+                # **진행 중 점수는 실제 점수가 아니다.** KBO는 진행 중 경기에
+                # 러닝 스코어가 아니라 `0 vs 0` 자리표시자를 채운다
+                # (18:30 시작 5경기를 20:35·20:49 두 번 관측 — 두 번 다 전부 0:0).
+                # 그 값을 저장하면 스냅샷에 사실이 아닌 점수가 남는다.
+                status = Status.LIVE
+                score = None
         else:
             status = Status.SCHEDULED
 
