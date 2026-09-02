@@ -836,10 +836,18 @@ MORNING_ON_TIME_UNTIL_HOUR_KST = 10
 
 
 def morning_label(now_utc: datetime) -> str:
-    """모닝 브리핑 배지·머리말에 쓸 이름. 발송 순간에 정한다."""
+    """모닝 브리핑 배지·머리말에 쓸 이름. 발송 순간에 정한다.
+
+    늦은 이름은 **시점을 주장하지 않는다** (v1.11i 육안검수).
+    처음엔 "오늘의 경기"로 두었더니, 해외 리그는 대상 슬레이트가 늘 다음날이라
+    배지 "오늘의 경기" 아래 헤드라인 "내일 새벽 MLB 편성 15경기"가 붙었다 —
+    한 카드가 스스로 반대말을 한다. 국내 리그에서는 반대로 "오늘의 경기 · 오늘
+    KBO 편성 5경기"로 '오늘'이 두 번 겹쳤다.
+    시점은 헤드라인이 말한다. 배지는 이 카드가 무엇인지만 말하면 된다.
+    """
     return ("모닝 브리핑"
             if now_utc.astimezone(KST).hour < MORNING_ON_TIME_UNTIL_HOUR_KST
-            else "오늘의 경기")
+            else "경기 안내")
 
 
 # ── 한국어 조사 (v1.11i) ────────────────────────────────────────────
@@ -868,31 +876,42 @@ def josa(word: str, with_batchim: str, without_batchim: str) -> str:
 # NPB 사유가 일본어 원문("中止")으로 한국어 채널에 그대로 인쇄되고 있었다.
 # KBO '그라운드사정'은 셋 중 혼자 '취소'로 끝나지 않아 그 행만 취소인지 지연인지
 # 읽을 수 없었다. 표기는 렌더가 아니라 여기서 한 번에 정한다.
-CANCEL_REASON_LABEL: dict[str, str] = {
+# (긴 표기, 짧은 표기) — 카드의 상태 칸은 폭이 152px뿐이라 5자를 넘으면 낱말이
+# 글자 단위로 쪼개진다("그라운드사/정 취소"). 그래서 자리가 좁은 곳은 짧은 쪽을 쓴다.
+CANCEL_REASON_LABEL: dict[str, tuple[str, str]] = {
     # NPB (일본어 원문)
-    "中止": "우천취소",
-    "ノーゲーム": "노게임",
-    "延期": "연기",
-    "サスペンデッド": "서스펜디드",
-    "(予備日)": "예비일",
-    "予備日": "예비일",
-    # KBO
-    "그라운드사정": "그라운드사정 취소",
+    # 中止는 '중지'일 뿐 비라는 뜻이 없다 — 폭염·태풍·구장사정도 全部 中止다.
+    # 원인을 지어내지 않는다.
+    "中止": ("경기 취소", "취소"),
+    "ノーゲーム": ("노게임 (기록 무효)", "노게임"),
+    "延期": ("연기", "연기"),
+    "サスペンデッド": ("서스펜디드", "속개예정"),
+    "(予備日)": ("예비일", "예비일"),
+    "予備日": ("예비일", "예비일"),
+    # KBO — 셋 중 이것만 '취소'로 끝나지 않아 그 행만 취소인지 지연인지 읽을 수 없었다.
+    "그라운드사정": ("그라운드사정 취소", "구장사정"),
 }
+CANCEL_REASON_SHORT_MAX = 5
 
 
-def cancel_reason_text(raw: Optional[str], status: Optional["Status"] = None) -> str:
+def cancel_reason_text(raw: Optional[str], status: Optional["Status"] = None,
+                       short: bool = False) -> str:
     """카드·캡션에 찍을 사유 문구. 미등록 원문은 상태 기본값으로 떨어뜨린다.
 
     번역표에 없는 외국어를 그대로 내보내지 않는다 — 한국어 채널이다.
+    `short=True`는 카드의 좁은 상태 칸용이다. 긴 표기는 캡션이 받는다.
     """
     s = (raw or "").strip()
     if s in CANCEL_REASON_LABEL:
-        return CANCEL_REASON_LABEL[s]
-    if s and all(ch.isalnum() or ch.isspace() or ch in "()·-" for ch in s) and \
-            any('가' <= ch <= '힣' for ch in s):
-        return s                      # 한글이 섞인 사유는 그대로 쓴다 (우천취소·폭염취소)
-    if status is not None and getattr(status, "value", None) == "postponed":
+        long_t, short_t = CANCEL_REASON_LABEL[s]
+        return short_t if short else long_t
+    if s and any('가' <= ch <= '힣' for ch in s):
+        # 한글이 섞인 사유는 그대로 쓴다 (우천취소·폭염취소).
+        # 다만 좁은 칸에 안 들어가면 지어내지 말고 일반 표기로 물러선다.
+        if short and len(s) > CANCEL_REASON_SHORT_MAX:
+            return "연기" if getattr(status, "value", None) == "postponed" else "취소"
+        return s
+    if getattr(status, "value", None) == "postponed":
         return "연기"
     return "취소"
 
@@ -1380,7 +1399,10 @@ def kst_day_label(games: "list[Game]", sports_day: "Optional[str]" = None) -> tu
     else:
         # 한 슬레이트가 한국 날짜 둘에 걸친다(유럽 주말 경기가 이렇다).
         # 한쪽만 찍으면 나머지 절반이 다른 날 경기로 보인다.
-        label = f"{first.month}.{first.day}~{last.month}.{last.day}"
+        # v1.11i 육안검수: 이 분기만 요일을 빠뜨려, 다른 카드가 전부 "9.2 수"인데
+        # 이 카드만 "9.4~9.5"로 나왔다. 걸치는 날일수록 요일이 더 필요하다.
+        label = (f"{first.month}.{first.day} {_WD[first.weekday()]}"
+                 f"~{last.month}.{last.day} {_WD[last.weekday()]}")
 
     local = ""
     if day != first.strftime("%Y-%m-%d"):

@@ -531,10 +531,20 @@ dh = [mk(League.MLB, "2026-08-29", 13, 5, tz="America/New_York", h="NYY", a="BOS
          status=Status.FINAL, score=Score(6, 0, ScoreUnit.RUNS)),
       mk(League.MLB, "2026-08-29", 19, 5, tz="America/New_York", h="NYY", a="BOS",
          status=Status.FINAL, score=Score(2, 9, ScoreUnit.RUNS))]
+dh[0].meta.doubleheader_seq = 1
 dh[1].meta.doubleheader_seq = 2
 cap_dh = P.caption_result(dh, "2026-08-29")
 check("더블헤더 2차전을 표시한다", "(2차전)" in cap_dh, cap_dh)
-check("1차전에는 안 붙인다", cap_dh.count("차전") == 1)
+# v1.11i 육안검수: 전에는 "1차전에는 안 붙인다"를 요구했다. 그런데 2차전에만
+# 표시가 있으면 위쪽 줄이 1차전이라는 근거가 카드 어디에도 없다 — 독자가
+# "목록이 시간순일 것"이라고 추론해야 알 수 있고, 그 규칙은 카드에 안 적혀 있다.
+# 지켜야 할 것은 "붙이지 않는다"가 아니라 **같은 대진 두 줄을 구별할 수 있다**이다.
+check("1차전에도 표시한다 — 한쪽만 붙이면 근거가 없다", "(1차전)" in cap_dh, cap_dh)
+check("차수 표시가 경기 수만큼만 나온다", cap_dh.count("차전") == 2, cap_dh)
+# 더블헤더가 아닌 날에는 붙지 않는다 (표시를 남발하지 않는다)
+solo = [mk(League.MLB, "2026-08-30", 13, 5, tz="America/New_York", h="NYY", a="BOS",
+           status=Status.FINAL, score=Score(6, 0, ScoreUnit.RUNS))]
+check("단일 경기에는 차수를 안 붙인다", "차전" not in P.caption_result(solo, "2026-08-30"))
 
 # (8) 점수 없는 FINAL을 '종료'로 세지 않는다
 noscore = [mk(League.KBO, "2026-08-29", 18, 30, tz="Asia/Seoul", h="OB", a="LG",

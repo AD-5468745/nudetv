@@ -35,28 +35,64 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
 from contract import assert_card_typography, team_name
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
+#
+# ── 줄 수·잘림·카드 밖 이탈을 **실제로** 재는 법 (v1.11j) ────────────────
+# 이 세 값이 전부 틀려 있었고, 그래서 접힘·잘림 게이트가 한 번도 작동한 적이 없다.
+#
+# ① `lines: el.getClientRects().length` — **블록 요소는 몇 줄이든 rect가 1개다.**
+#    실측(2026-08-28 KBO 결과 카드): 두 줄로 접힌 `.st`("그라운드사/정 취소",
+#    높이 92px = 46px×2)가 `getClientRects().length === 1`을 돌려줬다.
+#    `.n1/.n2/.st/.mt`가 전부 블록이라 접힘 검사가 통과만 하고 있었다.
+#    → **텍스트 노드에 Range를 씌워** 줄상자(line box)를 직접 센다. 한 줄에 여러
+#      런(한글+영문)으로 쪼개진 rect가 나올 수 있으므로 **rect의 top 값 종류 수**를
+#      센다. 요소 높이÷line-height는 쓰지 않았다 — 패딩·플렉스가 있는 칸에서
+#      오판한다(실측: `.pill` 높이 66 ÷ 행간 36 = 2줄로 잘못 나옴, `.wmc`도 2줄).
+#
+# ② `clipped: scrollWidth > clientWidth` — 넘침이 `visible`인 칸에서도 참이 된다.
+#    실측: `.s1`은 `::after`(가운데 콜론)가 `left:100%`로 밖에 놓여 있어
+#    결과 카드 **전 행에서 항상 참**이었다. 지금은 NO_CLIP_CLASSES에 없어 무해하지만
+#    넣는 순간 전 카드가 막힌다. 글자는 `overflow:hidden|clip`일 때만 잘려 보이므로
+#    그 조건을 함께 본다.
+#
+# ③ 줄도 안 접히고 잘리지도 않은 채 **행이 통째로 카드 밖으로 밀려나는** 사고는
+#    아예 재는 값이 없었다. 실측(팀명을 '세인트루이스카디널스'/'샌프란시스코
+#    자이언츠'로 바꿔 렌더): 상태 칸 `.st`가 카드 오른쪽 끝을 66px 넘어가
+#    화면에서 사라졌는데 게이트 3종이 전부 통과했다. `over`(카드 밖으로 나간 px)와
+#    `box`(그려진 상자 크기)를 함께 재서 `assert_within_card()`가 판정한다.
 _TYPO_JS = """
 () => {
   const res=[];
+  const card=document.querySelector('#card');
+  const cb=card.getBoundingClientRect();
   const walk=(el)=>{
     if(el.closest('.wm, .wm3')) return;
     for(const n of el.childNodes){
       if(n.nodeType===3 && n.textContent.trim()){
         const r=el.getBoundingClientRect();
-        if(r.width>0 && r.height>0)
-          res.push({t:n.textContent.trim().slice(0,16),
-                    fs:parseFloat(getComputedStyle(el).fontSize),
-                    cls:(el.className||'').toString().slice(0,24),
-                    // 줄 수 — 2 이상이면 그 요소가 두 줄로 접혔다는 뜻이다.
-                    // 팀명이 접히면 행 높이가 들쭉날쭉해져 카드가 무너진다.
-                    lines: el.getClientRects().length,
-                    // 말줄임(…)으로 잘린 칸. 줄바꿈이 아니라 잘리는 자리는
-                    // 기존 검사에 하나도 안 걸렸다 — 구장명이 "에인…"으로 나갔다.
-                    clipped: el.scrollWidth > el.clientWidth + 1});
+        const cs=getComputedStyle(el);
+        // 줄상자를 직접 센다 — 텍스트 노드에 Range를 씌우면 줄마다 rect가 나온다.
+        const rg=document.createRange(); rg.selectNodeContents(n);
+        const rects=[...rg.getClientRects()].filter(x=>x.width>0||x.height>0);
+        const tops=new Set(rects.map(x=>Math.round(x.top)));
+        const tr=rg.getBoundingClientRect();
+        const ov=cs.overflowX;
+        res.push({t:n.textContent.trim().slice(0,16),
+                  fs:parseFloat(cs.fontSize),
+                  cls:(el.className||'').toString().slice(0,24),
+                  // 줄 수 — 2 이상이면 그 글자가 두 줄로 접혔다는 뜻이다.
+                  // 팀명이 접히면 행 높이가 들쭉날쭉해져 카드가 무너진다.
+                  lines: Math.max(1, tops.size),
+                  // 말줄임(…)으로 잘린 칸. 넘침을 감추는 칸에서만 성립한다.
+                  clipped: (ov==='hidden'||ov==='clip')
+                           && el.scrollWidth > el.clientWidth + 1,
+                  // 카드 밖으로 나간 px(좌·우 중 큰 쪽). 0보다 크면 안 보인다.
+                  over: Math.round(Math.max(tr.right-cb.right, cb.left-tr.left)),
+                  // 그려진 상자. 0이면 글자가 있는데 자리가 없어 사라진 것이다.
+                  box: Math.round(Math.min(r.width, r.height))});
       } else if(n.nodeType===1) walk(n);
     }
   };
-  walk(document.querySelector('#card'));
+  walk(card);
   return res;
 }
 """
@@ -107,7 +143,10 @@ class NameWrapped(GateError):
 
 
 # 팀명·점수처럼 한 줄이어야 하는 칸. 여기가 접히면 행 높이가 들쭉날쭉해진다.
-ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt")
+# **`st`(결과 카드 상태 칸)를 넣는다 (v1.11j).** 폭이 152px로 고정인데 검사 대상이
+# 아니어서, "그라운드사정 취소"가 낱말 중간에서 "그라운드사/정 취소"로 쪼개진 채
+# 2026-08-16·08-28 KBO 카드가 그대로 나갔다(실측 높이 92px = 46px 두 줄).
+ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt", "st")
 
 # **잘리면 안 되는 칸.** 이 칸들은 CSS가 줄바꿈 대신 말줄임(…)으로 처리하므로
 # 줄 수 검사에 아무것도 안 걸린다. 실측: MLB 모닝 8행 중 5행이 구장명 잘림
@@ -155,6 +194,46 @@ def assert_not_clipped(samples: list[dict]) -> None:
         raise TextClipped(
             "이름이 잘려 나갑니다(…): " + " · ".join(bad[:5])
             + ". 짧은 표기를 쓰거나 카드에서 그 칸을 빼세요.")
+
+
+class TextOutsideCard(GateError):
+    """글자가 카드 밖으로 밀려났다 — 화면에는 아무것도 없다."""
+
+
+# 워터마크(장식)는 카드 경계에 걸쳐도 된다. 읽으라고 넣은 글자가 아니다.
+_DECOR_CLASSES = ("wm", "wm3", "wmc")
+
+
+def assert_within_card(samples: list[dict]) -> None:
+    """행이 카드 밖으로 밀려나 글자가 사라졌으면 막는다 (v1.11j).
+
+    **접힘·잘림 검사만으로는 못 잡는 사고가 있다.** 팀명이 길어지면 격자
+    (`.res`는 `1fr 92px 92px 1fr 152px`)가 통째로 오른쪽으로 밀린다. 이때
+    팀명은 한 줄 그대로고(nowrap) 말줄임도 아니라(`overflow:visible`) 기존 두
+    검사에 아무것도 안 걸리는데, 카드는 `overflow:hidden`이라 밀려난 칸이
+    **그냥 안 보인다.**
+
+    실측(2026-09-01 KBO 결과 카드, 팀명을 '세인트루이스카디널스'·'샌프란시스코
+    자이언츠'로 바꿔 렌더): 첫 행의 상태 칸 `.st`("종료")가 카드 오른쪽 끝을
+    66px 넘어가 사라졌다. 그런데 폰트·접힘·잘림 게이트가 전부 통과했다 —
+    지금 팀명이 최장 7자라 우연히 무사했을 뿐이지 검사가 지켜 준 게 아니다.
+    """
+    bad = []
+    for s in samples:
+        cls = str(s.get("cls") or "")
+        if any(c in cls.split() for c in _DECOR_CLASSES):
+            continue
+        over = int(s.get("over") or 0)
+        if over > 1:
+            bad.append(f"{s.get('t')!r}({cls}, {over}px 이탈)")
+        elif int(s.get("box", 1) or 0) <= 0:
+            # 글자가 있는데 상자가 0 — 자리를 못 얻어 통째로 사라진 칸이다.
+            bad.append(f"{s.get('t')!r}({cls}, 상자 0)")
+    if bad:
+        raise TextOutsideCard(
+            "글자가 카드 밖으로 밀려났습니다 — 화면에서 사라집니다: "
+            + " · ".join(bad[:5])
+            + ". 표시명을 줄이거나 그 행의 칸 폭을 조정하세요.")
 
 
 OUT = pathlib.Path(__file__).resolve().parent / "dryrun"
@@ -438,16 +517,43 @@ _POSTSEASON_TAG: dict[str, str] = {
 }
 
 
-def season_tag(games: list[Game]) -> str:
-    """카드 배지에 덧붙일 포스트시즌 표기. 없으면 빈 문자열.
+# **영문 대회 단계도 알아본다 (v1.11j).**
+# e스포츠·국제대회의 `season_category`는 영문 대회명이라("LCK 2026 Season
+# Playoffs", "MSI 2026") 위 표에 하나도 안 맞고 `season_tag()`가 늘 빈 문자열을 냈다.
+# 결과: LCK 플레이오프 10경기와 MSI 20경기가 **정규시즌과 똑같은 카드**로 나갔고,
+# MSI 결승 "한화생명 3:2 BLG"조차 "LoL 국제대회 1경기 종료"로만 나갔다(실측 E1·E5).
+# 낱말 단위로 훑되 **긴 것부터** 본다("Semifinal"이 "Final"에 먼저 걸리면 안 된다).
+_EN_STAGE_TAG: tuple[tuple[str, str], ...] = (
+    ("GRAND FINAL", "결승"), ("THIRD PLACE", "3-4위전"),
+    ("QUARTERFINAL", "8강"), ("QUARTER FINAL", "8강"), ("QUARTER-FINAL", "8강"),
+    ("SEMIFINAL", "4강"), ("SEMI FINAL", "4강"), ("SEMI-FINAL", "4강"),
+    ("PLAY-IN", "플레이인"), ("PLAY IN", "플레이인"), ("PLAYIN", "플레이인"),
+    ("PLAYOFF", "플레이오프"),
+    ("BRACKET", "본선"),          # MSI 본선(플레이인 통과 팀들의 토너먼트)
+    ("FINAL", "결승"),
+)
 
-    카드 한 장의 경기가 모두 같은 구간일 때만 붙인다 — 섞인 날 한쪽 이름을
-    붙이면 나머지 경기를 잘못 부른다.
-    """
-    cats = {(g.meta.season_category or "").strip() for g in games}
-    if len(cats) != 1:
-        return ""
-    raw = cats.pop()
+
+def _en_stage(raw: str) -> str:
+    """영문 문자열에서 대회 단계를 뽑는다. 모르면 빈 문자열(지어내지 않는다)."""
+    u = raw.upper()
+    for key, ko in _EN_STAGE_TAG:
+        if key in u:
+            return ko
+    return ""
+
+
+# 단계가 `season_category`가 아니라 `source_key`에 들어 있는 리그.
+# 실측: INTL_LOL은 전 경기가 `season_category="MSI 2026"` 하나뿐이고, 단계는
+# `source_key`("…_Play-In Day 1_1", "…_Bracket Round 4_1", "…_Finals_1")에 있다.
+# 이 예외는 **e스포츠에만** 연다 — 다른 리그의 source_key는 숫자 ID라
+# 낱말을 훑으면 엉뚱한 것이 걸린다(MLB "823539", NPB "scores-2026-0801-g-db-15").
+_STAGE_IN_SOURCE_KEY = frozenset({League.LCK, League.INTL_LOL})
+
+
+def _stage_of(g: Game) -> str:
+    """이 경기 한 건의 구간 이름(한국어). 모르면 빈 문자열."""
+    raw = (g.meta.season_category or "").strip()
     if raw in _POSTSEASON_TAG:
         return _POSTSEASON_TAG[raw]
     # KBL 코드표는 계약이 갖는다. 정규시즌(R)은 여기서 걸러진다.
@@ -457,7 +563,24 @@ def season_tag(games: list[Game]) -> str:
     # 한글 원문에 포스트시즌 낱말이 들어 있으면 그대로 쓴다(소스가 한국어인 리그).
     if any(w in raw for w in ("플레이오프", "챔피언", "결승", "준결승", "와일드카드")):
         return raw
+    en = _en_stage(raw)
+    if en:
+        return en
+    if g.league in _STAGE_IN_SOURCE_KEY:
+        return _en_stage(g.source_key or "")
     return ""
+
+
+def season_tag(games: list[Game]) -> str:
+    """카드 배지에 덧붙일 포스트시즌 표기. 없으면 빈 문자열.
+
+    카드 한 장의 경기가 모두 같은 구간일 때만 붙인다 — 섞인 날 한쪽 이름을
+    붙이면 나머지 경기를 잘못 부른다.
+    """
+    tags = {_stage_of(g) for g in games}
+    if len(tags) != 1:
+        return ""
+    return tags.pop()
 
 
 def _pill(lg: League, games: list[Game] | None = None) -> str:
@@ -476,6 +599,18 @@ def _reason(g: Game) -> str:
     일본어 원문("中止")이 한국어 채널에 그대로 인쇄되던 것도 같은 자리다.
     """
     return cancel_reason_text(g.meta.cancel_reason, g.status)
+
+
+def _reason_short(g: Game) -> str:
+    """좁은 칸(결과 카드 상태 칸 `.st`, 152px)에 쓸 짧은 사유 (v1.11j).
+
+    긴 표기를 그대로 넣었더니 `.st`가 낱말 중간에서 쪼개졌다 —
+    실측(2026-08-28 KBO 결과 카드): "그라운드사정 취소"가
+    "그라운드사 / 정 취소" 두 줄(높이 92px = 46px×2)로 나갔다.
+    짧은 표기는 계약이 정한다(`CANCEL_REASON_SHORT_MAX = 5`). 긴 표기는
+    자리가 넉넉한 캡션과 모닝 카드가 그대로 받는다 — 정보를 버리지 않는다.
+    """
+    return cancel_reason_text(g.meta.cancel_reason, g.status, short=True)
 
 
 def assert_league_render_maps() -> None:
@@ -519,13 +654,16 @@ def render_morning(games: list[Game], day: str,
 
     shown = sorted(games, key=lambda x: x.start_utc)[:top_n]
     wd = spans_two_kst_days(games)           # 목록이 한국 날짜 둘에 걸치면 전 행에 요일
-    venue_ok = _venues_fit(shown)            # 경기장은 전 행이 들어갈 때만 넣는다
+    _wdarg = True if wd else None
+    # 경기장은 전 행이 들어갈 때만 넣는다. 자리 판정은 **그려질 폭**으로 한다 —
+    # 요일이 붙으면 시각 칸이 넓어져 가운데 칸이 그만큼 좁아지므로 같은 값을 넘긴다.
+    venue_ok = _venues_fit(shown, _wdarg)
     rows = []
     for g in shown:
-        kst, loc = format_kickoff(g, with_weekday=True if wd else None)
+        kst, loc = format_kickoff(g, with_weekday=_wdarg)
         gone = g.status in off
         reason = _reason(g) if gone else ""
-        place = _card_venue(g) if venue_ok else ""
+        place = _card_venue(g, _wdarg) if venue_ok else ""
         # 경기장과 사유는 서로 다른 사실이다. 붙여 쓰면 "사직 폭염취소"가
         # 한 낱말처럼 읽힌다 — 구분자를 넣는다.
         meta = esc(place)
@@ -552,16 +690,18 @@ def render_morning(games: list[Game], day: str,
         for label, n in _reason_counts(dropped):
             bits.append(f"{label} {n}경기")
     else:
-        # 카드와 캡션의 어순·낱말을 맞춘다 — 카드 "오늘 KBO 3경기",
-        # 캡션 "KBO 오늘 편성 3경기"로 갈려 한 화면에서 다르게 읽혔다.
-        h1 = f'{_when} {_name} 편성 <em>{len(playable)}경기</em>'
+        # **한 카드 안에서 '편성'이 두 수를 가리키면 안 된다 (v1.11j).**
+        # 실측(D2a, KBO 2026-08-30): 헤드라인 "오늘 KBO 편성 2경기" /
+        # 부제 "5경기 편성 · 3경기 취소" — 같은 낱말이 2와 5를 동시에 가리켰다.
+        # 낱말을 가른다: 헤드라인은 **열리는 수**('열림'), 부제는 **총계**('총 N경기').
+        h1 = f'{_when} {_name} <em>{len(playable)}경기</em> 열림'
         if dropped:
-            _d = [f"{len(games)}경기 편성"]
+            _d = []
             if canceled:
                 _d.append(f"{len(canceled)}경기 취소")
             if postponed:
                 _d.append(f"{len(postponed)}경기 연기")
-            bits.append(" · ".join(_d))
+            bits.append(f"총 {len(games)}경기 중 " + " · ".join(_d))
     if more:
         # 서술어 없는 명사구("아래에 나머지 3경기")는 안내가 아니다.
         bits.append(f"나머지 {more}경기는 아래 글에")
@@ -576,11 +716,16 @@ def render_morning(games: list[Game], day: str,
     _dtk, _dtl = kst_day_label(games, day)
     # **배지 이름을 발송 순간에 정한다 (v1.11i).** 유예가 6시간이라 최악의 날엔
     # 낮에 나가는데, 그때까지 "모닝 브리핑"이라 부르면 카드가 스스로 거짓말을 한다.
+    # **열리는 경기가 0이면 오지 않을 알림을 약속하지 않는다 (v1.11j).**
+    # 실측(D1a, KBO 2026-08-28 전 경기 취소): 헤드라인 "오늘 KBO 경기 없음"인데
+    # 푸터·캡션 꼬리말은 "경기 시작 2시간 전 알림"이었다. 시작할 경기가 없으니
+    # 그 알림은 만들어지지도 않는다 — 카드가 지키지 못할 약속을 한 것이다.
+    _foot = start_alert_lead_text() if playable else ""
     body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games),
                  morning_label(now or datetime.now(timezone.utc)),
                  _dtk, h1, sub, league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
-            f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
+            f'<div class="foot"><div class="tk">{esc(_foot)}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, lg)
 
@@ -602,23 +747,112 @@ CARD_VENUE_BUDGET_PLAIN = (8, 8)    # 병기가 없는 리그(국내·NPB)
 # 옛 이름은 남겨 둔다 — 바깥에서 참조하는 검증이 있다.
 CARD_VENUE_NAME_BUDGET, CARD_VENUE_MAX_LEN = CARD_VENUE_BUDGET_LOCAL
 
+# ── 실폭으로 재는 경기장 예산 (v1.11j) ──────────────────────────────
+# **글자 수 예산은 폭을 재지 못한다.** 8자·5자 상한은 "부천 종합 운동장"(9자)과
+# "그레이트 아메리칸 볼파크"(13자)를 자리와 무관하게 통째로 떨어뜨렸다.
+# 실측 표시율: KL1 20일 중 1일, MLB 7일 중 0일(팀명이 두 글자인 K리그 행은
+# 자리가 남는데도 비어 있었다). 반대로 한글 한 글자는 영문 한 글자의 1.5배 폭이라
+# 같은 글자 수라도 실제 폭은 두 배 가까이 차이 난다.
+# 이제 **그려질 폭을 계산해서** 판정한다.
+#
+# 문자 폭 표(em) — 크로미움 `canvas.measureText` 실측(Noto Sans CJK KR).
+# **글자 종류로 뭉뚱그리면 안 된다.** 영문 대문자를 평균 0.645로 잡았더니
+# 'DeNA'를 121px 대신 109px로, 'KIA'를 76px 대신 85px로 봤다 — 한 행에서
+# 12px이 어긋나면 경기장이 잘리거나 들어갈 것이 빠진다. 글자마다 실측값을 쓴다.
+# (굵기 700/800/900 × 33/44/45px에서 재고 **가장 넓은 값**을 취했다. 편차 0.057em)
+# 한글·가나·한자는 전각이라 굵기·크기와 무관하게 0.92em으로 일정했다.
+_CH_EM_CJK = 0.92
+_CH_EM: dict[str, float] = {
+    " ": .229, "!": .397, '"': .631, "#": .609, "$": .609, "%": .986, "&": .773,
+    "'": .351, "(": .400, ")": .400, "*": .529, "+": .609, ",": .351, "-": .383,
+    ".": .351, "/": .387, ":": .351, ";": .351, "<": .609, "=": .609, ">": .609,
+    "?": .536, "@": 1.041, "[": .400, "\\": .387, "]": .400, "^": .609, "_": .572,
+    "`": .637, "{": .400, "|": .311, "}": .400, "~": .609,
+    "0": .609, "1": .609, "2": .609, "3": .609, "4": .609,
+    "5": .609, "6": .609, "7": .609, "8": .609, "9": .609,
+    "A": .660, "B": .695, "C": .667, "D": .729, "E": .630, "F": .604, "G": .733,
+    "H": .774, "I": .350, "J": .586, "K": .708, "L": .598, "M": .877, "N": .764,
+    "O": .786, "P": .687, "Q": .786, "R": .708, "S": .639, "T": .640, "U": .763,
+    "V": .643, "W": .935, "X": .657, "Y": .608, "Z": .619,
+    "a": .606, "b": .658, "c": .537, "d": .658, "e": .596, "f": .398, "g": .616,
+    "h": .658, "i": .321, "j": .323, "k": .634, "l": .332, "m": .985, "n": .658,
+    "o": .637, "p": .658, "q": .658, "r": .464, "s": .510, "t": .445, "u": .654,
+    "v": .607, "w": .897, "x": .598, "y": .604, "z": .532,
+}
 
-def _card_venue(g: Game) -> str:
-    """카드 행에 넣을 경기장. 자리에 안 들어가면 빈 문자열."""
+
+def _text_px(s: str, fs: float, tracking: float = -0.005) -> float:
+    """이 글자열이 `fs`px로 그려질 때의 폭(px) 추정.
+
+    `tracking`은 `letter-spacing`(em). 카드는 `.card`에 -0.005em,
+    `.row .mt`·`.row .tm .k`에 -0.02em을 준다. 빼먹으면 한 행에서 8~9px이 어긋나
+    (실측: `.mt` 355px를 363px로 봤다) 들어갈 경기장을 떨어뜨린다.
+    """
+    w = sum(_CH_EM.get(ch, _CH_EM_CJK) for ch in s)
+    return (w + tracking * len(s)) * fs
+
+
+# 모닝 행의 치수. 전부 `cards/v4.html`에 적힌 값이다 — 여기서 지어낸 수가 아니다.
+# (`.body`는 카드 폭에서 좌우 `--pad`를 뺀 만큼, `.row`는 padding 34 · gap 20,
+#  `.mt`는 padding-right 24 · `.sep` 31px에 좌우 margin 11, `.tm`은 padding-left 20)
+_ROW_MT_FS, _ROW_SEP_FS, _ROW_META_FS = 44, 31, 33
+_ROW_K_FS, _ROW_L_FS = 45, 28
+_CARD_SIDE_PAD = 96
+_ROW_PAD, _ROW_GAP = 34, 20
+_MT_PAD_R, _SEP_MARGIN, _TM_PAD_L = 24, 11, 20
+# 추정과 실렌더의 오차분. 글자별 실측표 + 자간까지 넣은 뒤, 데이터에 있는
+# 팀명·구장명·시각 문자열 전수(약 400개)에 대해 **과소추정이 0px**이었다
+# (과대추정만 최대 3.5px — 안전한 쪽이다). 그래서 여유는 1px이면 충분하다.
+# 최종 판정은 잘림 게이트(assert_not_clipped)가 한다 — 이 값은 그 앞의 여유다.
+# 실측 표시일: KBO 52/52 · KL1 20/20 · NPB 49/56 · V리그 54/126 · MLB 0/7
+# (MLB는 팀명이 길고 현지 시각 병기까지 붙어 정말로 자리가 없다 — 캡션이 받는다.)
+_VENUE_SAFETY_PX = 1
+_TRACK_TIGHT = -0.02        # .row .mt · .row .tm .k
+_TRACK_CARD = -0.005        # .card 전역(.meta · .tm .l이 물려받는다)
+
+
+def _mt_px(g: Game) -> float:
+    """이 행의 팀명 칸(.mt) 폭(px). 이름 두 개 + 'vs' + 좌우 여백 + 오른쪽 패딩."""
+    return (_text_px(team_name(g.away), _ROW_MT_FS, _TRACK_TIGHT)
+            + _text_px(team_name(g.home) + _dh(g), _ROW_MT_FS, _TRACK_TIGHT)
+            + _text_px("vs", _ROW_SEP_FS, _TRACK_TIGHT) + _SEP_MARGIN * 2 + _MT_PAD_R)
+
+
+def _tm_px(g: Game, with_weekday: bool | None = None) -> float:
+    """이 행의 시각 칸(.tm) 폭(px). 현지 병기가 있으면 그쪽이 더 넓다."""
+    kst, loc = format_kickoff(g, with_weekday=with_weekday)
+    return _TM_PAD_L + max(_text_px(kst, _ROW_K_FS, _TRACK_TIGHT),
+                           _text_px(f"현지 {loc}", _ROW_L_FS, _TRACK_CARD) if loc else 0.0)
+
+
+def _row_columns(rows: list[Game], with_weekday: bool | None = None) -> tuple[float, float, float]:
+    """(팀명 칸, 시각 칸, 남는 가운데 칸) 폭 — 넘긴 행들 중 가장 넓은 것 기준.
+
+    `.row`의 격자는 `auto minmax(0,1fr) auto`라 가운데 칸(.meta)은
+    **남는 자리**다. 그래서 자리는 행마다 다르고, 판정도 행마다 해야 한다.
+    (칸 폭을 카드 한 장에 고정해 보았더니 가장 긴 이름 행에 전 행이 맞춰져
+     NPB 경기장 표시일이 28일→19일로 오히려 줄었다. 정렬은 `.meta`를
+     오른쪽 정렬해 해결했다 — 오른쪽 끝은 시각 칸이 맞춰 준다.)
+    """
+    mt = max((_mt_px(g) for g in rows), default=0.0)
+    tm = max((_tm_px(g, with_weekday) for g in rows), default=0.0)
+    body_w = CARD_WIDTH_PX - _CARD_SIDE_PAD * 2
+    return mt, tm, body_w - _ROW_PAD * 2 - _ROW_GAP * 2 - mt - tm
+
+
+def _venue_need_px(g: Game) -> float:
+    """이 행의 가운데 칸에 들어가야 할 폭(경기장 + 취소 사유)."""
     v = venue_name(g.venue)
     if not v:
-        return ""
-    name_max, venue_max = (CARD_VENUE_BUDGET_LOCAL if needs_local_time(g)
-                           else CARD_VENUE_BUDGET_PLAIN)
-    # 차전 표시도 같은 자리를 먹는다. 예산에서 빼놓으면 더블헤더 행에서
-    # 경기장이 "…"으로 잘린다(잘린 이름은 정보가 아니다).
-    names = len(team_name(g.away)) + len(team_name(g.home)) + len(_dh(g))
-    if names > name_max or len(v) > venue_max:
-        return ""
-    return v
+        return 0.0
+    # 취소·연기 행은 같은 칸에 사유도 함께 들어간다("잠실 · 우천취소").
+    # 그 폭을 빼놓으면 그 행만 잘린다 — 잘린 이름은 정보가 아니다.
+    extra = (_text_px(" · " + _reason(g), _ROW_META_FS, _TRACK_CARD)
+             if g.status in (Status.CANCELED, Status.POSTPONED) else 0.0)
+    return _text_px(v, _ROW_META_FS, _TRACK_CARD) + extra
 
 
-def _venues_fit(shown: list[Game]) -> bool:
+def _venues_fit(shown: list[Game], with_weekday: bool | None = None) -> bool:
     """경기장을 **전 행에** 넣을 수 있는가.
 
     **판정은 행이 아니라 카드 단위로 한다 (v1.11i).**
@@ -628,7 +862,22 @@ def _venues_fit(shown: list[Game]) -> bool:
     캡션에는 자리가 넉넉해서 하나도 잃지 않는다.
     """
     have = [g for g in shown if venue_name(g.venue)]
-    return bool(have) and all(_card_venue(g) for g in have)
+    return bool(have) and all(_card_venue(g, with_weekday) for g in have)
+
+
+def _card_venue(g: Game, with_weekday: bool | None = None) -> str:
+    """카드 행에 넣을 경기장. **그려질 폭이 자리에 안 들어가면** 빈 문자열.
+
+    자리는 그 행의 실제 칸이다 — 팀명 칸은 `auto`라 행마다 다르다.
+    (칸을 카드 단위로 고정해 보았더니 가장 긴 이름 행에 전 행이 맞춰져
+     NPB 표시일이 28일→19일로 오히려 줄었다. 정렬은 `.meta`를 오른쪽 정렬해
+     해결하고, 자리 계산은 행 단위로 둔다.)
+    """
+    v = venue_name(g.venue)
+    if not v:
+        return ""
+    _, _, meta = _row_columns([g], with_weekday)
+    return v if _venue_need_px(g) + _VENUE_SAFETY_PX <= meta else ""
 
 
 def _reason_counts(games: list[Game]) -> list[tuple[str, int]]:
@@ -657,9 +906,14 @@ def _dh(g: Game) -> str:
     실측(MLB 2026-08-29): "보스턴 6:0 뉴욕양키스"와 "보스턴 2:9 뉴욕양키스"가
     같은 캡션에 나란히 찍혔다. 어댑터는 `gameNumber`를 뽑아 두는데
     스냅샷이 버리고 렌더도 안 썼다(둘 다 v1.11h에서 고침).
+
+    **1차전에도 붙인다 (v1.11i 육안검수).** 전에는 2차전에만 붙였는데,
+    그러면 위쪽 줄이 1차전이라는 근거가 카드 어디에도 없다 — 독자가
+    "목록이 시간순일 것"이라고 추론해야 알 수 있고, 정렬 규칙은 카드에 안 적혀 있다.
+    한쪽만 표시하는 것은 표시가 아니라 수수께끼다.
     """
     n = g.meta.doubleheader_seq
-    return f" ({n}차전)" if n and n > 1 else ""
+    return f" ({n}차전)" if n and n >= 1 else ""
 
 
 def _day_word_at(first, now_kst) -> str:
@@ -703,18 +957,38 @@ def day_word_span(games: list[Game], now: datetime | None = None) -> str:
     유럽 주말 슬레이트는 한국시각 토요일 밤과 일요일 새벽에 걸쳐 열린다.
     그 목록 전체를 "오늘"이라 부르면 절반이 틀린 말이 된다. 걸치면 `오늘~내일`처럼
     양 끝을 함께 적는다 — 목록의 각 줄에는 `spans_two_kst_days()`가 요일을 붙인다.
+
+    **같은 날 안에서는 첫 경기 하나로 정하지 않는다 (v1.11j).**
+    전에는 한국 날짜가 같으면 `첫 경기`의 낱말을 그대로 썼다. 그래서
+    실측(D4d, MLB 2026-09-04): 16경기 중 15경기가 07:10 이후인데 03:10짜리
+    한 경기 때문에 "내일 새벽 16경기"가 됐다. 08-31·09-01은 실제로 같은 모양인데
+    "내일 아침"이라, 같은 슬레이트가 날마다 다른 이름으로 불렸다.
+    이제 **다수 경기가 속한 시간대**로 고르고, 뚜렷한 다수가 없으면 범위로 말한다.
+    (한국 날짜가 둘에 걸치는 날은 다수결로 뭉개지 않는다 — 날짜는 사실이고
+     새벽/아침은 묘사다. `오늘~내일`은 그대로 유지된다.)
     """
     now = now or datetime.now(timezone.utc)
     if not games:
         return "오늘"
     nk = now.astimezone(KST)
-    first = min(g.start_utc for g in games).astimezone(KST)
-    last = max(g.start_utc for g in games).astimezone(KST)
+    starts = sorted(g.start_utc.astimezone(KST) for g in games)
+    first, last = starts[0], starts[-1]
     a = _day_word_at(first, nk)
-    if first.date() == last.date():
-        return a
     b = _day_word_at(last, nk)
-    return a if a == b else f"{a}~{b}"
+    if first.date() != last.date():
+        # 날짜가 갈리면 양 끝을 함께 적는다 (기존 동작).
+        return a if a == b else f"{a}~{b}"
+    if a == b:
+        return a
+    words = [_day_word_at(s, nk) for s in starts]
+    top = max(set(words), key=words.count)
+    if words.count(top) * 3 >= len(words) * 2:      # 2/3 이상이면 그 낱말로 부른다
+        return top
+    # 뚜렷한 다수가 없으면 범위로. 같은 날이므로 앞머리('내일')는 한 번만 적는다.
+    for pre in ("내일 ", "오늘 "):
+        if a.startswith(pre) and b.startswith(pre):
+            return f"{a}~{b[len(pre):]}"
+    return f"{a}~{b}"
 
 
 def _name_cls(name: str) -> str:
@@ -745,13 +1019,23 @@ def render_result(games: list[Game], day: str,
     우천 연기 등으로 영영 종결되지 않는 경기가 있으면 마감 시각에 그때까지의
     결과로 내보낸다 — 그때 빠진 경기 수를 카드에 **명시한다**.
     """
-    done = [g for g in games if g.status in SETTLED_FOR_RESULT]
-    pending = [g for g in games if g.status not in SETTLED_FOR_RESULT]
     # **점수 없는 FINAL은 '종료'로 세지 않는다.** 소스가 Final인데 점수를 빼면
     # 그 경기는 행에도 없고 미확정에도 없어 카드에서 통째로 사라졌다 —
     # 헤드라인만 "N경기 종료"로 남아 숫자와 본문이 어긋났다.
     fin = [g for g in games if g.status is Status.FINAL and g.score]
     canceled = [g for g in games if g.status is Status.CANCELED]
+    # **'실을 수 있는 결과'와 '상태가 종결됨'은 다르다 (v1.11j).**
+    # `done`을 상태(FINAL·CANCELED)로만 잡으니 점수 없는 FINAL이 `done`에 들어가
+    # 자리(top_n)와 "나머지 N경기" 계산은 먹으면서 정작 행은 그리지 못했다.
+    # 실측(S2, KBO 2026-09-01 5경기 중 1건의 점수를 지움): 카드는 "4경기 종료"에
+    # 본문 4행뿐이라 그 경기를 어디에서도 언급하지 않았고, 같은 메시지의 캡션은
+    # 5줄(그중 "롯데 vs 삼성 · 결과 미확정")이라 사진과 글이 그날 경기 수를
+    # 다르게 말했다. 점수 없는 FINAL은 **결과가 아직 없는 경기**로 센다.
+    def _has_result(g: Game) -> bool:
+        return (g.status is Status.FINAL and bool(g.score)) or g.status is Status.CANCELED
+
+    done = [g for g in games if _has_result(g)]
+    pending = [g for g in games if not _has_result(g)]
     # **결과가 하나도 없으면 결과 카드를 만들지 않는다 (v1.11i).**
     # 취소 1건만 있고 나머지가 진행 중이면 "MLB 전 경기 결과 0경기" 아래
     # 16줄이 전부 "결과 미확정"인 카드가 만들어졌다 — 그 카드는 아무 사실도
@@ -762,6 +1046,9 @@ def render_result(games: list[Game], day: str,
             f"({games[0].league.value if games else '?'} {day}, 미확정 {len(pending)}건)")
     shown = sorted(done, key=lambda x: x.start_utc)[:top_n]
     rows = []
+    # 상태 칸에 적을 것이 한 행도 없으면 칸 자체를 없앤다 — 152px이 통째로
+    # 빈 여백으로 남아 점수 덩어리가 카드 왼쪽으로 쏠렸다(전 행 '종료'를 뺀 뒤).
+    need_st = False
     for g in shown:
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
         # **더블헤더 차전은 결과 카드 본문에도 붙인다 (v1.11i).**
@@ -772,16 +1059,27 @@ def render_result(games: list[Game], day: str,
         # 행에 대한 주석은 상태 칸(.st)의 일이다.
         dh = _dh(g).strip(" ()")
         note = f'<span class="dhq">{esc(dh)}</span>' if dh else ""
+        if dh:
+            need_st = True
         if g.status is Status.CANCELED:
+            need_st = True
+            # 상태 칸은 152px 고정이다 — 긴 표기는 낱말 중간에서 쪼개진다.
+            # 짧은 표기를 쓰고(`_reason_short`), 캡션이 긴 표기를 받는다.
             rows.append(f'<div class="res cx"><div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
                         f'<div class="s1">—</div>'
                         f'<div class="s2">—</div>'
                         f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
-                        f'<div class="st">{note}{esc(_reason(g))}</div></div>')
+                        f'<div class="st">{note}{esc(_reason_short(g))}</div></div>')
         elif g.status is Status.FINAL and g.score:
             draw = g.is_draw()
             cls = "dr" if draw else ("w1" if g.score.away > g.score.home else "w2")
-            st = "무승부" if draw else "종료"
+            # **평범한 '종료'는 적지 않는다 (v1.11j).** 헤드라인이 이미
+            # "N경기 종료"라 전 행에 같은 낱말이 반복되면 정보가 0인데,
+            # 정작 눈에 띄어야 할 "무승부"·"우천취소"의 대비만 깎였다.
+            # 상태 칸은 **예외를 적는 자리**로 둔다.
+            st = "무승부" if draw else ""
+            if st:
+                need_st = True
             rows.append(f'<div class="res {cls}">'
                         f'<div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
                         f'<div class="s1">{g.score.away}</div><div class="s2">{g.score.home}</div>'
@@ -803,18 +1101,24 @@ def render_result(games: list[Game], day: str,
     _bits = []
     if len(done) > len(shown):
         _bits.append(f"나머지 {len(done) - len(shown)}경기는 아래 글에")
-    if canceled:
-        # 모닝 카드는 취소를 밝히는데 결과 카드는 안 밝혔다 —
-        # "3경기 종료"인데 본문이 5행이면 읽는 사람이 센 수와 안 맞는다.
-        _bits.append(f"{len(canceled)}경기 취소")
     # **'결과 미확정'은 상태 이름이 아니다 (v1.11i).**
     # SETTLED_FOR_RESULT가 FINAL·CANCELED뿐이라 연기·서스펜디드가 전부
     # "결과 미확정"으로 뭉뚱그려졌다. 연기는 결과를 기다리는 상태가 아니라
     # 그날 열리지 않은 것이고, 서스펜디드는 속개가 예정된 것이다.
     _post = [g for g in pending if g.status is Status.POSTPONED]
     _susp = [g for g in pending if g.status is Status.SUSPENDED]
+    # 점수 없는 FINAL도 여기로 온다 — '종료'라고 세면 카드에 없는 경기를 센 것이 된다.
     _unk = [g for g in pending
             if g.status not in (Status.POSTPONED, Status.SUSPENDED)]
+    # **헤드라인이 이미 말한 것을 부제가 되풀이하지 않는다 (v1.11j).**
+    # 실측(S4): 헤드라인 "취소 1경기 · 나머지 진행 중" / 부제 "1경기 취소 ·
+    # 4경기는 아직 결과 미확정" — 어순만 뒤집은 반복이었다.
+    # 취소만 확정된 날은 취소 수를 헤드라인이 갖고, 부제는 **남은 경기의 내역**만 센다.
+    _cancel_in_h1 = not fin and bool(canceled)
+    if canceled and not _cancel_in_h1:
+        # 모닝 카드는 취소를 밝히는데 결과 카드는 안 밝혔다 —
+        # "3경기 종료"인데 본문이 5행이면 읽는 사람이 센 수와 안 맞는다.
+        _bits.append(f"{len(canceled)}경기 취소")
     if _post:
         _bits.append(f"{len(_post)}경기 연기")
     if _susp:
@@ -822,18 +1126,25 @@ def render_result(games: list[Game], day: str,
     if _unk:
         # 빠진 경기를 숨기지 않는다. 숨기면 '전 경기 결과'가 거짓이 된다.
         _bits.append(f"{len(_unk)}경기는 아직 결과 미확정")
-    if not fin and canceled:
+    if _cancel_in_h1:
         # 전 경기가 취소된 날인지, 취소만 확정되고 나머지는 진행 중인지는
         # 완전히 다른 사실이다. 진행 중이 남았는데 '전 경기 취소'라 하면 거짓이다.
         _h1 = (f'{esc(lgname)} <em>전 경기 취소</em>' if not pending
-               else f'{esc(lgname)} <em>취소 {len(canceled)}경기</em> · 나머지 진행 중')
+               else f'{esc(lgname)} <em>취소 {len(canceled)}경기</em> 확정')
     else:
         _h1 = f'{esc(lgname)} <em>{len(fin)}경기</em> 종료'
-    body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games), "경기 결과",
+    # **결과가 하나도 없는 카드는 배지·푸터가 결과를 있다고 말하지 않는다 (v1.11j).**
+    # 실측(S4): 헤드라인이 "취소 1경기 · 나머지 진행 중"인데 배지는 "경기 결과",
+    # 푸터는 "KBO 공식 결과"였다 — 카드 안에 결과가 한 줄도 없는데도.
+    _kind = "경기 결과"
+    if not fin:
+        _kind = "취소 안내"
+        tk = f"{lgname} 공식 발표"
+    body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games), _kind,
                  _dtk, _h1,
                  " · ".join(_bits),
                  league=lg, dt_local=_dtl) +
-            f'<div class="body">{"".join(rows)}</div>'
+            f'<div class="body{"" if need_st else " nost"}">{"".join(rows)}</div>'
             f'<div class="foot"><div class="tk">{esc(tk)}</div>'
             '<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, lg)
@@ -864,6 +1175,7 @@ def render_png(card_html: str, out: pathlib.Path) -> tuple[int, int, int]:
     assert_korean_font(font)
     assert_no_wrapped_names(samples)
     assert_not_clipped(samples)
+    assert_within_card(samples)
     assert_card_typography([(x["t"], x["fs"], x["cls"]) for x in samples])
     im = Image.open(out).convert("RGB")
     w, h = im.size
@@ -885,6 +1197,11 @@ LEAGUE_EMOJI = {
     League.BUNDESLIGA: "⚽", League.LIGUE1: "⚽", League.UCL: "⚽",
     League.LCK: "🎮", League.INTL_LOL: "🎮",
 }
+
+
+# '곧'이라 부를 수 있는 한계. 앞창(LOOKAHEAD 2.5시간)보다 조금 넉넉하게 잡는다 —
+# 정상 발송은 전부 이 안쪽이고, 이걸 넘는 것은 심야 회피로 밀려난 메시지뿐이다.
+START_ALERT_SOON_MAX_MINUTES = 180
 
 
 def render_start_alert(gs: list[Game], now: datetime | None = None,
@@ -950,8 +1267,14 @@ def render_start_alert(gs: list[Game], now: datetime | None = None,
     emoji = LEAGUE_EMOJI.get(lg, "🏟")
     label = LEAGUE_LABEL.get(lg, lg.value)
     _total = len(all_games) if all_games else 0
-    _count = (f"{_total}경기 중 {len(gs)}경기 곧 시작" if _total > len(gs)
-              else f"{len(gs)}경기 곧 시작")
+    # **'곧'과 '9시간 뒤'가 한 메시지 안에서 부딪치면 안 된다 (v1.11j).**
+    # 심야 회피(quiet hours)로 22:00에 밀려 나가는 MLB 알림이 실측(I1)에서
+    # "⚾ 내일 아침 MLB 12경기 곧 시작 … 첫 경기 화 07:05 시작 (9시간 5분 뒤)"였다.
+    # 앞창이 2.5시간이라 정상 발송은 늘 3시간 안쪽이다 — 그보다 멀면 이 메시지는
+    # '임박 알림'이 아니라 '시간표'다. 문형을 그때 바꾼다.
+    _verb = "곧 시작" if mins <= START_ALERT_SOON_MAX_MINUTES else "시간표"
+    _count = (f"{_total}경기 중 {len(gs)}경기 {_verb}" if _total > len(gs)
+              else f"{len(gs)}경기 {_verb}")
     head = f"{emoji} <b>{head_when} {esc(label)} {_count}</b>\n"
     # 경기가 많으면(MLB 15경기) 접고펼치기로 채널 스크롤을 아낀다
     return head + quote(lines, expandable=len(lines) > QUOTE_EXPANDABLE_THRESHOLD_LINES) + tail
@@ -1422,7 +1745,11 @@ def _clip_parts(head: str, lines: list[str], tail: str = "",
     이 분할은 리그가 늘거나 더블헤더가 겹쳐 넘칠 때를 위한 안전망이다.
     """
     def build(ls: list[str], more: int) -> str:
-        body = quote(ls, expandable=True)
+        # **접고펼치기 기준을 한 가지로 통일한다 (v1.11j).**
+        # 시작 알림만 "6줄 초과"를 쓰고 캡션은 줄 수와 무관하게 늘 접혀 있었다.
+        # 그래서 같은 5경기가 모닝 캡션에서는 접히고 시작 알림에서는 안 접혔다 —
+        # 읽는 사람에게는 접힘 자체가 '내용이 더 있다'는 신호인데 그 신호가 거짓이었다.
+        body = quote(ls, expandable=len(ls) > QUOTE_EXPANDABLE_THRESHOLD_LINES)
         # 서술어가 없는 명사구는 안내가 아니다. 단위도 내용에 맞춘다 —
         # 경기 목록에 "3건"이라 쓰면 무엇이 셋인지 읽는 사람이 되짚어야 한다.
         # 단위가 바뀌면 조사도 바뀐다("3경기는" / "19팀은"). 박아두면 반드시 틀린다.
@@ -1463,8 +1790,9 @@ def _clip_parts(head: str, lines: list[str], tail: str = "",
 
 
 def _cont(lines: list[str]) -> str:
-    """이어지는 텍스트 메시지. 캡션과 같은 접고펼치기 인용블록을 쓴다."""
-    return "<b>(이어서)</b>\n" + quote(lines, expandable=True)
+    """이어지는 텍스트 메시지. 캡션과 같은 접고펼치기 기준을 쓴다."""
+    return ("<b>(이어서)</b>\n"
+            + quote(lines, expandable=len(lines) > QUOTE_EXPANDABLE_THRESHOLD_LINES))
 
 
 def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
@@ -1505,10 +1833,15 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
         # 카드가 "경기 없음"이라 쓰는 날 캡션만 "편성 0경기"라 하면 또 갈린다.
         _why = " · ".join(f"{lab} {n}경기"
                           for lab, n in _reason_counts(_cx + _po))
-        head = _pre + f"경기 없음 ({_why})</b>\n"
+        head = _pre + f"경기 없음 (총 {len(games)}경기 · {_why})</b>\n"
     else:
-        head = _pre + f"편성 {len(_play)}경기" + (f" ({_off})" if _off else "") + "</b>\n"
-    tail = start_alert_lead_text()
+        # **총계를 밝힌다 (v1.11j).** 카드 부제는 "총 5경기 중 3경기 취소"라 쓰는데
+        # 캡션은 "(3경기 취소)"뿐이라 그날 몇 경기가 잡혀 있었는지 캡션만 읽어서는
+        # 알 수 없었다. 카드와 같은 낱말('총 N경기')로 같은 사실을 적는다.
+        _paren = (f" (총 {len(games)}경기 · {_off})" if _off else "")
+        head = _pre + f"편성 {len(_play)}경기" + _paren + "</b>\n"
+    # 열리는 경기가 0이면 시작 알림도 없다 — 카드 푸터와 같은 규칙(v1.11j).
+    tail = start_alert_lead_text() if _play else ""
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
 
@@ -1543,22 +1876,35 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
     cx = [g for g in games if g.status is Status.CANCELED]
     po = [g for g in games if g.status is Status.POSTPONED]
     sp = [g for g in games if g.status is Status.SUSPENDED]
-    unk = [g for g in games if g.status not in SETTLED_FOR_RESULT
+    # **점수 없는 FINAL을 여기서도 센다 (v1.11j).** 목록에는 "결과 미확정"으로
+    # 이미 한 줄이 있는데 머리말의 어느 수에도 안 들어가, 카드(4경기)와 캡션(5줄)이
+    # 그날 경기 수를 다르게 말했다. 카드 부제와 같은 규칙으로 센다.
+    unk = [g for g in games
+           if not ((g.status is Status.FINAL and g.score)
+                   or g.status is Status.CANCELED)
            and g.status not in (Status.POSTPONED, Status.SUSPENDED)]
     _name = esc(LEAGUE_LABEL.get(lg, lg.value))
+    # 카드 부제와 같은 낱말·같은 수를 쓴다. 표현이 갈리면 한 메시지 안에서
+    # 사진과 글이 같은 날을 다르게 말한다.
+    _rest = " · ".join(f"{_w} {len(_n)}경기"
+                       for _n, _w in ((po, "연기"), (sp, "서스펜디드"),
+                                      (unk, "미확정")) if _n)
     if not fin and cx and not (po or sp or unk):
         head = f"📋 <b>{_name} 전 경기 취소 {len(cx)}경기</b>\n"
     elif not fin and cx:
         # "결과 0경기"는 말이 안 된다 — 아직 결과가 없고 취소만 확정된 날이다.
-        # 카드 헤드라인과 같은 문형을 쓴다.
-        head = f"📋 <b>{_name} 취소 {len(cx)}경기 · 나머지 진행 중</b>\n"
+        # 카드 헤드라인과 같은 문형을 쓴다(카드도 '나머지 진행 중'을 부제로 옮겼다).
+        head = f"📋 <b>{_name} 취소 {len(cx)}경기 확정 ({_rest})</b>\n"
     else:
         # **'전 경기 결과'라 부를 수 있는 날에만 그렇게 부른다 (v1.11i).**
         # 미확정이 남아 있는데 머리말이 그대로라 캡션이 스스로를 반박했다.
-        _bits = [f"편성 {len(games)}"]
-        for _n, _w in ((cx, "취소"), (po, "연기"), (sp, "서스펜디드"), (unk, "미확정")):
+        # **괄호 안 단위를 섞지 않는다 (v1.11j).** "전 경기 결과 2경기 (편성 5 · 취소 3)"은
+        # 앞은 '경기', 뒤는 맨숫자라 같은 괄호에서 두 단위가 섞였다.
+        _bits = [f"편성 {len(games)}경기"]
+        for _n, _w in ((cx, "취소"), (po, "연기"), (sp, "서스펜디드"),
+                       (unk, "미확정")):
             if _n:
-                _bits.append(f"{_w} {len(_n)}")
+                _bits.append(f"{_w} {len(_n)}경기")
         # 취소는 '그날 있었던 일'이 확정된 것이므로 '전 경기'를 깨지 않는다.
         # 깨는 것은 아직 결과를 모르는 경기(연기·서스펜디드·진행 중)다.
         _whole = not (po or sp or unk)

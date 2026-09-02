@@ -716,12 +716,17 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
         parts = P.caption_result(todays, day, as_parts=True)
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
-        same = [g for g in games
-                if day_schedule_scope(g) == item.scope and g.status is Status.SCHEDULED]
+        scoped = [g for g in games if day_schedule_scope(g) == item.scope]
+        same = [g for g in scoped if g.status is Status.SCHEDULED]
         if not same:
             return None
-        # 남은 시간을 지금 기준으로 계산해야 한다 — 안 넘기면 "몇 분 뒤"가 틀린다
-        return [], [P.render_start_alert(same, _now())]   # 사진 없는 텍스트 콘텐츠
+        # 남은 시간을 지금 기준으로 계산해야 한다 — 안 넘기면 "몇 분 뒤"가 틀린다.
+        #
+        # **그날 전체 편성도 함께 넘긴다 (v1.11i 육안검수).**
+        # 아직 시작 안 한 경기만 넘기면 문구가 "오늘 KBO 3경기"가 되는데,
+        # 그날 편성은 5경기다. 독자는 그 수를 그날 전체로 읽는다.
+        # 전체를 알면 render_start_alert가 "5경기 중 3경기 곧 시작"이라고 말한다.
+        return [], [P.render_start_alert(same, _now(), all_games=scoped)]
     else:
         return None
 

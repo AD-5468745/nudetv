@@ -100,13 +100,20 @@ body{background:#c8ccd2;font-family:'Noto Sans CJK KR','Noto Sans KR',sans-serif
 .row .mt{font-size:44px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;
   padding-right:24px;}
 .row .mt .sep{color:var(--dim);font-weight:700;font-size:31px;margin:0 11px;}
-.row .meta{font-size:33px;color:var(--sub);font-weight:700;
+/* 경기장 칸은 **오른쪽 정렬**이다. 팀명 칸이 `auto`라 왼쪽 끝은 행마다 다른데
+   (이름 길이가 다르다), 오른쪽 끝은 시각 칸이 맞춰 주므로 늘 같은 자리다.
+   왼쪽 정렬로 두었더니 행마다 경기장이 좌우로 들쭉날쭉해 열로 읽히지 않았다. */
+.row .meta{font-size:33px;color:var(--sub);font-weight:700;text-align:right;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .row .meta .hook{color:var(--alert);font-weight:800;}
 .row .tm{text-align:right;padding-left:20px;white-space:nowrap;}
 .row .tm .k{font-size:45px;font-weight:900;letter-spacing:-.02em;}
 .row .tm .l{font-size:28px;color:var(--dim);font-weight:700;margin-top:5px;}
 .row.off .mt{color:var(--lose);}
+/* 취소·연기 행의 시작 시각. 전에는 정상 경기와 **똑같은 굵은 검정**이라
+   "18:00"이 열리는 경기처럼 읽혔다 — 그 시각에는 아무 일도 일어나지 않는다.
+   팀명과 같은 흐린 색으로 낮춰 행 전체가 한 상태로 읽히게 한다. */
+.row.off .tm .k,.row.off .tm .l{color:var(--lose);}
 
 /* ── 결과 행 ─────────────────────────────────────── */
 .res{display:grid;grid-template-columns:1fr 92px 92px 1fr 152px;align-items:center;
@@ -122,14 +129,30 @@ body{background:#c8ccd2;font-family:'Noto Sans CJK KR','Noto Sans KR',sans-serif
 .res .n1.n6,.res .n2.n6{font-size:39px;}
 .res .n1.n7,.res .n2.n7{font-size:34px;}
 .res .s1,.res .s2{font-size:51px;font-weight:900;text-align:center;}
-.res .st{font-size:32px;font-weight:800;color:var(--sub);text-align:right;}
+/* 상태 칸은 152px 고정이다. `word-break`가 없으면 한국어가 **글자 단위로** 쪼개진다
+   — 실측(2026-08-28 KBO 결과 카드): "그라운드사정 취소"가 "그라운드사 / 정 취소"
+   두 줄(높이 92px = 46px×2)로 나갔다. `keep-all`은 낱말 안에서 끊지 않는다.
+   문구 자체도 짧은 표기(`cancel_reason_text(..., short=True)`)를 쓴다 — CSS만으로
+   막으면 낱말이 통째로 칸을 넘어갈 뿐이다. 둘 다 있어야 한 줄이 된다. */
+.res .st{font-size:32px;font-weight:800;color:var(--sub);text-align:right;
+  word-break:keep-all;overflow-wrap:normal;}
 .res.w1 .n1,.res.w1 .s1{color:var(--win);} .res.w1 .n2,.res.w1 .s2{color:var(--lose);}
 .res.w2 .n2,.res.w2 .s2{color:var(--win);} .res.w2 .n1,.res.w2 .s1{color:var(--lose);}
 .res.dr{background:var(--boxbg);}
-.res.cx{background:#ffeae7;}
+/* 취소 행. 전에는 `#ffeae7` 고정 분홍이라 **리그 색과 무관**했다 —
+   NPB(자홍)·MLB(빨강) 카드에서는 정상 행 배경과 구분이 안 됐다.
+   면 색은 리그 종이에 경고색을 섞어 만들고(어느 리그에서도 같은 만큼 물든다),
+   왼쪽 굵은 표시선을 더해 색만으로 읽지 않아도 취소 행이 보이게 한다. */
+.res.cx{background:color-mix(in srgb,var(--alert) 11%,var(--paper));
+  box-shadow:inset 10px 0 0 color-mix(in srgb,var(--alert) 72%,transparent);}
 .res.cx .n1,.res.cx .n2{color:var(--lose);text-decoration:line-through;
   text-decoration-thickness:2px;text-decoration-color:rgba(192,47,47,.45);}
 .res.cx .st{color:var(--alert);font-weight:900;}
+/* 상태 칸은 **예외를 적는 자리**다. 그날 적을 예외가 하나도 없으면(전 경기 정상
+   종료) 152px이 통째로 빈 여백으로 남아 점수 덩어리가 왼쪽으로 쏠린다.
+   그럴 때는 칸 자체를 없앤다 — 렌더가 `.body.nost`를 붙여 알려 준다. */
+.body.nost .res{grid-template-columns:1fr 92px 92px 1fr;}
+.body.nost .res .st{display:none;}
 
 /* ── 순위표 ──────────────────────────────────────── */
 .stb{width:100%;border-collapse:collapse;}

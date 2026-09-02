@@ -184,7 +184,14 @@ if res:
     if made:
         photos, parts = made
         check("사진 1장 + 캡션", len(photos) == 1 and len(parts) >= 1)
-        check("캡션에 접고펼치기", "<blockquote expandable>" in parts[0])
+        # v1.11i 육안검수: 전에는 `<blockquote expandable>`을 요구했다. 그런데
+        # 캡션은 줄 수와 무관하게 **항상** 접혀 나가고 있었고, 2줄짜리에 붙은
+        # '펼치기'는 "내용이 더 있다"는 거짓 신호다. 게다가 같은 5경기가 메시지
+        # 종류에 따라 접히기도 안 접히기도 했다(시작 알림만 6줄 기준을 썼다).
+        # 지켜야 할 것은 '접힘'이 아니라 **캡션이 인용블록을 쓴다**는 구조다.
+        check("캡션이 인용블록을 쓴다", "<blockquote" in parts[0], parts[0][:80])
+        _long = "\n".join(f"줄 {i}" for i in range(12))
+        check("긴 캡션은 접는다", P.QUOTE_EXPANDABLE_THRESHOLD_LINES < 12)
         check("사진이 실제 바이트", len(photos[0][1]) > 5000, f"{len(photos[0][1])}B")
 else:
     check("결과 카드 큐 항목", False, "큐에 결과 카드가 없다")
