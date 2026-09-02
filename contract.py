@@ -1097,6 +1097,13 @@ def idem_key(
     v1.8은 슬롯이 하나라 어느 콘텐츠가 어느 것을 넣는지 미정의였다.
     """
     # 채널은 지문으로만 남긴다 — 대장이 공개 저장소에 커밋되기 때문이다(channel_ref 참조).
+    #
+    # **구분자가 성분 안에 들어오면 키를 되돌려 읽을 수 없다 (v1.11j).**
+    # 정정 경로가 원본 키를 파싱해 정정본 키를 만들기 때문에, scope에 '|'가 섞이면
+    # 자리가 밀려 **엉뚱한 발송의 정정**이 만들어진다. 지금 쓰는 scope(sports_day·
+    # game_id)에는 '|'가 없지만, 규칙만 두면 반드시 어긴다 — 여기서 못 박는다.
+    if IDEM_SEP in scope:
+        raise GateError(f"scope에 구분자 {IDEM_SEP!r} 금지 — 키를 되돌려 읽을 수 없다 ({scope!r})")
     parts = [channel_ref(channel_id), content_type.value, scope,
              f"s{start_rev}", f"r{revision}"]
     if change_kind is not None:
@@ -1104,6 +1111,406 @@ def idem_key(
     if part_no is not None:
         parts.append(f"p{part_no}")
     return IDEM_SEP.join(parts)
+
+
+@dataclass(frozen=True)
+class IdemParts:
+    """멱등키를 되돌려 읽은 결과. 채널은 지문뿐이라 원래 ID로는 복원되지 않는다."""
+    channel_ref: str
+    content_type: "ContentType"
+    scope: str
+    start_rev: int
+    revision: int
+    change_kind: "Optional[ChangeKind]" = None
+    part_no: Optional[int] = None
+
+
+def parse_idem_key(key: str) -> IdemParts:
+    """멱등키를 성분으로 되돌린다.
+
+    **왜 필요한가.** 정정본 키는 '원본 키의 개정 슬롯을 올린 것'이어야 대장에서
+    두 발송의 관계를 되짚을 수 있다. 원본 키를 다시 만들려면 채널 ID가 필요한데
+    발송기는 지문만 들고 있는 경우가 있다(대장에서 읽어온 줄). 그래서 키에서
+    지문을 그대로 물려받아 새 키를 만든다.
+    """
+    p = key.split(IDEM_SEP)
+    if len(p) < 5:
+        raise GateError(f"멱등키 형식이 아니다 ({key!r})")
+    ch, ct, scope, s, r = p[0], p[1], p[2], p[3], p[4]
+    if not (s.startswith("s") and s[1:].isdigit()):
+        raise GateError(f"멱등키의 start_rev 슬롯이 아니다 ({s!r})")
+    if not (r.startswith("r") and r[1:].isdigit()):
+        raise GateError(f"멱등키의 revision 슬롯이 아니다 ({r!r})")
+    change_kind, part_no = None, None
+    for extra in p[5:]:
+        if extra.startswith("p") and extra[1:].isdigit():
+            part_no = int(extra[1:])
+        else:
+            change_kind = ChangeKind(extra)
+    return IdemParts(channel_ref=ch, content_type=ContentType(ct), scope=scope,
+                     start_rev=int(s[1:]), revision=int(r[1:]),
+                     change_kind=change_kind, part_no=part_no)
+
+
+CORRECTION_SCOPE_SEP = "@"   # 'league_result@KBO:2026-09-01'
+
+
+def correction_scope(origin_content_type: "ContentType", origin_scope: str) -> str:
+    """정정본의 scope. **원본이 어떤 콘텐츠였는지를 담는다.**
+
+    담지 않으면 충돌한다: 같은 하루(`KBO:2026-09-01`)에 모닝 카드와 결과 카드가
+    둘 다 있고 scope 문자열이 **완전히 같다.** 정정 키를 `correction|KBO:2026-09-01|s0|r1`
+    로 만들면 모닝의 정정과 결과의 정정이 같은 키가 되어, 둘째 것이 '이미 보냄'으로
+    조용히 사라진다. 원본 콘텐츠 종류를 앞에 붙여 갈라 둔다.
+
+    정정본을 또 정정할 때는 이미 붙어 있으므로 그대로 둔다(중첩 금지).
+    """
+    if origin_content_type is ContentType.CORRECTION:
+        return origin_scope
+    return f"{origin_content_type.value}{CORRECTION_SCOPE_SEP}{origin_scope}"
+
+
+def correction_key(channel_id: str, origin_content_type: "ContentType",
+                   origin_scope: str, revision: int, *, start_rev: int = 0) -> str:
+    """정정본 멱등키 — 채널 ID를 들고 있을 때.
+
+    **콘텐츠 종류는 CORRECTION으로 바꾼다.** 유예·리스·페이서 우선순위·
+    `UNPLANNED_CONTENT`(하루 상한 면제)가 전부 content_type으로 갈리기 때문이다.
+    원본 종류를 그대로 쓰면 정정이 그날 편성 상한을 잡아먹고, 원본의 유예
+    (결과 카드 6시간)를 물려받아 이미 늦은 정정이 나간다.
+    """
+    if revision < 1:
+        raise GateError(f"정정본의 revision은 1 이상이다 ({revision})")
+    return idem_key(channel_id, ContentType.CORRECTION,
+                    correction_scope(origin_content_type, origin_scope),
+                    revision=revision, start_rev=start_rev)
+
+
+def correction_key_from(origin_idem_key: str, revision: int) -> str:
+    """정정본 멱등키 — 원본 키만 들고 있을 때(대장에서 읽어온 줄).
+
+    채널 지문을 그대로 물려받으므로 원본과 **같은 채널**임이 구조로 보장된다.
+    정정의 정정도 같은 함수로 만든다 — 원본 키가 이미 정정본이면 scope는
+    그대로 두고 개정 번호만 올린다.
+    """
+    if revision < 1:
+        raise GateError(f"정정본의 revision은 1 이상이다 ({revision})")
+    p = parse_idem_key(origin_idem_key)
+    scope = correction_scope(p.content_type, p.scope)
+    if IDEM_SEP in scope:
+        raise GateError(f"scope에 구분자 {IDEM_SEP!r} 금지 ({scope!r})")
+    return IDEM_SEP.join([p.channel_ref, ContentType.CORRECTION.value, scope,
+                          f"s{p.start_rev}", f"r{revision}"])
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 내용 지문 (v1.11j 신설)
+#
+# **무엇을 푸는가.** 2026-09-01 19:18, 진행 중인 KBO 5경기가 '종료 0:0 무승부'로
+# 카드에 실려 실제 채널에 나갔다. 원인은 고쳤지만 **이미 나간 카드를 정정할 방법이
+# 없었다** — 멱등키가 같아서 두 번째 발송은 언제나 '이미 보냄'으로 버려진다.
+#
+# 정정을 내려면 "지난번에 보낸 내용과 지금 만든 내용이 다른가"를 알아야 한다.
+# 그런데 대장(state/ledger.jsonl)은 **공개 저장소에 커밋된다.** 내용 원문을 남기면
+# 어느 채널에 무엇을 보내는지가 통째로 드러난다(channel_ref가 채널 ID를 지문으로
+# 바꾼 것과 정확히 같은 이유). 그래서 **지문만** 남긴다 — 단방향이라 되돌릴 수 없고,
+# 같은 사실이면 항상 같은 값이 나오므로 비교는 그대로 된다.
+#
+# ── 무엇을 넣는가 (넣은 근거) ────────────────────────────────────────
+#   · 경기 수            — 5경기가 4경기로 줄면 카드가 거짓이다
+#   · game_id            — 경기가 바뀌었는지. 순서만 바뀐 것과 구별하려면 필요하다
+#   · 상태(status)       — 이번 사고 그 자체. 진행중 ↔ 종료 ↔ 취소
+#   · 점수(home/away/단위) — 정정의 첫째 이유
+#   · 승패(outcome)      — 점수만으로는 안 보이는 결정(승부차기·합산승부)을 담는다
+#   · start_rev          — 편성이 바뀐 횟수. 계약이 이미 세는 정수라 흔들리지 않는다
+#
+# ── 무엇을 뺐는가 (뺀 근거 — 여기가 이 작업의 최대 위험) ──────────────
+#   **렌더링 부산물이 하나라도 들어가면 매 틱 지문이 달라져 정정이 무한 발송된다.**
+#   그러면 원래 사고보다 나쁘다. 그래서 다음은 구조로 막는다:
+#   · 발송 시각·렌더 시각·now()  — 매 틱 달라진다. `_digest_scalar`가 datetime을 거부한다
+#   · "3시간 뒤 시작" 같은 상대 시각 — 위와 같다. 애초에 문자열을 안 받는다
+#   · 경기 시작 절대 시각(start_utc) — 소스가 초 단위로 흔들리는 것을 여러 번 봤다.
+#     편성 변경은 계약이 세는 start_rev로 잡는다(정수라 흔들리지 않는다)
+#   · PNG/JPEG 바이트·파일명    — 인코더 버전만 바뀌어도 달라진다
+#   · 팀 표시명(TEAM_NAMES)     — '시카고W'→'화이트삭스'는 표기 통일이지 사실 변경이 아니다.
+#     그래서 표시명이 아니라 **팀 코드가 들어간 game_id**를 쓴다
+#   · 취소 사유 원문            — '우천취소'→'경기취소'는 문구 다듬기다. 상태는 이미 담겼다
+#   · 캡션 문안·행 순서·딕셔너리 순서 — 정렬해서 넣으므로 순서는 지문에 영향이 없다
+#   · float                     — 표현 오차로 같은 값이 다른 문자열이 된다. 거부한다
+# ─────────────────────────────────────────────────────────────────────
+
+CONTENT_DIGEST_VERSION = "1"
+_DIGEST_FIELD_SEP = "\x1f"      # 사실 하나 안의 칸 구분
+_DIGEST_ROW_SEP = "\x1e"        # 사실끼리의 구분. 팀명·리그명에 절대 안 나오는 문자다
+
+
+def game_outcome(game: "Game") -> str:
+    """승패 한 글자 표현. 점수만으로는 안 보이는 결정을 지문에 담기 위한 파생값.
+
+    승부차기(PSO)·연장(AET)·1·2차전 합산은 본 점수가 동점이어도 승자가 있다.
+    `is_draw()`가 이미 그것을 알고 있으므로 그 판단을 그대로 쓴다.
+    """
+    if game.score is None:
+        return ""
+    if game.is_draw():
+        return "draw"
+    agg = game.meta.aggregate
+    if agg is not None and agg.home != agg.away:
+        return "home" if agg.home > agg.away else "away"
+    pen = game.meta.penalties
+    if (game.meta.decided_by == DecidedBy.PSO and pen is not None
+            and pen.home != pen.away):
+        return "home" if pen.home > pen.away else "away"
+    if game.score.home == game.score.away:
+        return "tie"        # 무승부는 아닌데 동점 — 아직 안 갈렸다(카드에 그렇게 나간다)
+    return "home" if game.score.home > game.score.away else "away"
+
+
+def game_fact(game: "Game") -> str:
+    """경기 한 건에서 뽑은 '카드에 실린 사실' 한 줄. 시각·표시명·문안은 들어가지 않는다."""
+    sc = game.score
+    return _DIGEST_FIELD_SEP.join((
+        game.game_id,
+        game.status.value,
+        "" if sc is None else f"{sc.home}:{sc.away}:{sc.unit.value}",
+        game_outcome(game),
+        f"sr{game.start_rev}",
+    ))
+
+
+def _digest_scalar(v) -> str:
+    """지문에 넣어도 되는 값인가. **여기가 무한 정정을 막는 구조적 방어선이다.**
+
+    datetime·float은 매 틱 또는 매 렌더마다 달라질 수 있어 거부한다.
+    거부하지 않고 `str(v)`로 받으면, 누군가 `extra={"sent_at": now}`를 넘기는 순간
+    지문이 틱마다 달라져 채널에 정정이 무한히 쏟아진다.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, Enum):
+        return _digest_scalar(v.value)
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, str):
+        return v
+    if isinstance(v, datetime):
+        raise GateError("지문에 시각을 넣을 수 없다 — 매 틱 달라져 정정이 무한 발송된다")
+    if isinstance(v, float):
+        raise GateError("지문에 실수를 넣을 수 없다 — 표현 오차로 같은 값이 달라 보인다")
+    raise GateError(f"지문에 넣을 수 없는 값 ({type(v).__name__}) — "
+                    f"사실은 문자열·정수·열거형으로만 넘긴다")
+
+
+def content_digest(games: "list[Game]", *, extra: "Optional[dict]" = None) -> str:
+    """카드에 실린 **사실**의 지문. 같은 사실이면 몇 번을 렌더해도 같은 값이다.
+
+    `extra`는 경기 목록만으로 표현이 안 되는 사실용이다(예: 순위표의 순위).
+    **렌더링 부산물을 넣지 말 것** — `_digest_scalar`가 시각·실수를 거부한다.
+    """
+    rows = sorted(game_fact(g) for g in games)      # 순서 변경은 정정 사유가 아니다
+    if not rows and not extra:
+        # 빈 지문을 허용하면, 소스가 죽어 0경기가 온 틱마다 "내용이 바뀌었다"가 되어
+        # 정상 발송분 전체에 정정이 나간다. 부를 자리가 아니면 부르지 않는다.
+        raise GateError("지문을 만들 내용이 없다 (경기 0건) — 이 상태로 정정을 판정하면 안 된다")
+    payload = [f"n={len(rows)}"] + rows
+    if extra:
+        for k in sorted(extra):
+            payload.append(f"x{_DIGEST_FIELD_SEP}{k}{_DIGEST_FIELD_SEP}"
+                           f"{_digest_scalar(extra[k])}")
+    import hashlib
+    h = hashlib.sha256(_DIGEST_ROW_SEP.join(payload).encode("utf-8")).hexdigest()
+    return f"cd{CONTENT_DIGEST_VERSION}-{h[:16]}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 정정 판정 (v1.11j 신설)
+#
+# **정정은 아껴 쓴다.** 채널에 같은 내용이 반복되면 그것도 사고다.
+# 그래서 "언제 정정을 내는가"를 한 함수에 모으고, 상한·기한·간격 셋으로 조인다.
+# ─────────────────────────────────────────────────────────────────────
+
+# 같은 원본에 낼 수 있는 정정 횟수의 상한.
+# 원본 + 정정 2회 = 구독자가 같은 사실을 세 번 본다. 그 이상은 자동화가 아니라
+# 사람이 볼 일이다(소스가 계속 흔들린다는 뜻이므로 정정을 더 내도 나아지지 않는다).
+CORRECTION_MAX_PER_SCOPE = 2
+
+# 원본 발송 후 이 시간이 지나면 정정을 포기한다.
+# 사흘 지난 경기 결과를 이제 와 정정하면 바로잡는 것보다 혼란이 크다.
+# 6시간이면 결과 카드(저녁)는 그날 밤 안, 모닝 카드(07:30)는 점심 전까지다 —
+# 구독자가 그 카드를 실제로 읽는 구간을 덮는다.
+# 기한은 **원본 발송 시각** 기준이다. 정정본 시각으로 재면 정정의 정정이
+# 시계를 계속 뒤로 미뤄 기한이 무한히 늘어난다.
+CORRECTION_WINDOW_SECONDS = 6 * 3600
+
+# 정정과 정정 사이 최소 간격.
+# 소스가 진행중↔종료를 몇 분 간격으로 흔들 때(이번 사고의 원인 계열), 간격이 없으면
+# 연속 두 틱에서 상한 2회를 다 태워버리고 정작 확정된 사실은 못 낸다.
+CORRECTION_MIN_INTERVAL_SECONDS = 900
+
+# 하루에 낼 수 있는 정정 총량(채널 기준).
+# 정정은 UNPLANNED_CONTENT라 일반 하루 상한(daily_max)에서 **면제**된다.
+# 면제만 해두고 상한을 안 두면 정정에는 아무 뚜껑이 없다 — 폭주 차단기(10분 60건)는
+# 열 건짜리 폭주를 못 잡는다. 정정 전용 상한을 따로 둔다.
+CORRECTION_DAILY_MAX = 6
+
+# 정정은 예약 시각이 곧 '사실이 바뀐 순간'이라 앞당길 것이 없다.
+LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.CORRECTION] = 0
+
+# 정정은 편성표에서 나오지 않는다 — 사실이 바뀐 순간에 생긴다.
+# 그래서 QUEUED_CONTENT_TYPES(편성 큐)와 섞지 않고 따로 둔다.
+# (섞으면 "편성 큐가 이 종류를 한 번은 만들어야 한다"는 검사가 영원히 실패한다.)
+EVENT_QUEUED_CONTENT_TYPES: frozenset = frozenset({ContentType.CORRECTION})
+
+
+class CorrectionSkip:
+    """정정을 내지 않은 이유. `blocked`인 것만 사람에게 올린다."""
+    OK = ""
+    NO_ORIGIN = "no_origin"                  # 대장에 원본이 없다 — 정정할 대상이 없다
+    ORIGIN_NOT_SENT = "origin_not_sent"      # 원본이 아직 안 나갔다 — 원본을 고치면 된다
+    NO_DIGEST = "no_digest"                  # 지문 없는 옛 발송분 — 절대 정정하지 않는다
+    NO_NEW_DIGEST = "no_new_digest"          # 이번 내용의 지문을 못 만들었다
+    UNCHANGED = "unchanged"                  # 사실이 그대로다 (문구·순서 변경 포함)
+    IN_FLIGHT = "in_flight"                  # 앞선 정정이 아직 진행 중
+    PRIOR_NEEDS_HUMAN = "prior_needs_human"  # 앞선 정정이 격리됐다
+    MAX_REACHED = "max_reached"              # 정정 상한
+    EXPIRED = "expired"                      # 정정 기한 초과
+    TOO_SOON = "too_soon"                    # 최소 간격 미달
+    NO_SENT_TIME = "no_sent_time"            # 원본에 발송 시각이 없어 기한을 못 잰다
+
+
+# 사람이 봐야 하는(= 알림에 실어야 하는) 사유.
+# 나머지는 정상 동작이라 조용히 넘어간다.
+CORRECTION_BLOCKING = frozenset({
+    CorrectionSkip.MAX_REACHED, CorrectionSkip.EXPIRED, CorrectionSkip.TOO_SOON,
+    CorrectionSkip.PRIOR_NEEDS_HUMAN, CorrectionSkip.NO_SENT_TIME,
+})
+
+
+@dataclass(frozen=True)
+class CorrectionDecision:
+    """정정 판정 결과. **막힌 이유를 값으로 노출한다** — 조용히 넘기면 사고가 묻힌다."""
+    should_send: bool
+    code: str = CorrectionSkip.OK
+    reason: str = ""
+    revision: int = 0
+    corrections_used: int = 0
+    max_corrections: int = CORRECTION_MAX_PER_SCOPE
+    age_seconds: Optional[float] = None
+    window_seconds: int = CORRECTION_WINDOW_SECONDS
+    origin_idem_key: Optional[str] = None
+    corrects_idem_key: Optional[str] = None
+    origin_message_id: Optional[int] = None
+    new_digest: Optional[str] = None
+    prev_digest: Optional[str] = None
+
+    @property
+    def blocked(self) -> bool:
+        """사실은 바뀌었는데 우리 규칙이 막았다 → 사람이 알아야 한다."""
+        return self.code in CORRECTION_BLOCKING
+
+    def note(self) -> str:
+        """알림에 실을 한 줄. 막히지 않았으면 빈 문자열."""
+        if not self.blocked:
+            return ""
+        age = "" if self.age_seconds is None else f" (원본 발송 {int(self.age_seconds // 60)}분 전)"
+        return f"정정 보류 — {self.reason}{age}: {self.origin_idem_key}"
+
+
+def decide_correction(origin, priors: "list", new_digest: "Optional[str]", *,
+                      now_utc: datetime,
+                      max_corrections: int = CORRECTION_MAX_PER_SCOPE,
+                      window_seconds: int = CORRECTION_WINDOW_SECONDS,
+                      min_interval_seconds: int = CORRECTION_MIN_INTERVAL_SECONDS
+                      ) -> CorrectionDecision:
+    """정정을 낼 것인가. 순수 함수 — 대장 접근은 호출자(발송기)가 한다.
+
+    `origin`  : 원본 발송의 SendRecord (없으면 None)
+    `priors`  : 같은 원본에 대해 이미 만들어진 정정본 SendRecord들, revision 오름차순
+    `new_digest`: 지금 만든 내용의 `content_digest()`
+
+    **가장 중요한 규칙: 지문이 없으면 정정하지 않는다.**
+    이 기능을 켜기 전에 나간 발송분에는 지문 칸이 비어 있다. 비어 있는 것을
+    "바뀌었다"로 읽으면 **오늘 이전 발송분 전체가 다시 나간다.** 그래서
+    비교할 기준이 없으면 무조건 '정정 대상 아님'으로 떨어뜨린다.
+    """
+    def out(code, reason, **kw):
+        return CorrectionDecision(
+            should_send=False, code=code, reason=reason,
+            max_corrections=max_corrections, window_seconds=window_seconds,
+            new_digest=new_digest,
+            origin_idem_key=getattr(origin, "idem_key", None), **kw)
+
+    if origin is None:
+        return out(CorrectionSkip.NO_ORIGIN, "대장에 원본 발송이 없다")
+    if origin.state is not SendState.SENT:
+        return out(CorrectionSkip.ORIGIN_NOT_SENT,
+                   f"원본이 아직 발송되지 않았다({origin.state.value}) — 원본을 고치면 된다")
+
+    # 앞선 정정본들의 상태부터 본다. 진행 중이거나 격리된 것이 있으면 얹지 않는다.
+    for p in priors:
+        if p.state is SendState.NEEDS_HUMAN:
+            return out(CorrectionSkip.PRIOR_NEEDS_HUMAN,
+                       f"앞선 정정 r{p.revision}이 격리 상태다 — 사람이 확인해야 한다",
+                       corrections_used=sum(1 for x in priors
+                                            if x.state is SendState.SENT))
+        if p.state not in SETTLED_STATES:
+            return out(CorrectionSkip.IN_FLIGHT,
+                       f"앞선 정정 r{p.revision}이 아직 진행 중이다({p.state.value})",
+                       corrections_used=sum(1 for x in priors
+                                            if x.state is SendState.SENT))
+
+    sent_priors = [p for p in priors if p.state is SendState.SENT]
+    used = len(sent_priors)
+    latest = sent_priors[-1] if sent_priors else origin
+    # 다음 개정 번호는 **발견된 모든 줄** 중 최대치 + 1이다.
+    # 보내지 못하고 건너뛴 정정본도 대장에 줄이 있으므로, SENT만 세면 그 줄과
+    # 키가 충돌해 새 정정이 '이미 보냄'으로 사라진다.
+    next_rev = max([origin.revision] + [p.revision for p in priors]) + 1
+
+    prev_digest = getattr(latest, "content_digest", None)
+    base = dict(corrections_used=used, prev_digest=prev_digest,
+                corrects_idem_key=latest.idem_key)
+
+    if not prev_digest:
+        # **전량 재발송을 막는 곳.** 지문이 없는 발송분은 비교 기준이 없다.
+        return out(CorrectionSkip.NO_DIGEST,
+                   "이전 발송에 내용 지문이 없다 (지문 도입 전 발송분) — 정정 대상이 아니다",
+                   **base)
+    if not new_digest:
+        return out(CorrectionSkip.NO_NEW_DIGEST, "이번 내용의 지문이 없다", **base)
+    if new_digest == prev_digest:
+        return out(CorrectionSkip.UNCHANGED, "사실이 그대로다", **base)
+
+    # 여기서부터는 **사실이 실제로 바뀐** 경우다. 아래에서 막히면 사람이 알아야 한다.
+    if used >= max_corrections:
+        return out(CorrectionSkip.MAX_REACHED,
+                   f"정정 상한 {max_corrections}회를 다 썼다", **base)
+    if origin.sent_at_utc is None:
+        return out(CorrectionSkip.NO_SENT_TIME,
+                   "원본에 발송 시각이 없어 정정 기한을 잴 수 없다", **base)
+
+    age = max(0.0, (now_utc - origin.sent_at_utc).total_seconds())
+    base["age_seconds"] = age
+    if age > window_seconds:
+        return out(CorrectionSkip.EXPIRED,
+                   f"원본 발송 후 {int(age // 3600)}시간 경과 — "
+                   f"정정 기한({window_seconds // 3600}시간)을 넘겼다", **base)
+    if latest.sent_at_utc is not None:
+        gap = (now_utc - latest.sent_at_utc).total_seconds()
+        if gap < min_interval_seconds:
+            return out(CorrectionSkip.TOO_SOON,
+                       f"직전 발송 후 {int(gap // 60)}분 — 최소 간격"
+                       f"({min_interval_seconds // 60}분) 미달", **base)
+
+    return CorrectionDecision(
+        should_send=True, code=CorrectionSkip.OK, reason="사실이 바뀌었다",
+        revision=next_rev, corrections_used=used, max_corrections=max_corrections,
+        age_seconds=age, window_seconds=window_seconds,
+        origin_idem_key=origin.idem_key, corrects_idem_key=latest.idem_key,
+        origin_message_id=(origin.message_ids[0] if origin.message_ids else None),
+        new_digest=new_digest, prev_digest=prev_digest)
 
 
 # 텔레그램 API 하드 제약
@@ -1684,6 +2091,16 @@ class SendRecord:
     start_rev: int = 0
     part_no: Optional[int] = None
     sent_count: int = 0
+
+    # ── 정정 추적 (v1.11j) ────────────────────────────────────
+    # **내용 원문이 아니라 지문만 남긴다.** 대장은 공개 저장소에 커밋된다
+    # (channel_ref가 채널 ID를 지문으로 바꾼 것과 같은 이유).
+    content_digest: Optional[str] = None
+    # 이 발송이 정정하는 **원본** 발송의 키. 정정의 정정도 원본을 가리킨다 —
+    # 그래야 "이 사실에 정정을 몇 번 냈나"를 한 줄로 셀 수 있다.
+    origin_idem_key: Optional[str] = None
+    # 바로 앞 발송의 키(정정의 정정이면 앞 정정본). 정정 사슬을 되짚는 용도다.
+    corrects_idem_key: Optional[str] = None
 
     # 클레임 소유 — 틱이 클레임하고 워커가 발송하므로 소유자 식별이 없으면
     # 워커가 '이미 claimed'인 자기 항목을 스스로 차단한다

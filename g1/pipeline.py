@@ -1010,8 +1010,8 @@ SETTLED_FOR_RESULT = frozenset({Status.FINAL, Status.CANCELED})
 
 
 def render_result(games: list[Game], day: str,
-                  top_n: int = CARD_ROWS_MAX) -> str:
-    """그날 결과 카드.
+                  top_n: int = CARD_ROWS_MAX, *, correction: bool = False) -> str:
+    """그날 결과 카드. `correction=True`면 **정정본**이다.
 
     **결과가 확정된 경기만 싣는다.** 진행 중 경기를 빼는 것이 아니라,
     애초에 결과가 아닌 것을 결과라고 부르지 않는 것이다.
@@ -1140,6 +1140,12 @@ def render_result(games: list[Game], day: str,
     if not fin:
         _kind = "취소 안내"
         tk = f"{lgname} 공식 발표"
+    if correction:
+        # **정정본임을 카드가 스스로 말해야 한다 (v1.11j — 대표님 승인).**
+        # 정정은 원본에 답장으로 달리지만, 답장은 앱에서 접혀 보일 수 있다.
+        # 카드만 따로 캡처돼 돌아다니는 경우에도 정정본임이 남아야 한다.
+        _kind = "정정"
+        _h1 = f'[정정] {_h1}'
     body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games), _kind,
                  _dtk, _h1,
                  " · ".join(_bits),
@@ -1845,8 +1851,9 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
 
-def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
-    """그날 전 경기 결과. as_parts=True면 파트 목록."""
+def caption_result(games: list[Game], day: str, *, as_parts: bool = False,
+                   correction: bool = False):
+    """그날 전 경기 결과. as_parts=True면 파트 목록. correction=True면 정정본."""
     # **한 목록, 시작 시각순 (v1.11i).** 카드 본문은 시간순인데 캡션만 미확정
     # 경기를 뒤로 몰아, 같은 메시지의 사진과 글이 다른 순서로 같은 날을 말했다.
     # 시간순은 '언제 무슨 일이 있었나'를 읽는 유일한 순서다.
@@ -1910,6 +1917,11 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
         _whole = not (po or sp or unk)
         head = (f"📋 <b>{_name} {'전 경기 결과' if _whole else '경기 결과'} {len(fin)}경기"
                 + (f" ({' · '.join(_bits)})" if len(_bits) > 1 else "") + "</b>\n")
+    if correction:
+        # **무엇이 왜 바뀌었는지가 아니라, 지금 맞는 사실을 말한다 (v1.11j).**
+        # 정정본은 원본에 답장으로 달리므로 "무엇의 정정인지"는 답장이 말한다.
+        # 여기서는 바로잡힌 내용을 그대로 싣고, 앞머리에 정정임을 밝힌다.
+        head = "✏️ <b>[정정]</b> " + head.replace("📋 ", "", 1)
     return _clip_parts(head, lines) if as_parts else _clip(head, lines)
 
 

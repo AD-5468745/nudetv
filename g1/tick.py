@@ -44,12 +44,19 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
-                      narrow_window_types, stale_unresolved)
+                      narrow_window_types, stale_unresolved,
+                      content_digest)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
 
 # ── 경로 ──────────────────────────────────────────────────────
+# tick이 직접 만드는 건너뜀 사유(발송기의 SkipReason에 없는 것)
+_SKIP_LABEL_LOCAL = {
+    "scoreref_mismatch": "점수 외부 대조 불일치",
+    "stale_data": "묵은 데이터",
+}
+
 ROOT = pathlib.Path(os.environ.get("NUDETV_STATE", "state")).resolve()
 LEDGER = ROOT / "ledger.jsonl"
 FETCH_LOG = ROOT / "fetch.json"
@@ -336,6 +343,56 @@ def _adapter_health(name: str) -> tuple[list[str], float]:
     return [f"{name}: {n}" for n in notes], age
 
 
+# **KOVO컵을 발행한다 (v1.11j — 대표님 승인).**
+# 10월 KOVO컵(남 12·여 12경기)이 지금까지 수집 대상 밖이었다. 어댑터가 컵대회의
+# 자리표시자 팀('A조 1위'·'준결승 A승')과 올스타 가상팀('K-스타'/'V-스타')을
+# 걸러 두었으므로 켜도 팀명 게이트가 막지 않는다.
+KOVO_INCLUDE_CUP = True
+
+
+def _kovo_fetch(adapter, today: datetime) -> list:
+    """오늘 수집해야 할 KOVO 대회를 **전부** 긁어 합친다.
+
+    하나만 고르면 컵과 정규시즌이 겹치는 해에 한쪽이 통째로 사라진다.
+    어댑터가 복수형 선택기를 주면 그것을 쓰고, 없으면 단수 선택기로 떨어진다.
+    """
+    codes = None
+    fn = getattr(adapter, "season_codes_for", None)
+    if callable(fn):
+        for kw in ({"include_cup": KOVO_INCLUDE_CUP}, {}):
+            try:
+                got = fn(today.date(), **kw)
+            except TypeError:
+                continue
+            except Exception:                                # noqa: BLE001
+                break
+            if isinstance(got, (list, tuple)) and got:
+                codes = [c for c in got if isinstance(c, str) and c.strip()]
+                break
+    if not codes:
+        codes = [_kovo_season_code(adapter, today)]
+
+    games: list = []
+    seen: set = set()
+    merged: dict = {}
+    for code in codes:
+        for g in adapter.fetch(code):
+            if g.game_id in seen:
+                continue                     # 대회가 겹쳐 같은 경기가 두 번 오면 하나만
+            seen.add(g.game_id)
+            games.append(g)
+        # 어댑터는 fetch마다 알림을 초기화한다. 대회별로 모아두지 않으면
+        # **마지막 대회의 것만 남아** 앞 대회에서 걸러낸 것이 운영에 안 보인다.
+        rep = getattr(adapter, "skipped_report", None)
+        if callable(rep):
+            for k, v in (rep() or {}).items():
+                merged[f"{code}:{k}"] = v
+    if merged and hasattr(adapter, "note_text"):
+        for k, v in merged.items():
+            adapter.note_text(k, str(v))
+    return games
+
+
 def _kovo_season_code(adapter, today: datetime) -> str:
     """오늘 날짜에 맞는 KOVO 시즌 코드.
 
@@ -387,10 +444,10 @@ def _jobs() -> dict[str, tuple[League, callable]]:
         # 시즌 코드는 어댑터가 오늘 날짜로 고른다 — 하드코딩 "023"은 마지막 보루다.
         "VLEAGUE_M": (League.VLEAGUE_M, lambda: _use(
             "VLEAGUE_M", KovoAdapter("1"),
-            lambda a: a.fetch(_kovo_season_code(a, today)))),
+            lambda a: _kovo_fetch(a, today))),
         "VLEAGUE_W": (League.VLEAGUE_W, lambda: _use(
             "VLEAGUE_W", KovoAdapter("2"),
-            lambda a: a.fetch(_kovo_season_code(a, today)))),
+            lambda a: _kovo_fetch(a, today))),
         "KL1": (League.KL1,
                 lambda: _use("KL1", KLeagueAdapter(), lambda a: a.fetch(y, months))),
         "NPB": (League.NPB,
@@ -686,6 +743,110 @@ def build_all_queues(snapshots: dict[str, list], now: datetime,
 
 # ── 렌더 ──────────────────────────────────────────────────────
 
+def _try_correction(snd, item: QueueItem, games: list, digest: str,
+                    notes: list) -> int:
+    """이미 보낸 카드의 사실이 바뀌었으면 정정본을 낸다. 낸 건수를 돌려준다.
+
+    **정정은 아껴 쓴다.** 채널에 같은 내용이 반복되는 것도 사고이고,
+    잘못 만들면 매 틱 정정이 나간다. 안전은 세 겹으로 둔다:
+      ① 지문이 없으면(오늘 이전 발송분 전부) 아무 일도 하지 않는다 — 전량 재발송 방지
+      ② 판정은 contract.decide_correction 한 곳에서만 (상한·기한·최소 간격)
+      ③ 정정 카드 렌더가 실패하면 조용히 포기한다 — 정정 때문에 틱이 죽지 않는다
+    """
+    if not digest:
+        return 0                       # 지문 없음 = 비교 대상이 없다. 정정하지 않는다.
+    try:
+        d = snd.evaluate_correction(item.idem_key, digest)
+    except Exception as e:                                   # noqa: BLE001
+        notes.append(f"정정 판정 실패 — {item.scope}: {type(e).__name__}")
+        return 0
+    if getattr(d, "blocked", False):
+        # 상한·기한·간격에 걸린 것은 **조용히 넘기지 않는다** — 바로잡아야 할
+        # 사실이 있는데 못 내고 있다는 뜻이라 사람이 알아야 한다.
+        note = d.note() if hasattr(d, "note") else str(d)
+        notes.append(f"✏️ 정정 보류 — {item.content_type.value} {item.scope}: {note}")
+        print(f"    ⏸ 정정 보류 {item.scope}: {note}")
+        return 0
+    if not getattr(d, "should_send", False):
+        return 0
+
+    day = item.sports_day
+    todays = facts_for(item, games)
+    try:
+        if item.content_type is ContentType.LEAGUE_RESULT:
+            html = P.render_result(todays, day, correction=True)
+            parts = P.caption_result(todays, day, as_parts=True, correction=True)
+        else:
+            # 모닝 등 다른 종류의 정정 렌더는 아직 없다. 없는 것을 있는 척하지 않는다.
+            notes.append(f"정정 카드 없음 — {item.content_type.value}는 정정본을 만들 수 없습니다")
+            return 0
+        out = ROOT / "render"
+        out.mkdir(parents=True, exist_ok=True)
+        tag = ("corr_" + item.idem_key.replace("|", "_").replace(":", "-"))[:80]
+        path = out / f"{tag}.png"
+        w, h, _ = P.render_png(html, path)
+        payload = Payload.from_parts([(path.name, path.read_bytes(), w, h)], parts)
+        res = snd.send_correction(item, payload, d)
+    except Exception as e:                                   # noqa: BLE001
+        notes.append(f"✏️ 정정 실패 — {item.scope}: {type(e).__name__} {str(e)[:70]}")
+        return 0
+
+    if res.state is SendState.SENT and not res.already:
+        print(f"    ✏️ 정정 발송 {item.scope} → {res.message_ids}")
+        return 1
+    return 0
+
+
+def _digest_of(item: QueueItem, games: list) -> str:
+    """이 카드가 말하는 사실의 지문. 못 구하면 빈 문자열(정정 대상에서 빠진다).
+
+    지문 계산이 실패했다고 발송을 막지 않는다 — 정정은 편의이고 발송이 본업이다.
+    """
+    try:
+        facts = facts_for(item, games)
+        return content_digest(facts) if facts else ""
+    except Exception:                                        # noqa: BLE001
+        return ""
+
+
+# 점수 대조기는 있으면 쓰고 없으면 조용히 넘어간다 — 안전장치가 없다고
+# 발행이 멈추면 안전장치가 아니라 새 단일 장애점이다.
+try:
+    from adapters.scoreref import check_results as _scoreref_check_results, SCOREREF
+except Exception:                                            # noqa: BLE001
+    _scoreref_check_results = None
+    SCOREREF = None
+
+
+def _scoreref_check(games: list):
+    """결과 카드에 실릴 경기를 외부 소스와 대조. 못 하면 None."""
+    if not _scoreref_check_results or not games:
+        return None
+    try:
+        return _scoreref_check_results(games)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"    (점수 대조 못 함: {type(e).__name__} {str(e)[:80]})")
+        return None
+
+
+def facts_for(item: QueueItem, games: list) -> list:
+    """**이 카드가 말하는 사실의 근거가 되는 경기 목록** (v1.11j).
+
+    내용 지문(`contract.content_digest`)은 여기서 나온 목록으로 계산한다.
+    `render_for`도 같은 함수를 쓴다 — 두 곳이 각자 목록을 고르면 언젠가 어긋나고,
+    그러면 **지문은 그대로인데 카드 내용은 바뀌거나**(정정을 놓친다) 그 반대가 된다
+    (매 틱 정정이 나간다). 둘 다 여기 하나만 본다.
+    """
+    day = item.sports_day
+    if not day:
+        return []
+    todays = [g for g in games if g.sports_day == day]
+    if item.content_type is ContentType.START_ALERT:
+        # 시작 알림 카드는 '그날 편성 전체'를 말한다(N경기 중 M경기 곧 시작).
+        return [g for g in games if day_schedule_scope(g) == item.scope]
+    return todays
+
+
 def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
     """큐 항목 → (사진들, 캡션 파트들). 만들 수 없으면 None."""
     day = item.sports_day
@@ -935,13 +1096,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     for h in hold:
         print(f"  🛑 [발송 보류] {h}")
 
-    sent = failed = already = quarantined = 0
+    sent = failed = already = quarantined = corrected = 0
+    # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
+    fact_notes: list[str] = []
     skip_kinds: dict[str, int] = {}
     nothing_to_render = 0
     missed: list[str] = []
     dropped_before = 0
 
-    def _skip(code: str) -> None:
+    def _skip(code) -> None:
         skip_kinds[code] = skip_kinds.get(code, 0) + 1
 
     # **페이서 우선순위를 배선한다 (v1.11i).**
@@ -989,7 +1152,32 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             photos, parts = made
             payload = (Payload.from_parts(photos, parts) if photos
                        else Payload(text=parts[0]))
-            res = snd.send(item, payload)
+
+            # ── 점수 외부 대조 (v1.11j — 대표님 승인) ────────────────
+            # **한 소스만 믿는 구조가 09-01 사고의 뿌리다.** KBO 일정 페이지 하나를
+            # 믿었고, 그 페이지가 진행 중 경기에도 점수를 채운다는 것을 몰라
+            # "종료 0:0 무승부"가 채널에 나갔다. 이제 결과 카드는 발행 직전에
+            # 다른 곳(네이버·ESPN)과 점수·종료 여부를 맞춰 본다.
+            # **외부가 죽는 것은 '어긋남'이 아니라 '대조 못 함'이다** —
+            # 대조는 안전장치이지 의존 대상이 아니므로 발행을 막지 않는다.
+            if item.content_type is ContentType.LEAGUE_RESULT:
+                v = _scoreref_check(facts_for(item, games))
+                if v is not None and getattr(v, "blocked", False):
+                    _skip("scoreref_mismatch")
+                    fact_notes.append(f"⛔ 점수 대조 불일치 — {item.scope}: "
+                                      f"{v.block_reason} (발행 보류)")
+                    for ln in (v.lines() or [])[:3]:
+                        fact_notes.append(f"    {ln}")
+                    print(f"    ⛔ 점수 대조 불일치로 보류 {item.scope}: "
+                          f"{v.block_reason}")
+                    continue
+                if v is not None and v.warnings:
+                    for w in v.warnings[:2]:
+                        fact_notes.append(f"점수 대조 참고 — {item.scope}: {w}")
+
+            # 내용 지문을 함께 남긴다 — 이게 있어야 나중에 정정을 낼 수 있다.
+            digest = _digest_of(item, games)
+            res = snd.send(item, payload, content_digest=digest)
             if res.state is SendState.SENT and res.already:
                 # 대장에 이미 있다 — 이번에는 아무것도 안 나갔다.
                 # **'발송'으로 찍으면 로그가 거짓말을 한다.** 시계가 돌 때마다
@@ -997,6 +1185,12 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 already += 1
                 print(f"    이미 보냄 {item.content_type.value} {item.scope} "
                       f"→ {res.message_ids} (중복 방지)")
+                # ── 정정 (v1.11j — 대표님 승인) ──────────────────────
+                # 이미 보낸 카드의 **사실이 바뀌었으면** 정정본을 낸다.
+                # 09-01에 "종료 0:0 무승부"가 나갔을 때 고칠 방법이 없었던 자리다.
+                # 판정은 contract.decide_correction이 하고(상한·기한·간격),
+                # 여기서는 결정과 렌더만 잇는다.
+                corrected += _try_correction(snd, item, games, digest, fact_notes)
             elif res.state is SendState.SENT:
                 sent += 1
                 print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
@@ -1025,7 +1219,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             traceback.print_exc(limit=2)
 
     skipped = sum(skip_kinds.values())
-    print(f"  [발송] 새로 보냄 {sent} · 이미 보냄 {already} · "
+    print(f"  [발송] 새로 보냄 {sent}{f' · ✏️정정 {corrected}' if corrected else ''} · 이미 보냄 {already} · "
           f"만들 내용 없음 {nothing_to_render} · 건너뜀 {skipped}"
           + (" (" + " · ".join(f"{SKIP_REASON_LABEL.get(k, k)} {v}"
                                for k, v in sorted(skip_kinds.items())) + ")"
@@ -1044,6 +1238,10 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines.append(f"🛑 발송 보류 — {h}")
     if errors:
         lines += [f"수집 실패 — {e}" for e in errors[:5]]
+    # 사실이 바뀌었거나 외부와 어긋난 것 — 사람이 반드시 봐야 하므로 앞쪽에 싣는다.
+    lines += fact_notes[:6]
+    if corrected:
+        lines.append(f"✏️ 정정 발송 {corrected}건")
     if window_warnings:
         lines += [f"발송 창 경고 — {w}" for w in window_warnings[:2]]
     if hist_len < 3:
@@ -1077,7 +1275,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     for code, n in sorted(skip_kinds.items()):
         if code == SkipReason.ALREADY:
             continue                       # 정상 동작이다
-        lines.append(f"발송 건너뜀 [{SKIP_REASON_LABEL.get(code, code)}] {n}건")
+        _lbl = SKIP_REASON_LABEL.get(code, _SKIP_LABEL_LOCAL.get(code, code))
+        lines.append(f"발송 건너뜀 [{_lbl}] {n}건")
     if missed:
         # 지각으로 버린 것은 '아무 일도 없었다'가 아니다. 채널이 조용한 이유다.
         # 시계가 뜸해지면 여기가 먼저 알려준다.

@@ -21,6 +21,7 @@ import os
 import pathlib
 import random
 import sys
+import threading
 import time
 import time as _time
 import uuid
@@ -34,6 +35,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from contract import (BURST_AUTO_RELEASE_S, BURST_CANARY_OBSERVE_S,
                       BURST_MAX_AUTO_RELEASES, BURST_MAX_MESSAGES,
                       BURST_WINDOW_S, channel_ref,
+                      CORRECTION_DAILY_MAX, CORRECTION_MAX_PER_SCOPE,
+                      CORRECTION_MIN_INTERVAL_SECONDS, CORRECTION_WINDOW_SECONDS,
+                      CorrectionDecision, CorrectionSkip,
                       ContentType, GateError, KST, LEASE_SECONDS,
                       PACER_MSG_PER_MINUTE, PACER_MSG_PER_SECOND, PACER_PRIORITY,
                       QueueItem, REJUDGE_AT_SEND, SETTLED_STATES, SendMethod,
@@ -41,8 +45,9 @@ from contract import (BURST_AUTO_RELEASE_S, BURST_CANARY_OBSERVE_S,
                       TELEGRAM_PHOTO_DIM_SUM_MAX, TELEGRAM_PHOTO_MAX_BYTES,
                       TELEGRAM_TEXT_MAX, UNPLANNED_CONTENT,
                       WEBHOOK_ALLOWED_UPDATES,
-                      WEBHOOK_SECRET_HEADER, assert_sendable, esc, is_late,
-                      plan_send_parts, quote)
+                      WEBHOOK_SECRET_HEADER, assert_sendable,
+                      correction_key_from, correction_scope, decide_correction,
+                      esc, is_late, plan_send_parts, quote)
 
 API = "https://api.telegram.org"
 
@@ -129,6 +134,14 @@ class Ledger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._rows: dict[str, SendRecord] = {}
+        # **클레임을 원자적으로 만드는 자물쇠 (v1.11j).**
+        # `claim()`은 "대장을 읽고 → 판단하고 → CLAIMED로 쓴다"인데 그 사이에
+        # 다른 실행 흐름이 끼어들면 **둘 다 이겼다고 믿고 둘 다 보낸다**
+        # (실측: 한 프로세스 8스레드에서 8건 중 3~6건이 실제로 나갔다).
+        # 지금까지는 깃허브 러너가 한 프로세스·한 흐름이라 잠복해 있었지만,
+        # 정정은 사고 대응 중에 여러 경로로 불릴 수 있어 중복이 곧 사고다.
+        # 프로세스가 다를 때의 중복은 여전히 리스와 대장이 막는다(그쪽이 원래 설계).
+        self.lock = threading.RLock()
         # **깨진 줄 하나가 전체 발행을 죽이지 않게 한다 (v1.11h).**
         # 전에는 `json.loads`가 그대로 터져 틱 전체가 죽었다(실측: 잘린 마지막 줄,
         # 필드 빠진 줄 둘 다 재현). 대장은 append-only라 앞선 줄은 여전히 유효하다.
@@ -157,19 +170,40 @@ class Ledger:
             lease_expires_utc=(datetime.fromisoformat(d["lease_expires_utc"])
                                if d.get("lease_expires_utc") else None),
             retry_count=d.get("retry_count", 0), retry_429_count=d.get("retry_429_count", 0),
-            last_error=d.get("last_error"), sent_count=d.get("sent_count", 0))
+            last_error=d.get("last_error"), sent_count=d.get("sent_count", 0),
+            # ── 정정 추적 (v1.11j) ──────────────────────────────
+            # **없으면 None이다.** 이 기능을 켜기 전에 나간 줄에는 이 칸이 아예 없고,
+            # None은 `decide_correction`에서 '정정 대상 아님'으로 떨어진다.
+            # 여기서 빈 문자열이나 기본 지문을 채워 넣으면 **옛 발송분 전체가
+            # "내용이 바뀌었다"가 되어 다시 나간다.**
+            revision=d.get("revision", 0),
+            content_digest=d.get("content_digest"),
+            origin_idem_key=d.get("origin_idem_key"),
+            corrects_idem_key=d.get("corrects_idem_key"))
 
     @staticmethod
     def _encode(r: SendRecord) -> dict:
-        return {"idem_key": r.idem_key, "state": r.state.value, "chat_id": r.chat_id,
-                "content_type": r.content_type.value, "message_ids": r.message_ids,
-                "file_ids": r.file_ids,
-                "sent_at_utc": r.sent_at_utc.isoformat() if r.sent_at_utc else None,
-                "claimed_by": r.claimed_by,
-                "lease_expires_utc": (r.lease_expires_utc.isoformat()
-                                      if r.lease_expires_utc else None),
-                "retry_count": r.retry_count, "retry_429_count": r.retry_429_count,
-                "last_error": r.last_error, "sent_count": r.sent_count}
+        out = {"idem_key": r.idem_key, "state": r.state.value, "chat_id": r.chat_id,
+               "content_type": r.content_type.value, "message_ids": r.message_ids,
+               "file_ids": r.file_ids,
+               "sent_at_utc": r.sent_at_utc.isoformat() if r.sent_at_utc else None,
+               "claimed_by": r.claimed_by,
+               "lease_expires_utc": (r.lease_expires_utc.isoformat()
+                                     if r.lease_expires_utc else None),
+               "retry_count": r.retry_count, "retry_429_count": r.retry_429_count,
+               "last_error": r.last_error, "sent_count": r.sent_count}
+        # 정정 칸은 **값이 있을 때만** 적는다. 항상 적으면 지금까지의 모든 줄에
+        # null 네 칸이 붙어 대장이 커지고, 지문 없는 옛 줄과 구별도 안 된다.
+        # (지문은 단방향 해시라 내용 원문은 대장에 남지 않는다 — channel_ref와 같은 이유.)
+        if r.revision:
+            out["revision"] = r.revision
+        if r.content_digest:
+            out["content_digest"] = r.content_digest
+        if r.origin_idem_key:
+            out["origin_idem_key"] = r.origin_idem_key
+        if r.corrects_idem_key:
+            out["corrects_idem_key"] = r.corrects_idem_key
+        return out
 
     def get(self, key: str) -> Optional[SendRecord]:
         return self._rows.get(key)
@@ -185,11 +219,12 @@ class Ledger:
         순서를 뒤집으면 쓰기가 실패했을 때 예외가 그대로 올라가고
         메모리도 옛 상태 그대로라, 최악이 '재발송'이 아니라 '미발송'이 된다.
         """
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(self._encode(r), ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())          # 크래시 시나리오의 핵심 — 버퍼에만 있으면 유실된다
-        self._rows[r.idem_key] = r
+        with self.lock:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(self._encode(r), ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())      # 크래시 시나리오의 핵심 — 버퍼에만 있으면 유실된다
+            self._rows[r.idem_key] = r
 
     # ── 대장 유실 감시용 지표 (v1.11i) ─────────────────────────
     # 대장이 커밋되지 않으면 다음 실행은 그 회차 발송분을 '안 보낸 것'으로 보고
@@ -211,6 +246,44 @@ class Ledger:
             if r.sent_at_utc.astimezone(KST).strftime("%Y-%m-%d") == day_kst:
                 n += r.sent_count or 1
         return n
+
+    def count_corrections_today(self, day_kst: str) -> int:
+        """오늘 실제로 나간 정정 건수.
+
+        **왜 따로 세나.** 정정은 `UNPLANNED_CONTENT`라 일반 하루 상한
+        (`count_sent_today`)에서 **면제**된다. 면제만 해두면 정정에는 뚜껑이 없다 —
+        폭주 차단기는 10분 60건짜리 홍수만 잡지, 하루 종일 이어지는 정정 스무 건은
+        못 잡는다. 정정이 폭주하면 원래 사고보다 나쁘다.
+        """
+        n = 0
+        for r in self._rows.values():
+            if r.state is not SendState.SENT or not r.sent_at_utc:
+                continue
+            if r.content_type is not ContentType.CORRECTION:
+                continue
+            if r.sent_at_utc.astimezone(KST).strftime("%Y-%m-%d") == day_kst:
+                n += 1
+        return n
+
+    def correction_chain(self, origin_idem_key: str,
+                         max_revisions: int = CORRECTION_MAX_PER_SCOPE) -> list[SendRecord]:
+        """원본에 달린 정정본들을 개정 번호 순으로.
+
+        **키를 훑지 않고 계산해서 찾는다.** 정정본 키는 원본 키에서 결정적으로
+        만들어지므로(`correction_key_from`), r1·r2… 를 직접 조회하면 된다.
+        대장 전체를 스캔하는 방식은 줄이 수만 개가 되면 매 틱 느려지고,
+        무엇보다 '같은 scope'를 문자열로 짐작해야 해서 틀리기 쉽다.
+
+        상한보다 한 칸 더 본다 — 상한을 넘겨 만들어진(그러나 못 나간) 줄이
+        있으면 다음 개정 번호가 그 줄과 충돌하기 때문이다.
+        """
+        out: list[SendRecord] = []
+        for rev in range(1, max(1, max_revisions) + 2):
+            r = self._rows.get(correction_key_from(origin_idem_key, rev))
+            if r is None:
+                break
+            out.append(replace(r, revision=r.revision or rev))
+        return out
 
     def needs_human(self) -> list[SendRecord]:
         return [r for r in self._rows.values() if r.state is SendState.NEEDS_HUMAN]
@@ -493,6 +566,25 @@ class Payload:
     # pipeline의 caption_*(as_parts=True)가 [캡션, 후속...]을 준다.
     follow_texts: list[str] = field(default_factory=list)
 
+    # **정정본을 원본에 답장으로 단다 (v1.11j).**
+    # 정정은 원본을 '대체'하지 못한다 — 텔레그램에서 이미 읽힌 메시지를 되돌릴 방법은
+    # 없고, 편집(editMessageMedia)은 알림을 안 띄워 아무도 정정을 못 본다.
+    # 그래서 **새 메시지**로 내보내되, 원본에 답장으로 달아 구독자가 '무엇의 정정인지'를
+    # 스크롤 없이 알게 한다. 원본 message_id는 대장에 있다.
+    reply_to_message_id: Optional[int] = None
+
+    def reply_params(self) -> dict:
+        """텔레그램 답장 파라미터. 답장 대상이 없으면 빈 dict.
+
+        `allow_sending_without_reply=True`가 핵심이다 — 원본이 지워졌거나 48시간
+        보관 창을 넘겼을 때 이것이 없으면 API가 400을 주고 **정정이 통째로 못 나간다.**
+        정정은 답장으로 붙는 편이 낫지만, 붙지 못한다고 안 내보내는 것은 더 나쁘다.
+        """
+        if not self.reply_to_message_id:
+            return {}
+        return {"reply_parameters": {"message_id": int(self.reply_to_message_id),
+                                     "allow_sending_without_reply": True}}
+
     def gate(self) -> None:
         for name, data, w, h in self.photos:
             assert_sendable(self.caption or "", w, h, len(data))
@@ -533,6 +625,7 @@ class Payload:
 # 사유를 코드로 분리해야 틱이 "무엇 때문에 안 나갔는지"를 말할 수 있다.
 class SkipReason:
     DAILY_CAP = "daily_cap"            # 하루 발송 상한 도달
+    CORRECTION_CAP = "correction_cap"  # 정정 전용 하루 상한 도달 (v1.11j)
     RATE_LIMITED = "rate_limited"      # 텔레그램 429
     BURST_BLOCKED = "burst_blocked"    # 폭주 차단기
     LATE_AT_SEND = "late_at_send"      # 발송 직전 재판정에서 유예 초과
@@ -543,6 +636,7 @@ class SkipReason:
 
 SKIP_REASON_LABEL = {
     SkipReason.DAILY_CAP: "하루 상한 초과",
+    SkipReason.CORRECTION_CAP: "정정 하루 상한 초과",
     SkipReason.RATE_LIMITED: "레이트리밋(429)",
     SkipReason.BURST_BLOCKED: "폭주 차단",
     SkipReason.LATE_AT_SEND: "발송 직전 지각",
@@ -571,6 +665,7 @@ class Sender:
     def __init__(self, transport, ledger: Ledger, chat_id: str, *,
                  worker_id: Optional[str] = None,
                  daily_max: int = BURST_MAX_MESSAGES,
+                 correction_daily_max: int = CORRECTION_DAILY_MAX,
                  pacer: Optional[Pacer] = None,
                  alert_chat_id: Optional[str] = None,
                  burst: Optional[BurstBreaker] = None,
@@ -585,6 +680,11 @@ class Sender:
         # **정상 편성이 상한에 막힌다.** 9리그 정상치(27) + 유럽까지(45)를 넘고
         # 폭주는 여전히 잡는 값으로 둔다.
         self.daily_max = daily_max
+        # **정정 전용 하루 상한 (v1.11j).** 정정은 UNPLANNED_CONTENT라 위 상한에서
+        # 면제된다 — 사고가 났을 때 편성 상한에 막혀 정정이 못 나가면 안 되기 때문이다.
+        # 그런데 면제만 해두면 정정에는 아무 뚜껑이 없다. 폭주 차단기(10분 60건)는
+        # 하루 종일 이어지는 정정 스무 건을 못 잡는다. 그래서 별도 뚜껑을 둔다.
+        self.correction_daily_max = correction_daily_max
         self.pacer = pacer or Pacer()
         # 알림 목적지. 시트의 ALERT_TARGET이 '발행 채널'이면 chat_id와 같다.
         # 폴백하지 않는다. 없으면 알림을 보내지 않는다 —
@@ -600,7 +700,26 @@ class Sender:
 
     # ── 클레임 ──────────────────────────────────────────────
 
-    def claim(self, item: QueueItem) -> Optional[SendRecord]:
+    def claim(self, item: QueueItem, **kw) -> Optional[SendRecord]:
+        """클레임. **대장 자물쇠 안에서 통째로** 수행한다 (v1.11j).
+
+        클레임은 "읽고 → 판단하고 → CLAIMED로 쓴다"인데, 그 사이에 다른 실행
+        흐름이 끼어들면 둘 다 이겼다고 믿고 **둘 다 보낸다**(실측: 한 프로세스
+        8스레드에서 8건 중 3~6건이 실제로 나갔다). 이 구멍은 정정 이전부터
+        있었지만, 정정은 사고 대응 중에 여러 경로로 불릴 수 있어 중복이 곧 사고다.
+        판단과 쓰기를 한 덩어리로 묶어 승자를 하나로 만든다.
+
+        (프로세스가 다를 때의 중복은 여전히 리스와 append-only 대장이 막는다 —
+         그쪽이 원래 설계이고, 파일 자물쇠는 러너가 하나뿐이라 필요 없다.)
+        """
+        with self.led.lock:
+            return self._claim_locked(item, **kw)
+
+    def _claim_locked(self, item: QueueItem, *,
+                      content_digest: Optional[str] = None,
+                      origin_idem_key: Optional[str] = None,
+                      corrects_idem_key: Optional[str] = None,
+                      revision: int = 0) -> Optional[SendRecord]:
         """이미 종결됐거나 남이 잡고 있으면 None.
 
         **리스 만료 자체는 사고가 아니다 (v1.11i).**
@@ -627,7 +746,12 @@ class Sender:
 
         if r and r.state is SendState.CLAIMED:
             if r.claimed_by == self.worker_id and r.lease_expires_utc and r.lease_expires_utc > now:
-                return r                                 # 내가 잡은 것 — 이어서 진행
+                # 내가 잡은 것 — 이어서 진행. 다만 이번에 계산한 지문이 있으면 붙인다.
+                # (안 붙이면 이 발송의 지문이 대장에 안 남아 다음 비교가 '지문 없음'이 된다.)
+                if content_digest and r.content_digest != content_digest:
+                    r = replace(r, content_digest=content_digest)
+                    self.led.put(r)
+                return r
             if r.lease_expires_utc and r.lease_expires_utc > now:
                 return None                              # 남이 작업 중
             if (r.last_error or "") == DISPATCH_MARK:
@@ -671,6 +795,16 @@ class Sender:
                          # 되돌리면 상한이 영원히 안 걸린다.
                          retry_count=(r.retry_count if r else 0),
                          retry_429_count=(r.retry_429_count if r else 0),
+                         # 내용 지문·정정 관계는 클레임 줄에서부터 남긴다 (v1.11j).
+                         # 발송 성공 뒤에만 적으면, 크래시로 SENT 줄을 못 남긴 발송의
+                         # 지문이 통째로 사라져 다음 비교가 '지문 없음'이 된다.
+                         content_digest=(content_digest
+                                         or (r.content_digest if r else None)),
+                         origin_idem_key=(origin_idem_key
+                                          or (r.origin_idem_key if r else None)),
+                         corrects_idem_key=(corrects_idem_key
+                                            or (r.corrects_idem_key if r else None)),
+                         revision=(revision or (r.revision if r else 0)),
                          lease_expires_utc=now + timedelta(seconds=lease))
         self.led.put(rec)
         return rec
@@ -678,6 +812,11 @@ class Sender:
     # ── 발송 흔적 남기기 ────────────────────────────────────
 
     def mark_settled(self, item: QueueItem, state: SendState, reason: str) -> bool:
+        """종결 표기도 읽고-쓰기라 클레임과 같은 자물쇠 안에서 한다 (v1.11j)."""
+        with self.led.lock:
+            return self._mark_settled_locked(item, state, reason)
+
+    def _mark_settled_locked(self, item: QueueItem, state: SendState, reason: str) -> bool:
         """발송하지 않고 **종결**로 못 박는다 (지각 폐기 등). 이미 종결이면 False.
 
         **왜 필요한가.** 지각으로 버린 항목이 대장에 아무 흔적을 안 남기면
@@ -732,7 +871,11 @@ class Sender:
                              retry_count=rec.retry_count + (1 if count_retry else 0),
                              last_error=(reason or rec.last_error)))
 
-    def send(self, item: QueueItem, payload: Payload) -> SendOutcome:
+    def send(self, item: QueueItem, payload: Payload, *,
+             content_digest: Optional[str] = None,
+             origin_idem_key: Optional[str] = None,
+             corrects_idem_key: Optional[str] = None,
+             revision: int = 0) -> SendOutcome:
         # **보내기 전 검사는 클레임 전에 한다.** 클레임 뒤에 터지면
         # 그 항목이 영구 격리된다(실측: 캡션 1200자 → 3시간 뒤 needs_human).
         payload.gate()
@@ -752,8 +895,21 @@ class Sender:
             return SendOutcome(SendState.QUEUED, [],
                                f"하루 발송 상한({self.daily_max}) 도달 (폭주 방지) — 다음 날 재시도",
                                reason_code=SkipReason.DAILY_CAP)
+        # 정정은 위 상한에서 면제되므로 **자기 상한**을 따로 받는다 (v1.11j).
+        # 여기서 막히는 것은 조용히 넘길 일이 아니다 — 정정이 필요한 상황이
+        # 하루에 여섯 번 넘게 생겼다는 뜻이므로 사람이 봐야 한다.
+        if item.content_type is ContentType.CORRECTION:
+            used = self.led.count_corrections_today(day)
+            if used >= self.correction_daily_max:
+                why = (f"정정 하루 상한({self.correction_daily_max}) 도달 — "
+                       f"오늘 정정 {used}건. 정정 폭주는 원래 사고보다 나쁩니다")
+                self.notes.append(why)
+                return SendOutcome(SendState.QUEUED, [], why,
+                                   reason_code=SkipReason.CORRECTION_CAP)
 
-        rec = self.claim(item)
+        rec = self.claim(item, content_digest=content_digest,
+                         origin_idem_key=origin_idem_key,
+                         corrects_idem_key=corrects_idem_key, revision=revision)
         if rec is None:
             prev = self.led.get(item.idem_key)
             return SendOutcome(prev.state if prev else SendState.SUPERSEDED,
@@ -826,11 +982,14 @@ class Sender:
         return self._finish(rec, SendState.SENT, ids, "")
 
     def _dispatch(self, p: Payload) -> list[int]:
+        # 답장은 **첫 메시지에만** 단다. 앨범의 모든 장과 후속 텍스트까지 답장으로
+        # 달면 채널이 인용 더미가 된다 — 정정 한 건이 원본 한 건을 가리키면 충분하다.
+        reply = p.reply_params()
         if not p.photos:
             res = self.tr.call("sendMessage", {
                 "chat_id": self.chat_id, "text": p.text,
                 "parse_mode": TELEGRAM_PARSE_MODE,
-                "disable_web_page_preview": True})
+                "disable_web_page_preview": True, **reply})
             return [res["message_id"]]
 
         ids: list[int] = []
@@ -852,7 +1011,8 @@ class Sender:
                     res = self.tr.call("sendPhoto",
                                        {"chat_id": self.chat_id,
                                         "parse_mode": TELEGRAM_PARSE_MODE,
-                                        **({"caption": cap} if cap else {})},
+                                        **({"caption": cap} if cap else {}),
+                                        **(reply if not ids else {})},
                                        files={"photo": (name, data)})
                     ids.append(res["message_id"])
                 else:
@@ -865,7 +1025,8 @@ class Sender:
                         media.append(m)
                         files[k] = (name, data)
                     res = self.tr.call("sendMediaGroup",
-                                       {"chat_id": self.chat_id, "media": media},
+                                       {"chat_id": self.chat_id, "media": media,
+                                        **(reply if not ids else {})},
                                        files=files)
                     ids += [m["message_id"] for m in res]
             except (TelegramError, AmbiguousSend) as e:
@@ -904,6 +1065,79 @@ class Sender:
         if state is SendState.NEEDS_HUMAN:
             self.notes.append(f"격리 {rec.content_type.value}: {reason}"[:200])
         return SendOutcome(state, ids, reason, reason_code=reason_code)
+
+    # ── 정정 (v1.11j 신설) ──────────────────────────────────
+    #
+    # **왜 필요한가.** 2026-09-01 19:18, 진행 중인 KBO 5경기가 '종료 0:0 무승부'로
+    # 실제 채널에 나갔다. 원인은 고쳤지만 이미 나간 카드를 되돌릴 방법이 없었다.
+    # 멱등키가 같아 두 번째 발송은 언제나 '이미 보냄'으로 버려지기 때문이다.
+    #
+    # **정정은 원본을 대체하지 않는다.** 텔레그램에서 이미 읽힌 메시지를 되돌릴 수는
+    # 없고, 편집은 알림을 안 띄워 아무도 정정을 못 본다. 그래서 **새 메시지**로 내고,
+    # 원본에 답장으로 달아 무엇의 정정인지 보이게 한다.
+    # 원본 키의 상태는 그대로 SENT로 남는다 — 원본은 실제로 나갔기 때문이다.
+
+    def evaluate_correction(self, origin_idem_key: str, new_digest: Optional[str], *,
+                            max_corrections: int = CORRECTION_MAX_PER_SCOPE,
+                            window_seconds: int = CORRECTION_WINDOW_SECONDS,
+                            min_interval_seconds: int = CORRECTION_MIN_INTERVAL_SECONDS,
+                            quiet: bool = False) -> CorrectionDecision:
+        """이 원본에 정정을 낼 것인가. 대장을 읽어 계약의 판정 함수에 넘긴다.
+
+        **막힌 이유는 조용히 넘기지 않는다** — 상한·기한·간격에 걸린 건은
+        `self.notes`에 실어 틱이 알림에 담게 한다(조용히 막히는 것이 가장 나쁘다).
+        """
+        origin = self.led.get(origin_idem_key)
+        priors: list[SendRecord] = []
+        if origin is not None:
+            try:
+                priors = self.led.correction_chain(origin_idem_key, max_corrections)
+            except GateError:
+                # 키 형식이 아니면 정정 사슬을 만들 수 없다. 발송을 막지는 않되
+                # (원본은 이미 나갔다) 사람에게는 올린다.
+                self.notes.append(f"정정 불가 — 멱등키 형식이 아님: {origin_idem_key}")
+                origin = None
+        d = decide_correction(origin, priors, new_digest, now_utc=self.now(),
+                              max_corrections=max_corrections,
+                              window_seconds=window_seconds,
+                              min_interval_seconds=min_interval_seconds)
+        if d.blocked and not quiet:
+            self.notes.append(d.note())
+        return d
+
+    def correction_item(self, origin_item: QueueItem, decision: CorrectionDecision, *,
+                        scheduled_utc: Optional[datetime] = None) -> QueueItem:
+        """정정본 큐 항목. 키는 원본 키에서 결정적으로 만든다.
+
+        예약 시각은 **지금**이다 — 정정의 예약 시각은 '사실이 바뀐 순간'이고,
+        원본의 예약 시각을 물려받으면 이미 유예를 넘긴 채 태어나 곧바로 버려진다.
+        """
+        if not decision.should_send:
+            raise GateError(f"정정을 내지 않기로 한 판정으로 항목을 만들 수 없다 "
+                            f"({decision.code}: {decision.reason})")
+        if decision.origin_idem_key != origin_item.idem_key:
+            raise GateError("정정 판정의 원본 키와 넘긴 항목의 키가 다르다 "
+                            "— 엉뚱한 발송의 정정이 만들어진다")
+        return QueueItem(
+            idem_key=correction_key_from(origin_item.idem_key, decision.revision),
+            content_type=ContentType.CORRECTION,
+            scope=correction_scope(origin_item.content_type, origin_item.scope),
+            scheduled_utc=scheduled_utc or self.now(),
+            league=origin_item.league, sports_day=origin_item.sports_day,
+            game_id=origin_item.game_id)
+
+    def send_correction(self, origin_item: QueueItem, payload: Payload,
+                        decision: CorrectionDecision, *,
+                        scheduled_utc: Optional[datetime] = None) -> SendOutcome:
+        """정정 1건 발송. 원본에 답장으로 달고, 새 지문을 대장에 남긴다."""
+        item = self.correction_item(origin_item, decision, scheduled_utc=scheduled_utc)
+        if decision.origin_message_id and not payload.reply_to_message_id:
+            payload = replace(payload, reply_to_message_id=decision.origin_message_id)
+        return self.send(item, payload,
+                         content_digest=decision.new_digest,
+                         origin_idem_key=decision.origin_idem_key,
+                         corrects_idem_key=decision.corrects_idem_key,
+                         revision=decision.revision)
 
     # ── 오류 알림 ───────────────────────────────────────────
 

@@ -208,6 +208,46 @@ class KovoAdapter(NoticeMixin):
             f"다음 대회가 목록에 없습니다 — 끝난 시즌을 계속 붙들고 있습니다")
         return last["code"]
 
+    def season_codes_for(self, today=None, *, include_cup: bool = False) -> list[str]:
+        """오늘 수집해야 할 대회 코드 **전부** (v1.11j — 대표님 KOVO컵 발행 승인).
+
+        `season_code_for`는 하나만 고른다. 그런데 컵대회를 켜면 정규시즌과 기간이
+        겹칠 수 있고, 그때 하나만 고르면 **다른 하나가 통째로 사라진다**
+        (겹칠 때 '먼저 끝나는 쪽'을 고르므로 정규시즌이 조용히 빠진다).
+        실측 2026-27은 컵 ~10-25 · 정규 10-31~ 로 겹치지 않지만, 대회 일정은
+        해마다 바뀌므로 구조로 막는다.
+
+        진행 중인 대회를 전부 주고, 하나도 없으면 다음에 시작하는 대회 하나를 준다.
+        """
+        from datetime import date as _date
+        if today is None:
+            today = datetime.now(KST).date()
+        elif isinstance(today, datetime):
+            today = today.date()
+        elif not isinstance(today, _date):
+            today = datetime.strptime(str(today)[:10], "%Y-%m-%d").date()
+
+        kinds = {"regular"} | ({"cup"} if include_cup else set())
+        cands = [s for s in self.seasons() if s["kind"] in kinds]
+
+        def d(s: str):
+            return datetime.strptime(s, "%Y-%m-%d").date()
+
+        running = [s for s in cands
+                   if d(s["first"]) <= today <= d(s["last"]) + timedelta(days=SEASON_TAIL_DAYS)]
+        upcoming = [s for s in cands if d(s["first"]) > today]
+        # **진행 중 + 앞으로 열릴 대회를 전부 준다.**
+        # 하나만 고르면 이런 구멍이 난다(실측 2026-09-02, 컵을 켠 상태):
+        #   컵 824가 10-20에 먼저 시작하므로 '다음 대회'로 컵만 골라,
+        #   10-31 개막하는 정규시즌 023의 일정을 **10월 말까지 한 번도 안 긁는다.**
+        #   그러면 개막 직전 모닝 브리핑에 V리그가 통째로 빠진다.
+        # 미래 일정을 미리 갖고 있어도 큐는 그날 것만 만들므로 손해가 없다.
+        picked = running + upcoming
+        if picked:
+            return [s["code"] for s in sorted(picked, key=lambda s: (s["first"], s["last"]))]
+        # 진행 중도 예정도 없다 — 단수 선택기가 최근 종료 대회로 떨어지며 경고를 남긴다.
+        return [self.season_code_for(today, include_cup=include_cup)]
+
     def fetch(self, season_code: str | None = None) -> list[Game]:
         """season_code를 주지 않으면 오늘 날짜에 맞는 시즌을 스스로 고른다."""
         self.reset_notices()
