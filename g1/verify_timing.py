@@ -519,6 +519,72 @@ h_ns = _re2.sub("<[^>]+>", " ", P.render_result(noscore, "2026-08-29"))
 check("헤드라인과 본문 행 수가 맞는다", "1경기" in h_ns and "미확정" in h_ns, h_ns[:0])
 
 
+# ── 10. 아직 발행 안 되는 카드들의 거짓말 (정밀진단 잔여분) ─────────────
+# 기록·순위·리더보드·맞대결은 아직 큐에 안 오르지만, 켜는 날 그대로 나간다.
+# "켤 때 고치자"는 곧 "켜고 나서 사고로 안다"가 된다.
+print("10. 미발행 카드 — 켜기 전에 거짓말을 지운다")
+
+from contract import LeaderEntry, RecordBook, Standing, StreakKind, WLD  # noqa: E402
+
+
+_TC = "LG"
+
+
+def _le(cat: str, i: int) -> LeaderEntry:
+    return LeaderEntry(category=cat, stat_key=cat, player_id=f"p{i}", rank=i + 1,
+                       name=f"선수{i}", team_code=_TC, value=f"{20 - i}.0")
+
+
+def _rb(lg: League, cats) -> RecordBook:
+    # 순위표 0건은 게이트가 막으므로 최소 한 팀은 넣는다.
+    # 게이트가 리그 정원(팀 수)을 확인하므로 표를 정원만큼 채운다.
+    codes = list(C.TEAM_NAMES[lg])
+    st = [Standing(league=lg, season="2026", team_code=tc, rank=i + 1, games=15,
+                   record=WLD(win=10, loss=5, draw=0), pct=".667",
+                   games_behind="0.0", last10=WLD(win=6, loss=4, draw=0),
+                   streak_kind=StreakKind.WIN, streak_len=2)
+          for i, tc in enumerate(codes)]
+    return RecordBook(league=lg, season="2026",
+                      collected_utc=datetime.now(timezone.utc), source_url="x",
+                      standings=st, h2h={},
+                      leaders={c: [_le(c, i) for i in range(5)] for c in cats})
+
+
+# (1) 비야구 리그 리더보드가 야구 제목을 달지 않는다
+kbl_rb = _rb(League.KBL, ("득점", "리바운드", "어시스트", "3점",
+                          "스틸", "블록", "자유투", "야투"))
+sets = [P.leader_set(kbl_rb, i) for i in range(4)]
+check("비야구 리그에 야구 제목을 안 쓴다",
+      all("타격" not in t and "투수" not in t for t, _ in sets), str([t for t, _ in sets]))
+check("세트마다 다른 부문을 싣는다", sets[0][1] != sets[1][1], str(sets[0][1]))
+check("제목이 실제 실린 부문과 같다",
+      all(all(c in t for c in cats) for t, cats in sets), str(sets[0]))
+kbo_rb = _rb(League.KBO, ("타율", "홈런", "타점", "도루",
+                          "평균자책점", "승리", "탈삼진", "세이브"))
+check("야구 리그는 이름 붙은 세트를 그대로 쓴다",
+      P.leader_set(kbo_rb, 0)[0] == "타격 부문", str(P.leader_set(kbo_rb, 0)))
+
+# (2) 근거 없는 단정을 카드에 쓰지 않는다.
+# 렌더 전체를 돌리려면 순위표·부문값이 게이트를 전부 통과해야 해서(그 자체가 좋은
+# 신호다) 여기서는 카드에 박히는 문자열만 확인한다.
+_src = pathlib.Path(P.__file__).read_text(encoding="utf-8")
+_body = _src.split("def render_leaders", 1)[1].split("\ndef ", 1)[0]
+_body_code = "\n".join(l for l in _body.splitlines() if not l.strip().startswith("#"))
+check("'규정 미달 선수 포함'이라 단정하지 않는다",
+      "규정 미달" not in _body_code, "카드 문구에 남아 있음")
+
+# (3) 순위표 최근10 형식이 열 안에서 통일된다
+w_draw = WLD(win=6, loss=3, draw=1)
+w_nodraw = WLD(win=8, loss=2, draw=0)
+check("무승부가 있는 열은 전부 세 칸",
+      P._wld(w_nodraw, True) == "8-2-0" and P._wld(w_draw, True) == "6-3-1",
+      f"{P._wld(w_nodraw, True)} / {P._wld(w_draw, True)}")
+check("무승부가 없는 리그는 두 칸", P._wld(w_nodraw, False) == "8-2")
+
+# (4) 맞대결이 무승부를 빼고 말하지 않는다 — 검증은 문구 생성부만 본다
+check("전적 표기에 무승부가 들어간다", "1" in P._wld(w_draw), P._wld(w_draw))
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

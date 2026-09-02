@@ -749,12 +749,19 @@ def _dt(day: str) -> str:
     return f"{d.month}.{d.day} {_WD[d.weekday()]}"
 
 
-def _wld(w: WLD) -> str:
-    """무승부가 있는 리그만 세 칸으로 쓴다.
+def _wld(w: WLD, three: bool | None = None) -> str:
+    """전적 표기. `three`가 주어지면 **표 전체에서 형식을 통일한다.**
 
-    MLB는 무승부가 없어 '83-51-0'이 되고, 그 한 글자 때문에 순위표 열이 줄바꿈으로 깨졌다.
+    전에는 행마다 `w.draw`를 보고 정해서, 한 열에 '6-3-1'과 '8-2'가 섞였다.
+    푸터 범례는 표 하나에 하나뿐이라 "8-2"가 8승2패인지 8승2무인지 알 수 없었다.
+    형식은 **열 단위로** 정해야 한다.
+
+    MLB처럼 무승부가 없는 리그에 '83-51-0'을 쓰면 그 한 글자 때문에
+    순위표 열이 줄바꿈으로 깨진다 — 그래서 리그 단위로 끄고 켠다.
     """
-    return f"{w.win}-{w.loss}-{w.draw}" if w.draw else f"{w.win}-{w.loss}"
+    if three is None:
+        three = bool(w.draw)
+    return f"{w.win}-{w.loss}-{w.draw}" if three else f"{w.win}-{w.loss}"
 
 
 def _streak(s: Standing) -> str:
@@ -818,19 +825,22 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
         order = order[:top_n]
 
     # 무승부가 없는 리그(MLB)에 '승-패-무'라고 쓰면 틀린 머리글이다
+    # **형식은 열 단위로 정한다.** 표 안 어느 행이든 무승부가 있으면
+    # 그 열은 전부 세 칸으로 쓴다 — 행마다 다르면 범례가 거짓이 된다.
     has_draw = any(x.record.draw for x in order)
+    l10_draw = any(x.last10.draw for x in order if x.last10)
     wl = "승-패-무" if has_draw else "승-패"
     head = (f'<tr><th class="pad">순위</th><th>팀</th><th>{wl}</th><th>승률</th>'
             '<th>승차</th><th>최근10</th><th class="padr">연속</th></tr>')
     rows = []
     for s_ in order:
         cls = ' class="hl"' if highlight and s_.team_code == highlight else ""
-        l10 = _wld(s_.last10) if s_.last10 else "—"
+        l10 = _wld(s_.last10, l10_draw) if s_.last10 else "—"
         gb = "—" if s_.rank == 1 else esc(s_.games_behind)
         rows.append(
             f'<tr{cls}><td class="pad">{s_.rank}</td>'
             f'<td>{esc(TEAM_NAMES[s_.league].get(s_.team_code, s_.team_code))}</td>'
-            f'<td>{_wld(s_.record)}</td>'
+            f'<td>{_wld(s_.record, has_draw)}</td>'
             f'<td>{esc(s_.pct)}</td><td>{gb}</td><td>{l10}</td>'
             f'<td class="padr">{_streak(s_)}</td></tr>')
 
@@ -842,7 +852,7 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
             f'<div class="body"><table class="stb">{head}{"".join(rows)}</table></div>'
             f'<div class="rec"><div class="l">{esc(label)}</div>'
             f'<div class="t">{line}</div></div>'
-            f'<div class="foot"><div class="tk">최근10 = {wl} · {esc(lgname)} 공식기록</div>'
+            f'<div class="foot"><div class="tk">최근10 = {"승-패-무" if l10_draw else "승-패"} · {esc(lgname)} 공식기록</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
 
@@ -856,6 +866,36 @@ LEADER_SETS: list[tuple[str, list[str]]] = [
 ]
 
 
+def leader_set(rb: "RecordBook", set_idx: int) -> tuple[str, list[str]]:
+    """(카드 제목, 실을 부문 4개).
+
+    **제목은 실제로 실린 부문에서 만든다 (v1.11h).**
+    LEADER_SETS는 야구 전용이다. 다른 리그는 요구 부문이 하나도 안 맞아
+    "그 리그가 가진 부문으로 채우는" 분기로 떨어지는데, **제목만 야구 그대로**였다.
+    그래서 KBL 4세트가 전부 같은 내용(득점·리바운드·어시스트·3점)에
+    "타격 부문 / 투수 부문 / 출루·장타 / 제구·이닝" 제목만 바꿔 달고 나갔다.
+    요일 로테이션이 같은 카드를 네 번 내면서 제목으로 거짓말을 하는 셈이다.
+    """
+    want_title, wanted = LEADER_SETS[set_idx % len(LEADER_SETS)]
+    cats = [c for c in wanted if c in rb.leaders]
+    if len(cats) >= 4:
+        return want_title, cats[:4]
+
+    # 이 리그에는 그 세트가 없다. 가진 부문을 **세트 번호로 나눠** 돌린다 —
+    # 같은 카드를 제목만 바꿔 네 번 내지 않기 위해서다.
+    have = [c for c in rb.leaders if c not in cats]
+    pool = cats + have
+    if not pool:
+        return want_title, []
+    n = len(LEADER_SETS)
+    if len(pool) <= 4:
+        # 부문이 4개 이하면 로테이션할 것이 없다. 한 세트만 쓰고 제목도 그대로.
+        return " · ".join(pool[:4]), pool[:4]
+    start = (set_idx % n) * 4 % len(pool)
+    picked = [pool[(start + i) % len(pool)] for i in range(4)]
+    return " · ".join(picked), picked
+
+
 def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -> str:
     """부문별 리더보드 카드. 4부문 × TOP N.
 
@@ -863,12 +903,7 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
     그 리그가 실제로 가진 부문 중에서 세트를 채운다. 순서는 세트 정의를 따른다.
     """
     assert_recordbook(rb, require_h2h=bool(rb.h2h))
-    title, wanted = LEADER_SETS[set_idx % len(LEADER_SETS)]
-    cats = [c for c in wanted if c in rb.leaders]
-    if len(cats) < 4:
-        # 남는 자리는 그 리그가 가진 다른 부문으로 채운다
-        extra = [c for c in rb.leaders if c not in cats]
-        cats = (cats + extra)[:4]
+    title, cats = leader_set(rb, set_idx)
     if not cats:
         raise GateError(f"리더보드: {rb.league.value}에 쓸 부문이 없다")
 
@@ -893,7 +928,11 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
     lgname = LEAGUE_LABEL.get(rb.league, rb.league.value)
     body = (_hdr(*LEAGUE_COLORS[rb.league], lgname, "부문 순위", _dt(day),
                  f'{esc(title)} <em>TOP {top_n}</em>',
-                 f"{esc(lgname)} 공식 부문 순위 · 규정 미달 선수 포함", league=rb.league) +
+                 # **소스가 보장하지 않는 성질을 카드가 단정하지 않는다 (v1.11h).**
+                 # "규정 미달 선수 포함"이 박혀 있었는데, 부문 순위는 KBO 공식
+                 # Top5 페이지에서 가져오고 그 페이지는 규정 충족자 기준이다.
+                 # 코드 어디에도 규정 미달 포함 여부를 확인하는 로직이 없다.
+                 f"{esc(lgname)} 공식 부문 순위", league=rb.league) +
             f'<div class="body"><div class="lb">{"".join(boxes)}</div></div>'
             f'<div class="foot"><div class="tk">{esc(lgname)} 공식기록 · {esc(_dt(day))} 기준</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
@@ -911,7 +950,10 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     if wld is None:
         raise GateError(f"맞대결: 상대전적 없음 {a} vs {h}")
 
-    played = wld.win + wld.loss
+    played = wld.win + wld.loss + wld.draw
+    # **무승부를 분모에서 빼면 막대가 전적을 과장한다 (v1.11h).**
+    # 7-4-1을 64:36으로 그렸는데, 실제로는 12경기 중 7승이다.
+    # 같은 카드의 가운데에는 '7-4-1'이 찍혀 있어 서로 어긋났다.
     aw = round(wld.win / played * 100) if played else 50
     kst, _ = format_kickoff(game)
 
@@ -927,12 +969,16 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     # 막대 색은 '우세팀'이 골드. 원정/홈이 아니라 전적이 색을 정한다.
     ca, ch = ("w", "l") if wld.win > wld.loss else ("l", "w") if wld.win < wld.loss else ("l", "l")
 
+    # **무승부를 빼고 말하지 않는다.** 카드 가운데는 '7-4-1'인데 골드 패널은
+    # '7승 4패 우세'라 한 카드 안에서 숫자가 어긋났다(캡션은 1무를 적고 있었다).
+    _d = f" {wld.draw}무" if wld.draw else ""
     if wld.win == wld.loss:
-        edge = f"시즌 상대전적 <b>{wld.win}승 {wld.loss}패</b> 팽팽"
+        edge = f"시즌 상대전적 <b>{wld.win}승 {wld.loss}패{_d}</b> 팽팽"
     else:
         lead_t, lw, ll = ((a, wld.win, wld.loss) if wld.win > wld.loss
                           else (h, wld.loss, wld.win))
-        edge = (f"시즌 상대전적 <b>{esc(TEAM_NAMES[rb.league].get(lead_t, lead_t))} {lw}승 {ll}패</b> 우세")
+        edge = (f"시즌 상대전적 <b>{esc(TEAM_NAMES[rb.league].get(lead_t, lead_t))} "
+                f"{lw}승 {ll}패{_d}</b> 우세")
     # "두산 7승 4패 우세" 바로 밑에 "두산 2패"만 있으면 무슨 2패인지 모른다.
     parts = [f"{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))} {s.streak_len}연{ {'W':'승','L':'패','D':'무'}[s.streak_kind.value] }"
              for s in (sa, sh) if s.streak_kind is not StreakKind.NONE and s.streak_len]
@@ -1106,10 +1152,8 @@ def caption_leaders(rb: RecordBook, set_idx: int = 0, top_n: int = 5,
     카드에 실린 그 세트의 전체 순위를 그대로 옮기고, 카드에 못 실린 나머지 부문은
     1위만 한 줄씩 적어 '무엇이 더 있는지'를 남긴다.
     """
-    title, wanted = LEADER_SETS[set_idx % len(LEADER_SETS)]
-    cats = [c for c in wanted if c in rb.leaders]
-    if len(cats) < 4:
-        cats = (cats + [c for c in rb.leaders if c not in cats])[:4]
+    # 카드와 **같은 함수**로 고른다. 따로 고르면 사진과 캡션이 다른 부문을 말한다.
+    title, cats = leader_set(rb, set_idx)
     names = TEAM_NAMES.get(rb.league, {})
 
     lines: list[str] = []
