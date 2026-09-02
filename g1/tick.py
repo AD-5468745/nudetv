@@ -45,7 +45,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
-                      content_digest)
+                      content_digest, correction_key_from, idem_key)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
@@ -743,6 +743,96 @@ def build_all_queues(snapshots: dict[str, list], now: datetime,
 
 # ── 렌더 ──────────────────────────────────────────────────────
 
+CORRECTION_REQUESTS = ROOT / "correction_requests.json"
+
+
+def _manual_corrections(snd, snaps: dict, notes: list) -> int:
+    """**사람이 파일로 요청한 정정** (v1.11j — 대표님 승인).
+
+    자동 정정은 두 가지 조건에 묶여 있다: 원본에 내용 지문이 있어야 하고,
+    발송 후 6시간 안이어야 한다. 둘 다 옳은 조건이지만, 그래서 **이 기능이
+    생기기 전에 나간 카드는 영영 못 고친다** — 2026-09-01 19:18에 나간
+    "KBO 5경기 종료 · 전부 0:0 무승부"가 정확히 그 경우다.
+
+    그래서 사람이 명시적으로 요청하는 통로를 둔다. 자동 판정을 우회하므로
+    안전은 **멱등키**가 맡는다: 정정 키가 새 키라 몇 번을 돌려도 한 번만 나간다.
+    요청 파일을 지우지 않아도 중복 발송이 없다(지우게 만들면 지우는 걸 잊는다).
+
+    요청 형식 — `state/correction_requests.json`:
+        [{"scope": "KBO:2026-09-01", "content_type": "league_result"}]
+    """
+    if not CORRECTION_REQUESTS.exists():
+        return 0
+    try:
+        reqs = json.loads(CORRECTION_REQUESTS.read_text(encoding="utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        notes.append(f"정정 요청 파일을 읽지 못했습니다: {type(e).__name__}")
+        return 0
+    if not isinstance(reqs, list) or not reqs:
+        return 0
+
+    done = 0
+    for req in reqs[:5]:
+        try:
+            scope = str(req["scope"])
+            ct = ContentType(str(req.get("content_type", "league_result")))
+            rev = int(req.get("revision", 1))
+        except Exception:                                    # noqa: BLE001
+            notes.append(f"정정 요청 형식 오류: {str(req)[:60]}")
+            continue
+        if ct is not ContentType.LEAGUE_RESULT:
+            notes.append(f"정정 요청 — {ct.value}는 정정 카드가 아직 없습니다")
+            continue
+        try:
+            league_name, day = scope.split(":", 1)
+            league = League(league_name)
+        except Exception:                                    # noqa: BLE001
+            notes.append(f"정정 요청 — scope를 읽을 수 없습니다: {scope}")
+            continue
+
+        games = next((g for g in snaps.values()
+                      if g and g[0].league is league), [])
+        todays = [g for g in games if g.sports_day == day]
+        if not todays:
+            # **스냅샷에 그날이 없으면 정정본을 만들 수 없다.** 지어내지 않는다.
+            notes.append(f"✏️ 정정 요청 보류 — {scope}: 그날 경기가 스냅샷에 없습니다")
+            continue
+
+        origin_key = idem_key(snd.chat_id, ct, scope)
+        try:
+            key = correction_key_from(origin_key, rev)
+        except Exception as e:                               # noqa: BLE001
+            notes.append(f"✏️ 정정 요청 실패 — {scope}: 키 생성 {type(e).__name__}")
+            continue
+        if snd.led.get(key) is not None:
+            continue                       # 이미 낸 정정이다 — 조용히 넘어간다
+
+        try:
+            html = P.render_result(todays, day, correction=True)
+            parts = P.caption_result(todays, day, as_parts=True, correction=True)
+            out = ROOT / "render"
+            out.mkdir(parents=True, exist_ok=True)
+            path = out / f"manual_corr_{league.value}_{day}.png"
+            w, h, _ = P.render_png(html, path)
+            payload = Payload.from_parts([(path.name, path.read_bytes(), w, h)], parts)
+            origin = snd.led.get(origin_key)
+            if origin is not None and getattr(origin, "message_ids", None):
+                payload = replace(payload, reply_to_message_id=origin.message_ids[0])
+            citem = QueueItem(idem_key=key, content_type=ContentType.CORRECTION,
+                              scope=scope, scheduled_utc=_now(),
+                              league=league, sports_day=day)
+            res = snd.send(citem, payload)
+        except Exception as e:                               # noqa: BLE001
+            notes.append(f"✏️ 정정 요청 실패 — {scope}: {type(e).__name__} {str(e)[:70]}")
+            continue
+
+        if res.state is SendState.SENT and not res.already:
+            done += 1
+            notes.append(f"✏️ 요청 정정 발송 — {scope} → {res.message_ids}")
+            print(f"    ✏️ 요청 정정 발송 {scope} → {res.message_ids}")
+    return done
+
+
 def _try_correction(snd, item: QueueItem, games: list, digest: str,
                     notes: list) -> int:
     """이미 보낸 카드의 사실이 바뀌었으면 정정본을 낸다. 낸 건수를 돌려준다.
@@ -1227,6 +1317,11 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
           + f" · 실패 {failed} · 격리(이전부터) {quarantined}"
           + (f" · ⏰ 시각 놓쳐 취소 {len(missed)}" if missed else "")
           + (f" · 지각 폐기 재확인 {dropped_before}" if dropped_before else ""))
+
+    # 사람이 파일로 요청한 정정. 발송 루프가 끝난 뒤에 한다 — 정상 발송이
+    # 정정보다 먼저 나가야 하고, 발송이 보류된 틱에는 정정도 내지 않는다.
+    if not hold:
+        corrected += _manual_corrections(snd, snaps, fact_notes)
 
     # 대장 표식을 남긴다 — 다음 틱이 "대장이 되감겼는가"를 판단하는 유일한 근거다.
     # 보류 중이었어도 남긴다(그래야 보류 상태가 계속 감지된다).
