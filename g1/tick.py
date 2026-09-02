@@ -44,15 +44,18 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
-                      stale_unresolved)
+                      narrow_window_types, stale_unresolved)
 import pipeline as P
-from sender import Ledger, Payload, Pacer, Secret, Sender, Transport, load_token
+from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
+                    SkipReason, Transport, load_token)
 
 # ── 경로 ──────────────────────────────────────────────────────
 ROOT = pathlib.Path(os.environ.get("NUDETV_STATE", "state")).resolve()
 LEDGER = ROOT / "ledger.jsonl"
 FETCH_LOG = ROOT / "fetch.json"
 SNAP_DIR = ROOT / "games"
+# 대장 유실 감시 표식 — **대장과 다른 저장소에 둔다** (아래 _ledger_mark 참조)
+LEDGER_MARK = ROOT / "ledger_mark.json"
 
 # ── 수집 주기 ─────────────────────────────────────────────────
 # 매 틱마다 전 리그를 긁으면 소스에 부담이고 레이트리밋에 걸린다.
@@ -82,6 +85,19 @@ TICK_INTERVAL_SECONDS = max(60, int(
 # 리그 하나가 이보다 오래 걸리면 틱 전체가 밀린다. 넘으면 알림에 올린다.
 SLOW_FETCH_SECONDS = 60
 
+# ── 묵은 스냅샷으로 '오늘 경기' 카드를 내지 않는다 (v1.11i) ──────
+#
+# 실측 사고: LCK가 Leaguepedia 레이트리밋에 걸려 **48시간 묵은 캐시**로 카드를
+# 렌더했는데 로그·카드·알림 어디에도 표시가 없었다. 며칠 묵은 데이터로
+# "오늘 경기"를 안내하는 것은 늦는 것이 아니라 **사실 오류**다.
+#
+# 판단 근거는 어댑터 내부값이 아니라 `state/fetch.json`의 마지막 성공 시각이다 —
+# 어댑터가 무엇을 하든 "이 리그 데이터가 언제 것인가"는 그 값 하나로 정해지고,
+# 30분 제동으로 이번 틱에 수집을 건너뛴 리그에도 그대로 적용된다.
+# (어댑터가 스스로 보고하는 캐시 나이도 함께 읽어 더 큰 쪽을 쓴다.)
+STALE_SNAPSHOT_WARN_SECONDS = 6 * 3600      # 알림에만 올린다
+STALE_SNAPSHOT_BLOCK_SECONDS = 24 * 3600    # 이 리그는 이번 틱에 발송하지 않는다
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -91,7 +107,35 @@ TICK_LOG = None          # ROOT 확정 후 아래에서 채운다
 
 
 def _tick_log_path() -> pathlib.Path:
+    """실측 시계 간격의 근거 파일.
+
+    **이 파일이 실행 사이에 살아남지 않으면 발송 창 게이트가 영원히 무력하다 (v1.11i).**
+    실측: 깨끗한 컨테이너에서 `_measured_interval_seconds()`가 **항상 0초**를 돌려줬다.
+    기록이 0~1개라 `len(ts) < 3`에서 곧바로 0이 나오고, 게이트는
+    `max(0, TICK_INTERVAL_SECONDS)` = 사람이 손으로 적은 100분만 보게 된다.
+    100분 설정은 스스로 통과하도록 맞춰둔 값이라 게이트는 **무조건 통과**했다.
+    (증명: ticks.json에 240분 간격 기록을 넣으면 즉시 창 경고가 뜬다.)
+    원인은 단순했다 — tick.yml의 캐시 경로에도, 커밋 대상에도 ticks.json이 없었다.
+
+    **캐시에 둔다(커밋이 아니라). 근거:**
+      ① 이 파일은 '발송 기록'이 아니라 관측값이다. 잃어도 최악이 '게이트가 몇 틱
+         눈을 감는다'이고, 대장을 잃었을 때의 '전량 재발송'과 격이 다르다.
+      ② **매 실행마다 내용이 바뀐다.** 커밋 대상에 넣으면 하루 최대 288커밋이 되고,
+         더 나쁜 것은 **대장 커밋의 리베이스 충돌 확률을 끌어올린다는 점**이다 —
+         대장 커밋이 실패하면 다음 실행이 그날 것을 전부 다시 보낸다(8번 항목).
+         이 시스템에서 가장 지켜야 할 커밋 옆에 잡음을 붙이지 않는다.
+      ③ 같은 성격의 `state/fetch.json`(매 실행 변경·자가 회복)이 이미 캐시에 있다.
+    잃었을 때 조용하지 않도록, 기록이 모자라면 아래에서 알림에 한 줄을 싣는다.
+    """
     return ROOT / "ticks.json"
+
+
+def _tick_history_len() -> int:
+    p = _tick_log_path()
+    try:
+        return len(json.loads(p.read_text(encoding="utf-8"))) if p.exists() else 0
+    except (json.JSONDecodeError, OSError):
+        return 0
 
 
 def _record_tick(now: datetime) -> None:
@@ -139,6 +183,58 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+# ── 대장이 최신인지 확인하는 표식 (v1.11i) ────────────────────
+#
+# **왜 필요한가.** 워크플로의 대장 커밋이 3회 다 실패해도 전에는 조용히 넘어갔고
+# (루프가 정상 종료하고 스텝의 exit code는 `sleep`의 0), 다음 실행은 그 회차
+# 발송분을 모른 채 **모닝·시작알림·결과를 전부 다시 보낸다.** 되돌릴 수 없는 사고다.
+#
+# **어떻게 잡나.** 대장(git)과 표식(캐시)은 **서로 다른 저장소**에 있다.
+# 틱은 매번 "대장 줄 수 / SENT 줄 수"를 표식에 남기고, 다음 틱에 그보다
+# 줄어들어 있으면 대장이 되감겼다는 뜻이다(대장은 append-only라 줄어들 수 없다).
+# 그때는 **발송을 아예 하지 않는다** — 중복 발송보다 미발송이 낫다.
+def _read_ledger_mark() -> dict:
+    try:
+        return json.loads(LEDGER_MARK.read_text(encoding="utf-8")) if LEDGER_MARK.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_ledger_mark(led: Ledger, now: datetime) -> None:
+    """표식은 **절대 내려가지 않는다.**
+
+    되감긴 대장의 낮은 숫자로 표식을 덮으면, 다음 틱은 아무 이상도 못 느끼고
+    그날 것을 전부 다시 보낸다 — 이 표식을 만든 이유가 통째로 사라진다.
+    대장이 돌아오면(다음 커밋이 성공하면) 줄 수가 표식을 다시 넘어서면서
+    보류가 저절로 풀린다. 영영 안 돌아오면 사람이 이 파일을 지워야 한다.
+    """
+    prev = _read_ledger_mark()
+    try:
+        LEDGER_MARK.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LEDGER_MARK.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "rows": max(led.row_count(), int(prev.get("rows", 0))),
+            "sent": max(led.sent_count_total(), int(prev.get("sent", 0))),
+            "at": _iso(now)}), encoding="utf-8")
+        tmp.replace(LEDGER_MARK)
+    except OSError:
+        pass                      # 표식 실패로 틱을 죽이지 않는다
+
+
+def ledger_regression(led: Ledger) -> str:
+    """대장이 되감겼으면 사유 문자열, 정상이면 빈 문자열."""
+    mark = _read_ledger_mark()
+    if not mark:
+        return ""                 # 표식이 없다(첫 실행·캐시 유실) — 판단 근거가 없다
+    rows, sent = led.row_count(), led.sent_count_total()
+    if rows < int(mark.get("rows", 0)) or sent < int(mark.get("sent", 0)):
+        return (f"발송 대장이 되감겼습니다 — 줄 {mark.get('rows')}→{rows} · "
+                f"발송 {mark.get('sent')}→{sent} (표식 {mark.get('at')}). "
+                f"대장 커밋이 실패했을 가능성이 큽니다. "
+                f"중복 발송을 막기 위해 이번 틱은 발송하지 않습니다.")
+    return ""
+
+
 def fetch_months(today: datetime) -> tuple[int, list[str]]:
     """월 단위로 일정을 주는 소스(KBO·K리그1·NPB)에 요청할 (연도, 월 목록).
 
@@ -162,6 +258,110 @@ def fetch_months(today: datetime) -> tuple[int, list[str]]:
     return y, sorted({f"{d.month:02d}" for d in cands if d.year == y})
 
 
+# ── 어댑터가 조용히 버린 것 ───────────────────────────────────
+#
+# **왜 여기 있나 (v1.11i).** 어댑터들은 건너뛴 것·못 푼 것·캐시로 버틴 것을
+# 전부 자기 속성에 적어두는데(`MlbAdapter.skipped_unknown`,
+# `KblAdapter.unresolved`, `LckAdapter.cache_age_seconds`, `KboAdapter.unknown_notes` …)
+# **읽는 곳이 검증 스크립트뿐이었다.** 그래서 LCK가 48시간 묵은 스냅샷으로
+# 카드를 렌더해도 운영에는 아무 표시가 없었다.
+#
+# 어댑터 담당자가 이 값들을 **공통 속성 하나**로 통일하는 중이라,
+# 통일된 이름을 먼저 찾고 없으면 지금 있는 이름들을 그대로 읽는다.
+# 통일이 끝나면 아래 `_HEALTH_UNIFIED`만 남기고 `_HEALTH_LEGACY`를 지우면 된다.
+_HEALTH_UNIFIED = ("health", "adapter_health", "collection_health",
+                   "skipped_report", "quality", "dropped")
+_HEALTH_LEGACY = ("skipped_unknown", "skipped_types", "unresolved",
+                  "skipped_categories", "skipped_placeholder", "unknown_notes")
+_CACHE_AGE_NAMES = ("cache_age_seconds", "cache_age", "snapshot_age_seconds")
+
+# 어댑터 인스턴스를 이름별로 붙잡아 둔다 — 전에는 람다 안에서 만들어 버려서
+# 수집이 끝나면 그 인스턴스에 접근할 방법이 아예 없었다.
+_ADAPTERS: dict[str, object] = {}
+
+
+def _use(name: str, adapter, call):
+    """어댑터를 붙잡아 두고 수집을 실행한다."""
+    _ADAPTERS[name] = adapter
+    return call(adapter)
+
+
+def _adapter_health(name: str) -> tuple[list[str], float]:
+    """(사람이 읽을 메모, 캐시 나이 초). 어댑터가 없거나 조용하면 ([], 0)."""
+    ad = _ADAPTERS.get(name)
+    if ad is None:
+        return [], 0.0
+    notes: list[str] = []
+
+    def _add(label: str, v) -> None:
+        if v is None:
+            return
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if v > 0:
+                notes.append(f"{label} {int(v)}건")
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                _add(f"{label}.{k}" if label else str(k), x)
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            if v:
+                notes.append(f"{label} {len(v)}건 예) {str(list(v)[0])[:60]}")
+        elif isinstance(v, str) and v.strip():
+            notes.append(f"{label} {v[:80]}")
+
+    # ① 통일된 이름을 먼저 본다(있으면 이것만 쓴다)
+    for attr in _HEALTH_UNIFIED:
+        v = getattr(ad, attr, None)
+        if v is None:
+            continue
+        try:
+            v = v() if callable(v) else v
+        except Exception:                                    # noqa: BLE001
+            continue
+        _add("", v) if isinstance(v, dict) else _add(attr, v)
+        if notes:
+            break
+    # ② 아직 통일 전이면 지금 있는 이름들을 그대로 읽는다
+    if not notes:
+        for attr in _HEALTH_LEGACY:
+            _add(attr, getattr(ad, attr, None))
+
+    age = 0.0
+    for attr in _CACHE_AGE_NAMES:
+        try:
+            v = getattr(ad, attr, None)
+            v = v() if callable(v) else v
+            age = max(age, float(v or 0))
+        except (TypeError, ValueError):
+            continue
+    return [f"{name}: {n}" for n in notes], age
+
+
+def _kovo_season_code(adapter, today: datetime) -> str:
+    """오늘 날짜에 맞는 KOVO 시즌 코드.
+
+    전에는 `"023"`이 tick.py에 하드코딩돼 있었다 — 2027-04-02에 그 시즌이
+    끝나는 순간 V리그가 조용히 사라진다. 어댑터에 '오늘에 맞는 시즌을 고르는'
+    메서드가 추가되는 중이라, **있으면 그것을 쓰고 없으면 기존 값으로 떨어진다.**
+    """
+    for meth in ("season_code_for", "season_code_for_date", "current_season_code",
+                 "season_code_today", "pick_season_code"):
+        fn = getattr(adapter, meth, None)
+        if not callable(fn):
+            continue
+        for args in ((today.date(),), (today,), ()):
+            try:
+                got = fn(*args)
+            except TypeError:
+                continue
+            except Exception:                                # noqa: BLE001
+                break                                        # 소스 오류 — 기존 값으로
+            if isinstance(got, str) and got.strip():
+                return got.strip()
+            if isinstance(got, (list, tuple)) and got and isinstance(got[0], str):
+                return got[0]
+    return "023"
+
+
 # ── 수집 대상 ─────────────────────────────────────────────────
 # 리그를 늘릴 때 여기만 고친다. 실패해도 다른 리그에 영향이 없도록 각각 독립이다.
 def _jobs() -> dict[str, tuple[League, callable]]:
@@ -176,17 +376,25 @@ def _jobs() -> dict[str, tuple[League, callable]]:
     y, months = fetch_months(today)
 
     jobs = {
-        "KBO": (League.KBO, lambda: KboAdapter().fetch(y, months)),
-        "MLB": (League.MLB, lambda: MlbAdapter().fetch(
+        "KBO": (League.KBO,
+                lambda: _use("KBO", KboAdapter(), lambda a: a.fetch(y, months))),
+        "MLB": (League.MLB, lambda: _use("MLB", MlbAdapter(), lambda a: a.fetch(
             (today - timedelta(days=3)).strftime("%Y-%m-%d"),
-            (today + timedelta(days=3)).strftime("%Y-%m-%d"))),
-        "KBL": (League.KBL, lambda: KblAdapter().fetch(
+            (today + timedelta(days=3)).strftime("%Y-%m-%d")))),
+        "KBL": (League.KBL, lambda: _use("KBL", KblAdapter(), lambda a: a.fetch(
             (today - timedelta(days=7)).strftime("%Y%m%d"),
-            (today + timedelta(days=14)).strftime("%Y%m%d"))),
-        "VLEAGUE_M": (League.VLEAGUE_M, lambda: KovoAdapter("1").fetch("023")),
-        "VLEAGUE_W": (League.VLEAGUE_W, lambda: KovoAdapter("2").fetch("023")),
-        "KL1": (League.KL1, lambda: KLeagueAdapter().fetch(y, months)),
-        "NPB": (League.NPB, lambda: NpbAdapter().fetch(y, months)),
+            (today + timedelta(days=14)).strftime("%Y%m%d")))),
+        # 시즌 코드는 어댑터가 오늘 날짜로 고른다 — 하드코딩 "023"은 마지막 보루다.
+        "VLEAGUE_M": (League.VLEAGUE_M, lambda: _use(
+            "VLEAGUE_M", KovoAdapter("1"),
+            lambda a: a.fetch(_kovo_season_code(a, today)))),
+        "VLEAGUE_W": (League.VLEAGUE_W, lambda: _use(
+            "VLEAGUE_W", KovoAdapter("2"),
+            lambda a: a.fetch(_kovo_season_code(a, today)))),
+        "KL1": (League.KL1,
+                lambda: _use("KL1", KLeagueAdapter(), lambda a: a.fetch(y, months))),
+        "NPB": (League.NPB,
+                lambda: _use("NPB", NpbAdapter(), lambda a: a.fetch(y, months))),
     }
 
     # LCK·국제는 Leaguepedia 쿼터가 빡빡하다.
@@ -202,9 +410,10 @@ def _jobs() -> dict[str, tuple[League, callable]]:
         # 월초로 내려 고정하면 한 달에 한 번만 바뀐다.
         _s = (today.replace(day=1) - timedelta(days=32)).replace(day=1)
         since = _s.strftime("%Y-%m-%d")
-        jobs["LCK"] = (League.LCK, lambda: LckAdapter(League.LCK).fetch(since))
-        jobs["INTL_LOL"] = (League.INTL_LOL,
-                            lambda: LckAdapter(League.INTL_LOL).fetch(since))
+        jobs["LCK"] = (League.LCK, lambda: _use(
+            "LCK", LckAdapter(League.LCK), lambda a: a.fetch(since)))
+        jobs["INTL_LOL"] = (League.INTL_LOL, lambda: _use(
+            "INTL_LOL", LckAdapter(League.INTL_LOL), lambda a: a.fetch(since)))
     except Exception:                                        # noqa: BLE001
         pass
 
@@ -215,9 +424,22 @@ def _jobs() -> dict[str, tuple[League, callable]]:
         d0 = (today - timedelta(days=3)).strftime("%Y-%m-%d")
         d1 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
         for code, lg in COMPETITION.items():
-            jobs[lg.value] = (
-                lg, (lambda _lg=lg: FootballDataAdapter(_lg).fetch(d0, d1)))
+            jobs[lg.value] = (lg, (lambda _lg=lg: _use(
+                _lg.value, FootballDataAdapter(_lg), lambda a: a.fetch(d0, d1))))
     return jobs
+
+
+def snapshot_age_seconds(name: str, log: dict, now: datetime) -> float:
+    """이 리그 스냅샷이 몇 초 묵었나. 판단 근거가 없으면 0(=모름)."""
+    at = (log.get(name) or {}).get("at")
+    age = 0.0
+    if at:
+        try:
+            age = max(0.0, (now - datetime.fromisoformat(at)).total_seconds())
+        except ValueError:
+            age = 0.0
+    # 어댑터가 스스로 "캐시로 버텼다"고 말하면 그쪽이 더 클 수 있다.
+    return max(age, _adapter_health(name)[1])
 
 
 # ── 스냅샷 ────────────────────────────────────────────────────
@@ -577,11 +799,22 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # → 실측 간격으로 검사하고, 위반은 경고로 남겨 알림에 싣는다.
     window_warnings: list[str] = []
     measured = _measured_interval_seconds(now)
+    hist_len = _tick_history_len()
+    gate_interval = max(measured, TICK_INTERVAL_SECONDS)
+    print(f"  [시계] 실측 간격 {measured // 60}분 (기록 {hist_len}개) · "
+          f"설정 {TICK_INTERVAL_SECONDS // 60}분 → 게이트 기준 {gate_interval // 60}분")
     try:
-        assert_send_windows(max(measured, TICK_INTERVAL_SECONDS), LOOKAHEAD_SECONDS)
+        assert_send_windows(gate_interval, LOOKAHEAD_SECONDS)
     except GateError as e:
+        # **게이트가 틱을 죽이면 위반보다 나쁘다.** 경고로만 싣고 계속 간다.
         window_warnings.append(str(e))
         print(f"  ⚠️ [발송 창] {e}")
+    # 아직 안 켠 콘텐츠까지 미리 본다 — 켜는 날 조용히 사라지는 것을 막는다.
+    _narrow = narrow_window_types(gate_interval, LOOKAHEAD_SECONDS)
+    if _narrow:
+        print(f"  [발송 창] 지금 켜면 사라질 콘텐츠 {len(_narrow)}종: "
+              + " · ".join(f"{ct.value}({w // 60}<{n // 60}분)"
+                           for ct, w, n in _narrow[:5]))
     _record_tick(now)
 
     counts, errors, soft = collect(now, force=force_fetch)
@@ -592,6 +825,31 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         # 다음 틱에 저절로 풀릴 것. 빨간불로 올리지 않는다 —
         # 계속 이어지면 아래 커버리지가 잡아 올린다.
         print(f"  [일시적 실패 — 다음 틱 재시도] {e}")
+
+    # **어댑터가 조용히 버린 것을 운영에 올린다 (v1.11i).**
+    # 전에는 이 값들을 검증 스크립트만 읽었다 — 틱은 한 번도 안 읽었다.
+    adapter_notes: list[str] = []
+    for _name in _jobs():
+        _n, _ = _adapter_health(_name)
+        adapter_notes += _n
+    for _n in adapter_notes:
+        print(f"  [어댑터가 버림] {_n}")
+
+    # **묵은 스냅샷으로 '오늘 경기' 카드를 내지 않는다.**
+    # 며칠 묵은 데이터로 오늘을 안내하는 것은 늦는 것이 아니라 사실 오류다.
+    _flog = _fetch_log()
+    stale_block: set = set()          # 이번 틱에 발송을 막을 리그
+    stale_notes: list[str] = []
+    for _name, (_lg, _) in _jobs().items():
+        _age = snapshot_age_seconds(_name, _flog, now)
+        if _age >= STALE_SNAPSHOT_BLOCK_SECONDS:
+            stale_block.add(_lg)
+            stale_notes.append(f"{_name}: 스냅샷이 {_age / 3600:.1f}시간 묵었습니다 — "
+                               f"이번 틱 발송 보류(묵은 데이터로 '오늘 경기'는 사실 오류)")
+        elif _age >= STALE_SNAPSHOT_WARN_SECONDS:
+            stale_notes.append(f"{_name}: 스냅샷이 {_age / 3600:.1f}시간 묵었습니다")
+    for _n in stale_notes:
+        print(f"  [묵은 데이터] {_n}")
 
     snaps = all_games()
 
@@ -659,29 +917,69 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     snd = Sender(tr, led, channel, alert_chat_id=alert_to,
                  worker_id=os.environ.get("WORKER_ID") or None)
 
-    sent = skipped = failed = already = 0
+    # **발송을 강행하면 안 되는 상태를 먼저 본다 (v1.11i).**
+    # 둘 다 '중복 발송'으로 이어지는 상태다. 중복은 되돌릴 수 없고 미발송은 고칠 수 있다.
+    hold: list[str] = []
+    _regress = ledger_regression(led)
+    if _regress:
+        hold.append(_regress)
+    if led.broken_lines:
+        hold.append(f"발송 대장 {led.broken_lines}줄을 읽지 못했습니다 — "
+                    f"건너뛴 줄이 SENT였다면 그 항목을 다시 보내게 됩니다. "
+                    f"사람이 대장을 확인할 때까지 발송하지 않습니다.")
+    for h in hold:
+        print(f"  🛑 [발송 보류] {h}")
+
+    sent = failed = already = quarantined = 0
+    skip_kinds: dict[str, int] = {}
+    nothing_to_render = 0
     missed: list[str] = []
-    for item in due:
+    dropped_before = 0
+
+    def _skip(code: str) -> None:
+        skip_kinds[code] = skip_kinds.get(code, 0) + 1
+
+    # **페이서 우선순위를 배선한다 (v1.11i).**
+    # `PACER_PRIORITY`는 `Pacer.order()`에서만 쓰였는데 `.order(` 호출이
+    # 코드베이스에 0회였다 — 틱은 `for item in due:`로 예약 시각순 그대로 돌았다.
+    # 그래서 결과 카드 여러 건과 시작 알림이 같은 틱에 걸리면, 문안에 시각이 박힌
+    # START_ALERT(우선순위 0)가 LEAGUE_RESULT(6) 뒤로 밀려 페이서 대기 동안
+    # 거짓말이 됐다(그리고 REJUDGE_AT_SEND에 걸려 통째로 사라졌다).
+    for item in (Pacer.order(due) if not hold else []):
         if is_late(item.scheduled_utc, now, item.content_type):
             # **버린 것을 조용히 넘기지 않는다.**
             # 늦은 것을 버리는 건 설계대로다("늦은 안내는 거짓말이다"). 그런데
             # 그걸 로그에 안 남기면, 시계가 뜸해져 매일 모닝 브리핑을 놓쳐도
             # 아무도 모른다 — 채널이 조용한 이유를 알 수 없다.
-            # 첫날 실측에서 시계 간격이 5분이 아니라 73분이었다. 이런 상황에서
-            # '조용히 건너뜀'은 시스템이 죽었는지 할 일이 없었는지를 구분 못 하게 한다.
+            #
+            # v1.11i: 큐 생성부가 `keep_in_queue()`로 유예+6시간까지 남기게 되면서
+            # 이 분기가 **처음으로 실제 도달 가능해졌다**(전에는 큐가 먼저 잘라내
+            # 38,283건 중 0건 발화했다). 그래서 세 가지를 반드시 한다:
+            #   ① 로그  ② 알림  ③ **대장에 종결 상태로 못 박기**
+            # ③이 없으면 다음 틱이 같은 항목을 또 집어 6시간 내내 같은 알림을 낸다.
             late = (now - item.scheduled_utc).total_seconds() / 60
+            first = snd.mark_settled(
+                item, SendState.SKIPPED_PAST_AT_CREATION,
+                f"지각 폐기 — 예약보다 {late:.0f}분 늦음(유예 초과)")
+            if not first:
+                dropped_before += 1        # 이미 기록한 것 — 두 번 시끄럽게 하지 않는다
+                continue
             missed.append(f"{item.content_type.value} {item.scope} "
                           f"(예약보다 {late:.0f}분 늦어 취소)")
             print(f"    ⏰ 지각으로 버림 {item.content_type.value} {item.scope} "
                   f"— 예약 {item.scheduled_utc.astimezone(KST):%H:%M} "
-                  f"· {late:.0f}분 지남")
-            skipped += 1
+                  f"· {late:.0f}분 지남 (대장에 종결로 기록)")
+            continue
+        if item.league in stale_block:
+            # 며칠 묵은 데이터로 '오늘 경기'를 안내하지 않는다.
+            _skip("stale_data")
+            print(f"    ⏸ 묵은 데이터로 보류 {item.content_type.value} {item.scope}")
             continue
         games = next((g for g in snaps.values() if g and g[0].league is item.league), [])
         try:
             made = render_for(item, games)
             if made is None:
-                skipped += 1
+                nothing_to_render += 1
                 continue
             photos, parts = made
             payload = (Payload.from_parts(photos, parts) if photos
@@ -698,41 +996,91 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 sent += 1
                 print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
             elif res.state is SendState.NEEDS_HUMAN:
-                failed += 1
-                print(f"    ⚠️ 사람 확인 필요 {item.idem_key}: {res.reason}")
+                # **이미 격리된 것을 이번 틱의 실패로 다시 세지 않는다 (v1.11i).**
+                # 전에는 격리 1건이 매 틱 `failed += 1` → "발송 실패 1건" +
+                # `return 1`이 되어 워크플로가 영구 빨간불이었고, 알림 지문이 같아
+                # 6시간마다 같은 DM이 왔다 — 진짜 새 사고가 그 소음에 묻힌다.
+                if res.already:
+                    quarantined += 1
+                    print(f"    ⏸ 이미 격리됨 {item.content_type.value} {item.scope}")
+                else:
+                    failed += 1
+                    print(f"    ⚠️ 사람 확인 필요(이번 틱에 발생) "
+                          f"{item.content_type.value} {item.scope}: {res.reason}")
+            elif res.already:
+                _skip(SkipReason.ALREADY)
             else:
-                skipped += 1
+                _skip(res.reason_code or SkipReason.OTHER)
+                print(f"    ⏸ 건너뜀({SKIP_REASON_LABEL.get(res.reason_code, '기타')}) "
+                      f"{item.content_type.value} {item.scope}: {res.reason[:90]}")
         except Exception as e:                               # noqa: BLE001
             failed += 1
             print(f"    실패 {item.content_type.value} {item.scope}: "
                   f"{type(e).__name__} {str(e)[:110]}")
             traceback.print_exc(limit=2)
 
+    skipped = sum(skip_kinds.values())
     print(f"  [발송] 새로 보냄 {sent} · 이미 보냄 {already} · "
-          f"건너뜀 {skipped} · 실패 {failed}"
-          + (f" · ⏰ 시각 놓쳐 취소 {len(missed)}" if missed else ""))
+          f"만들 내용 없음 {nothing_to_render} · 건너뜀 {skipped}"
+          + (" (" + " · ".join(f"{SKIP_REASON_LABEL.get(k, k)} {v}"
+                               for k, v in sorted(skip_kinds.items())) + ")"
+             if skip_kinds else "")
+          + f" · 실패 {failed} · 격리(이전부터) {quarantined}"
+          + (f" · ⏰ 시각 놓쳐 취소 {len(missed)}" if missed else "")
+          + (f" · 지각 폐기 재확인 {dropped_before}" if dropped_before else ""))
+
+    # 대장 표식을 남긴다 — 다음 틱이 "대장이 되감겼는가"를 판단하는 유일한 근거다.
+    # 보류 중이었어도 남긴다(그래야 보류 상태가 계속 감지된다).
+    _write_ledger_mark(led, now)
 
     # 알림은 사람이 봐야 할 것만. 매 틱 시끄러우면 아무도 안 본다.
     lines = []
+    for h in hold:
+        lines.append(f"🛑 발송 보류 — {h}")
     if errors:
         lines += [f"수집 실패 — {e}" for e in errors[:5]]
     if window_warnings:
         lines += [f"발송 창 경고 — {w}" for w in window_warnings[:2]]
-    if getattr(led, "broken_lines", 0):
-        # 대장 줄을 건너뛰었다 = '이미 보냄'을 잃었다 = 중복 발송 위험이다.
+    if hist_len < 3:
+        # 실측 간격을 잃으면 발송 창 게이트가 눈을 감는다(설정값만 보게 된다).
+        # 캐시가 날아갔거나 tick.yml의 캐시 경로에서 ticks.json이 빠졌다는 뜻이다.
+        lines.append(f"시계 기록이 {hist_len}개뿐입니다 — 실측 간격을 못 재서 "
+                     f"발송 창 게이트가 설정값({TICK_INTERVAL_SECONDS // 60}분)만 봅니다. "
+                     f"state/ticks.json이 실행 사이에 살아남는지 확인하세요.")
+    if getattr(led, "broken_lines", 0) and not hold:
         lines.append(f"⚠️ 발송 대장 {led.broken_lines}줄을 읽지 못했습니다 — "
                      f"중복 발송 위험. 사람이 확인해야 합니다.")
     _needs = led.needs_human() if hasattr(led, "needs_human") else []
     if _needs:
-        lines.append(f"사람 확인 필요 {len(_needs)}건 (자동 재발송 금지 상태)")
+        # **격리 건수는 보고하되 '이번 틱의 사고'로 세지 않는다.**
+        # 종료 코드는 아래에서 failed로만 정해진다 — 격리 1건이 워크플로를
+        # 영구 빨간불로 만들던 것이 6번 항목이다.
+        lines.append(f"사람 확인 필요 {len(_needs)}건 (자동 재발송 금지 상태 · 참고)")
+    # 폭주 차단기·격리 등 발송기가 남긴 메모. 조용히 막히는 것이 가장 나쁘다.
+    _bl = snd.burst.status_line()
+    if _bl:
+        lines.append(f"폭주 차단기 — {_bl}")
+    for n in snd.notes[:4]:
+        lines.append(f"발송기 — {n}")
     if soft:
         lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
     if failed:
-        lines.append(f"발송 실패 {failed}건 (로그 확인)")
+        lines.append(f"발송 실패 {failed}건 (이번 틱에 새로 발생 — 로그 확인)")
+    # **건너뛴 것을 사유별로 싣는다 (3번 항목).**
+    # 전에는 `skipped`가 알림 본문에 아예 없어서, 하루 상한에 막히거나
+    # 429가 걸려도 채널도 조용하고 알림도 조용했다.
+    for code, n in sorted(skip_kinds.items()):
+        if code == SkipReason.ALREADY:
+            continue                       # 정상 동작이다
+        lines.append(f"발송 건너뜀 [{SKIP_REASON_LABEL.get(code, code)}] {n}건")
     if missed:
         # 지각으로 버린 것은 '아무 일도 없었다'가 아니다. 채널이 조용한 이유다.
         # 시계가 뜸해지면 여기가 먼저 알려준다.
         lines.append(f"시각을 놓쳐 취소 {len(missed)}건 — " + " · ".join(missed[:2]))
+    if stale_notes:
+        lines += [f"묵은 데이터 — {n}" for n in stale_notes[:3]]
+    if adapter_notes:
+        lines += [f"어댑터가 버림 — {n}" for n in adapter_notes[:3]]
     if stale:
         ex = stale[0]
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
@@ -744,12 +1092,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         except Exception:                                    # noqa: BLE001
             print("    (알림 발송도 실패)")
 
-    # 빨간불의 뜻: **사람이 손대야 한다.**
+    # 빨간불의 뜻: **이번 틱에 실제로 일어난 사고.**
     #   · errors  — 소스 구조 변경 등, 기다려도 안 풀린다
-    #   · failed  — 발송 실패. 카드가 안 나갔다
+    #   · failed  — 이번 틱에 새로 생긴 발송 실패·격리
+    #   · hold    — 대장 손상·되감김으로 발송을 통째로 보류했다
     #   · not cov.ok — 리그가 조용히 사라졌다(가장 위험한 실패)
-    # soft(레이트리밋 등)는 여기 없다. 다음 틱에 풀리고, 안 풀리면 cov가 잡는다.
-    return 1 if (errors or failed or not cov.ok) else 0
+    # 여기 **없는 것**: 이미 격리된 항목(quarantined). 전에는 그것이 매 틱
+    # failed로 세어져 워크플로가 영원히 빨간불이었고, 진짜 새 사고가 묻혔다.
+    # soft(레이트리밋 등)도 없다 — 다음 틱에 풀리고, 안 풀리면 cov가 잡는다.
+    return 1 if (errors or failed or hold or not cov.ok) else 0
 
 
 if __name__ == "__main__":

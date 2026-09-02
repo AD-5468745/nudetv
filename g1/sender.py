@@ -31,21 +31,46 @@ from typing import Callable, Optional
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from contract import (channel_ref,
-                      ContentType, GateError, KST, LEASE_SECONDS, PACER_PRIORITY,
-                      QueueItem, REJUDGE_AT_SEND, SendMethod, SendRecord,
-                      SendState, UNPLANNED_CONTENT, WEBHOOK_ALLOWED_UPDATES,
+from contract import (BURST_AUTO_RELEASE_S, BURST_CANARY_OBSERVE_S,
+                      BURST_MAX_AUTO_RELEASES, BURST_MAX_MESSAGES,
+                      BURST_WINDOW_S, channel_ref,
+                      ContentType, GateError, KST, LEASE_SECONDS,
+                      PACER_MSG_PER_MINUTE, PACER_MSG_PER_SECOND, PACER_PRIORITY,
+                      QueueItem, REJUDGE_AT_SEND, SETTLED_STATES, SendMethod,
+                      SendRecord, SendState, TELEGRAM_PARSE_MODE,
+                      TELEGRAM_PHOTO_DIM_SUM_MAX, TELEGRAM_PHOTO_MAX_BYTES,
+                      TELEGRAM_TEXT_MAX, UNPLANNED_CONTENT,
+                      WEBHOOK_ALLOWED_UPDATES,
                       WEBHOOK_SECRET_HEADER, assert_sendable, esc, is_late,
                       plan_send_parts, quote)
 
 API = "https://api.telegram.org"
 
-# 텔레그램 레이트리밋 — 채널 기준
-RATE_PER_SECOND = 1.0
-RATE_PER_MINUTE = 20
+# 텔레그램 레이트리밋 — 채널 기준.
+# **계약 상수를 그대로 쓴다 (v1.11i).** 전에는 여기에 1.0 / 20 을 다시 적어 두었다.
+# 같은 숫자를 두 곳에 적어두면 한쪽만 고쳐지는 날이 반드시 오고, 갈라진 순간을
+# 아무도 모른다 — 실제로 `pipeline`은 계약의 TELEGRAM_TEXT_MAX를 쓰는데
+# 발송기의 최종 게이트만 리터럴 4096이라, 계약을 고쳐도 발송 게이트가 안 따라왔다.
+RATE_PER_SECOND = float(PACER_MSG_PER_SECOND)
+RATE_PER_MINUTE = int(PACER_MSG_PER_MINUTE)
 
 # 오류 알림은 이 두 가지에서 면제된다
 ALERT_EXEMPT = True
+
+# **재시도 상한 (v1.11i).**
+# 전에는 `retry_count`가 인코딩/디코딩에만 등장하고 **증가시키는 코드가 0곳**이었다.
+# FAILED로 떨어진 항목을 다음 틱이 무제한으로 다시 집었다 — 소스가 아니라
+# 텔레그램이 계속 400을 주는 종류의 고장은 영원히 반복된다.
+# 상한에 닿으면 격리하고 알림에 싣는다(무한 반복보다 한 번 멈추는 편이 낫다).
+SEND_MAX_RETRIES = max(1, int(os.environ.get("SEND_MAX_RETRIES", "3")))
+
+# **"API를 실제로 두드렸다"는 표시 (v1.11i).**
+# 리스가 만료된 항목을 전부 NEEDS_HUMAN으로 못 박던 것이 문제였다 —
+# 클레임만 하고 죽은 항목은 **한 번도 안 보냈으므로 중복 위험이 0**인데도
+# 사람이 대장에 손으로 줄을 넣기 전에는 영원히 안 나갔다.
+# 그래서 첫 API 호출 직전에 대장에 이 표시를 남긴다. 표시가 있으면
+# "보냈는지 알 수 없음"(격리), 없으면 "클레임만 함"(큐로 되돌림)이다.
+DISPATCH_MARK = "dispatching"
 
 # **같은 알림을 이 시간 안에는 되풀이하지 않는다.**
 # 시계가 5분마다 도니, 하루 종일 이어지는 문제 하나가 알림 288통이 된다.
@@ -150,12 +175,31 @@ class Ledger:
         return self._rows.get(key)
 
     def put(self, r: SendRecord) -> None:
-        """append-only. 크래시 중간에 잘린 줄이 생겨도 앞선 줄은 살아 있다."""
-        self._rows[r.idem_key] = r
+        """append-only. 크래시 중간에 잘린 줄이 생겨도 앞선 줄은 살아 있다.
+
+        **파일에 먼저 쓰고 메모리를 나중에 고친다 (v1.11i).**
+        전에는 `self._rows[key] = r`이 파일 쓰기보다 **앞에** 있었다. 그래서
+        디스크가 꽉 차거나 권한이 막혀 쓰기가 터지면, 이 프로세스만 "CLAIMED로
+        바꿨다"고 믿고 다음 실행은 그 줄을 못 본다 — CLAIMED 기록이 유실된 채
+        발송이 진행되면 다음 실행이 같은 것을 다시 보낸다.
+        순서를 뒤집으면 쓰기가 실패했을 때 예외가 그대로 올라가고
+        메모리도 옛 상태 그대로라, 최악이 '재발송'이 아니라 '미발송'이 된다.
+        """
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(self._encode(r), ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())          # 크래시 시나리오의 핵심 — 버퍼에만 있으면 유실된다
+        self._rows[r.idem_key] = r
+
+    # ── 대장 유실 감시용 지표 (v1.11i) ─────────────────────────
+    # 대장이 커밋되지 않으면 다음 실행은 그 회차 발송분을 '안 보낸 것'으로 보고
+    # 전량 재발송한다. 그래서 틱이 매번 이 두 숫자를 캐시에 남기고,
+    # 다음 틱에 **줄어들었는지** 본다 (tick._ledger_mark 참조).
+    def row_count(self) -> int:
+        return len(self._rows)
+
+    def sent_count_total(self) -> int:
+        return sum(1 for r in self._rows.values() if r.state is SendState.SENT)
 
     def count_sent_today(self, day_kst: str) -> int:
         n = 0
@@ -289,6 +333,152 @@ class Pacer:
 
 
 # ─────────────────────────────────────────────────────────────
+# 폭주 차단기 (v1.11i 신설 — 계약에는 v1.9부터 있었는데 구현이 없었다)
+#
+# **왜 이제야 만드나.** BURST_WINDOW_S · BURST_MAX_MESSAGES ·
+# BURST_AUTO_RELEASE_S · BURST_CANARY_OBSERVE_S · BURST_MAX_AUTO_RELEASES
+# 다섯 상수가 계약에 있는데 운영 코드에서 **참조 0회**였다. 유일한 방어는
+# `daily_max=60` 하나였고 그마저 도달해도 조용했다(로그·알림 어디에도 안 실렸다).
+#
+# **왜 파일에 남기나.** 매 실행이 새 컨테이너다. 메모리에 두면 차단이 걸린
+# 그 실행에서만 유효하고 다음 실행은 아무것도 모른 채 다시 폭주한다.
+# 대장 옆(state/burst.json)에 두고 워크플로가 대장과 함께 커밋한다 —
+# `alerts.json`과 정확히 같은 이유다.
+#
+# **동작.** 10분 창에 60건을 넘기면 차단 → 30분 뒤 자동 해제하되 **1건만**
+# 내보내 5분간 관찰(카나리) → 관찰을 통과해야 정상 재개.
+# 자동 해제는 3회까지, 그 뒤는 사람이 풀어야 한다.
+# ─────────────────────────────────────────────────────────────
+
+class BurstBreaker:
+    """폭주 차단기. 상태는 파일에 남는다 — 프로세스가 죽어도 살아남아야 뜻이 있다."""
+
+    def __init__(self, path: pathlib.Path,
+                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
+        self.path = path
+        self.now = now
+
+    # ── 상태 파일 ───────────────────────────────────────────
+    _EMPTY = {"sends": [], "blocked_at": None, "auto_releases": 0,
+              "canary_at": None, "canary_pending": False, "manual_only": False}
+
+    def load(self) -> dict:
+        st = dict(self._EMPTY)
+        st["sends"] = []
+        try:
+            if self.path.exists():
+                got = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(got, dict):
+                    st.update({k: got.get(k, v) for k, v in self._EMPTY.items()})
+        except (json.JSONDecodeError, OSError, TypeError):
+            pass          # 깨졌으면 '차단 이력 없음'으로 다룬다 — 발송을 막지는 않는다
+        st["sends"] = [float(x) for x in (st.get("sends") or [])]
+        return st
+
+    def _save(self, st: dict) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(st), encoding="utf-8")
+            tmp.replace(self.path)          # 원자적 교체 — 반쪽 파일이 남지 않게
+        except OSError:
+            pass                            # 기록 실패로 발송을 막지는 않는다
+
+    def _t(self) -> float:
+        return self.now().timestamp()
+
+    @staticmethod
+    def _prune(st: dict, t: float) -> None:
+        st["sends"] = [x for x in st["sends"] if t - x < BURST_WINDOW_S]
+
+    # ── 판정 ────────────────────────────────────────────────
+
+    def allow(self) -> tuple[bool, str]:
+        """지금 한 건 내보내도 되는가. (허용, 사람이 읽을 사유).
+
+        **부수효과가 있다** — 자동 해제/카나리 소비가 여기서 일어난다.
+        그래서 호출자는 '정말 지금 보낼 것'이 확정된 뒤에만 부른다.
+        """
+        st = self.load()
+        t = self._t()
+        self._prune(st, t)
+
+        if st["manual_only"]:
+            return False, (f"폭주 차단(수동 해제 전용) — 자동 해제를 "
+                           f"{BURST_MAX_AUTO_RELEASES}회 다 썼습니다. "
+                           f"사람이 {self.path.name}을 확인·삭제해야 풀립니다")
+
+        if st["blocked_at"]:
+            left = BURST_AUTO_RELEASE_S - (t - float(st["blocked_at"]))
+            if left > 0:
+                return False, (f"폭주 차단 중 — {int(left // 60)}분 {int(left % 60)}초 뒤 "
+                               f"자동 해제(카나리 1건)")
+            if st["auto_releases"] >= BURST_MAX_AUTO_RELEASES:
+                st["manual_only"] = True
+                self._save(st)
+                return False, (f"폭주 차단(수동 해제 전용) — 자동 해제 "
+                               f"{BURST_MAX_AUTO_RELEASES}회를 다 썼습니다. "
+                               f"이제부터 사람이 풀어야 합니다")
+            st["auto_releases"] = int(st["auto_releases"]) + 1
+            st["blocked_at"] = None
+            st["canary_pending"] = True
+            st["canary_at"] = None
+            st["sends"] = []            # 창을 비우고 처음부터 다시 센다
+            self._save(st)
+            return True, (f"폭주 자동 해제 {st['auto_releases']}/{BURST_MAX_AUTO_RELEASES}회차 — "
+                          f"카나리 1건만 내보내고 {BURST_CANARY_OBSERVE_S // 60}분 관찰합니다")
+
+        if st["canary_pending"]:
+            return True, "카나리 1건 (관찰용)"
+
+        if st["canary_at"]:
+            left = BURST_CANARY_OBSERVE_S - (t - float(st["canary_at"]))
+            if left > 0:
+                return False, (f"카나리 관찰 중 — {int(left)}초 뒤 정상 재개 "
+                               f"(해제 직후 전량 재개는 폭주를 되풀이한다)")
+            st["canary_at"] = None      # 관찰 통과 — 정상 재개
+            self._save(st)
+        return True, ""
+
+    def record(self, n: int) -> Optional[str]:
+        """실제로 나간 메시지 수를 기록. **새로** 차단이 걸리면 사유를 돌려준다."""
+        if n <= 0:
+            return None
+        st = self.load()
+        t = self._t()
+        if st.get("canary_pending"):
+            st["canary_pending"] = False
+            st["canary_at"] = t         # 여기서부터 관찰 시작
+        st["sends"] = list(st["sends"]) + [t] * int(n)
+        self._prune(st, t)
+        msg = None
+        if len(st["sends"]) > BURST_MAX_MESSAGES and not st["blocked_at"]:
+            st["blocked_at"] = t
+            msg = (f"🚨 폭주 차단 발동 — {BURST_WINDOW_S // 60}분 창에 "
+                   f"{len(st['sends'])}건(상한 {BURST_MAX_MESSAGES}). "
+                   f"{BURST_AUTO_RELEASE_S // 60}분 뒤 카나리 1건으로 자동 해제합니다")
+        self._save(st)
+        return msg
+
+    def status_line(self) -> Optional[str]:
+        """지금 차단·관찰 상태면 알림에 실을 한 줄. 정상이면 None."""
+        st = self.load()
+        t = self._t()
+        if st["manual_only"]:
+            return (f"폭주 차단(수동 해제 전용) — 자동 해제 "
+                    f"{st['auto_releases']}/{BURST_MAX_AUTO_RELEASES}회 소진")
+        if st["blocked_at"]:
+            left = max(0, BURST_AUTO_RELEASE_S - (t - float(st["blocked_at"])))
+            return f"폭주 차단 중 — {int(left // 60)}분 뒤 자동 해제(카나리 1건)"
+        if st["canary_pending"]:
+            return "폭주 해제 대기 — 다음 1건이 카나리입니다"
+        if st["canary_at"] and (t - float(st["canary_at"])) < BURST_CANARY_OBSERVE_S:
+            return (f"폭주 해제 후 카나리 관찰 중 "
+                    f"({int(BURST_CANARY_OBSERVE_S - (t - float(st['canary_at'])))}초 남음)")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
 # 발송기
 # ─────────────────────────────────────────────────────────────
 
@@ -306,11 +496,22 @@ class Payload:
     def gate(self) -> None:
         for name, data, w, h in self.photos:
             assert_sendable(self.caption or "", w, h, len(data))
-        if self.text and len(self.text) > 4096:
-            raise GateError(f"텍스트 {len(self.text)}자 > 4096")
+            # **API 하드 상한도 여기서 직접 본다 (v1.11i).**
+            # assert_sendable이 보는 것은 자체 여유값(GATE_PHOTO_*: 9MB·9500)이다.
+            # 누군가 여유값을 넓히면 텔레그램 하드 상한(10MB·10000)을 넘긴 채
+            # 게이트를 통과하고, 그때는 API가 400으로 되받아 발송이 실패한다.
+            # 하드 상한은 우리가 정하는 값이 아니므로 별도로 못 박는다.
+            if len(data) > TELEGRAM_PHOTO_MAX_BYTES:
+                raise GateError(f"이미지 {len(data)}B > 텔레그램 하드 상한 "
+                                f"{TELEGRAM_PHOTO_MAX_BYTES}")
+            if w + h > TELEGRAM_PHOTO_DIM_SUM_MAX:
+                raise GateError(f"width+height {w + h} > 텔레그램 하드 상한 "
+                                f"{TELEGRAM_PHOTO_DIM_SUM_MAX}")
+        if self.text and len(self.text) > TELEGRAM_TEXT_MAX:
+            raise GateError(f"텍스트 {len(self.text)}자 > {TELEGRAM_TEXT_MAX}")
         for i, t in enumerate(self.follow_texts):
-            if len(t) > 4096:
-                raise GateError(f"이어지는 텍스트 {i + 1}번이 {len(t)}자 > 4096")
+            if len(t) > TELEGRAM_TEXT_MAX:
+                raise GateError(f"이어지는 텍스트 {i + 1}번이 {len(t)}자 > {TELEGRAM_TEXT_MAX}")
         if self.follow_texts and not self.photos:
             raise GateError("이어지는 텍스트는 사진이 있을 때만 쓴다 "
                             "(사진 없으면 text 하나로 보낸다)")
@@ -323,11 +524,41 @@ class Payload:
         return cls(photos=list(photos), caption=parts[0], follow_texts=list(parts[1:]))
 
 
+# ── 건너뜀 사유 코드 (v1.11i 신설) ────────────────────────────
+#
+# **왜 필요한가.** 하루 상한 도달도 429도 둘 다 `SendOutcome(QUEUED, ...)`였고,
+# 틱은 둘 다 `else: skipped += 1`로 셌다. 그런데 알림 본문에는 `skipped`가
+# 아예 실리지 않아서 — 유럽 리그가 들어와 정상 편성이 45건이 되는 날이나
+# 텔레그램이 레이트리밋을 거는 날 **채널도 조용하고 알림도 조용했다.**
+# 사유를 코드로 분리해야 틱이 "무엇 때문에 안 나갔는지"를 말할 수 있다.
+class SkipReason:
+    DAILY_CAP = "daily_cap"            # 하루 발송 상한 도달
+    RATE_LIMITED = "rate_limited"      # 텔레그램 429
+    BURST_BLOCKED = "burst_blocked"    # 폭주 차단기
+    LATE_AT_SEND = "late_at_send"      # 발송 직전 재판정에서 유예 초과
+    LEDGER_BROKEN = "ledger_broken"    # 대장이 깨져 중복 위험 — 강행 금지
+    ALREADY = "already"                # 대장에 이미 종결로 남아 있다
+    OTHER = "other"
+
+
+SKIP_REASON_LABEL = {
+    SkipReason.DAILY_CAP: "하루 상한 초과",
+    SkipReason.RATE_LIMITED: "레이트리밋(429)",
+    SkipReason.BURST_BLOCKED: "폭주 차단",
+    SkipReason.LATE_AT_SEND: "발송 직전 지각",
+    SkipReason.LEDGER_BROKEN: "대장 손상",
+    SkipReason.ALREADY: "이미 종결",
+    SkipReason.OTHER: "기타",
+}
+
+
 @dataclass
 class SendOutcome:
     state: SendState
     message_ids: list[int] = field(default_factory=list)
     reason: str = ""
+    # 왜 안 나갔는지. 빈 문자열이면 정상 발송이다.
+    reason_code: str = ""
     # **이번에 실제로 내보냈나, 아니면 대장에 이미 있어서 안 보냈나.**
     # 둘 다 state는 SENT다 — 대장에 있는 것은 '보내진 상태'가 맞기 때문이다.
     # 그런데 이 둘을 구분하지 않으면 로그가 거짓말을 한다: 시계가 돌 때마다
@@ -338,9 +569,11 @@ class SendOutcome:
 
 class Sender:
     def __init__(self, transport, ledger: Ledger, chat_id: str, *,
-                 worker_id: Optional[str] = None, daily_max: int = 60,
+                 worker_id: Optional[str] = None,
+                 daily_max: int = BURST_MAX_MESSAGES,
                  pacer: Optional[Pacer] = None,
                  alert_chat_id: Optional[str] = None,
+                 burst: Optional[BurstBreaker] = None,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.tr = transport
         self.led = ledger
@@ -358,26 +591,73 @@ class Sender:
         # 내부 장애 메시지가 구독 채널에 나가는 것이 더 나쁘다.
         self.alert_chat_id = alert_chat_id
         self.now = now
+        # 폭주 차단기. 상태는 대장 옆 파일에 남는다(프로세스가 죽어도 살아남아야 한다).
+        self.burst = burst or BurstBreaker(
+            pathlib.Path(ledger.path).parent / "burst.json", now)
+        # 이번 실행에서 사람이 봐야 할 일들(폭주 차단 발동·자동 해제·격리 등).
+        # 틱이 읽어 알림에 싣는다 — 조용히 막히는 것이 가장 나쁘다.
+        self.notes: list[str] = []
 
     # ── 클레임 ──────────────────────────────────────────────
 
     def claim(self, item: QueueItem) -> Optional[SendRecord]:
-        """이미 보냈거나 남이 잡고 있으면 None. 리스 만료 항목은 격리한다."""
+        """이미 종결됐거나 남이 잡고 있으면 None.
+
+        **리스 만료 자체는 사고가 아니다 (v1.11i).**
+        전에는 리스가 만료된 항목을 전부 NEEDS_HUMAN으로 못 박았다. 그런데
+        리스는 `유예/3`(시작알림 38분·모닝 120분)인데 **실측 시계 간격이 30~240분**
+        이라, 정상적으로 컨테이너가 회수되기만 해도 다음 틱 전에 리스가 만료된다.
+        그러면 **한 번도 안 보낸 항목**이 영구 격리되고, 코드 어디에도
+        NEEDS_HUMAN을 되돌리는 쓰기가 없어 사람이 대장에 손으로 줄을 넣어야 했다.
+
+        그래서 두 가지를 구분한다:
+          · 클레임만 하고 **발송 흔적이 없는 것** → 중복 위험 0 → 큐로 되돌린다
+          · **발송을 시도한 흔적(DISPATCH_MARK)이 있는 것** → 보냈는지 알 수 없다 → 격리
+        """
         now = self.now()
         r = self.led.get(item.idem_key)
 
-        if r and r.state is SendState.SENT:
-            return None                                  # 멱등 — 두 번 보내지 않는다
+        # 종결 상태(SENT·SKIPPED_*·SUPERSEDED)는 전부 다시 집지 않는다.
+        # 전에는 SENT만 봤다 — 그래서 '지각으로 버림'을 대장에 남겨도
+        # 다음 틱이 그 항목을 다시 집어 되살아났다.
+        if r and r.state in SETTLED_STATES:
+            return None
         if r and r.state is SendState.NEEDS_HUMAN:
             return None
+
         if r and r.state is SendState.CLAIMED:
             if r.claimed_by == self.worker_id and r.lease_expires_utc and r.lease_expires_utc > now:
                 return r                                 # 내가 잡은 것 — 이어서 진행
             if r.lease_expires_utc and r.lease_expires_utc > now:
                 return None                              # 남이 작업 중
-            # 리스 만료 = 발송 도중 죽었을 수 있다. 보냈는지 알 수 없으므로 재시도 금지.
+            if (r.last_error or "") == DISPATCH_MARK:
+                # API를 두드린 뒤 죽었다 — 나갔는지 알 수 없다. 여기만 격리 대상이다.
+                self.led.put(replace(r, state=SendState.NEEDS_HUMAN,
+                                     last_error="발송 시도 중 리스 만료 — "
+                                                "발송 여부 불명, 자동 재발송 금지"))
+                self.notes.append(f"격리(발송 여부 불명) {item.content_type.value} {item.scope}")
+                return None
+            # 클레임만 하고 죽었다(러너 회수·OOM·SIGKILL). 아무것도 안 나갔으므로
+            # 큐로 되돌려 이번 틱이 이어서 보낸다. 다만 무한 반복은 막는다.
+            n = r.retry_count + 1
+            if n >= SEND_MAX_RETRIES:
+                self.led.put(replace(r, state=SendState.NEEDS_HUMAN, retry_count=n,
+                                     last_error=f"클레임 회수 {n}회 반복 — 상한 초과, 사람 확인 필요"))
+                self.notes.append(f"격리(클레임 회수 반복 {n}회) "
+                                  f"{item.content_type.value} {item.scope}")
+                return None
+            r = replace(r, state=SendState.QUEUED, claimed_by=None,
+                        lease_expires_utc=None, retry_count=n,
+                        last_error="리스 만료(발송 흔적 없음) — 큐로 되돌림")
+            self.led.put(r)
+
+        # FAILED/QUEUED로 되돌아온 항목의 재시도 상한.
+        if r and r.retry_count >= SEND_MAX_RETRIES:
             self.led.put(replace(r, state=SendState.NEEDS_HUMAN,
-                                 last_error="리스 만료 — 발송 여부 불명, 자동 재발송 금지"))
+                                 last_error=f"재시도 {r.retry_count}회 — 상한"
+                                            f"({SEND_MAX_RETRIES}) 도달, 자동 재시도 중단"))
+            self.notes.append(f"격리(재시도 상한 {r.retry_count}회) "
+                              f"{item.content_type.value} {item.scope}: {r.last_error or ''}"[:160])
             return None
 
         lease = LEASE_SECONDS[item.content_type]
@@ -387,40 +667,98 @@ class Sender:
                          chat_id=channel_ref(self.chat_id),
                          content_type=item.content_type,
                          claimed_by=self.worker_id,
+                         # 재시도 횟수는 이어받는다 — 새로 클레임할 때마다 0으로
+                         # 되돌리면 상한이 영원히 안 걸린다.
+                         retry_count=(r.retry_count if r else 0),
+                         retry_429_count=(r.retry_429_count if r else 0),
                          lease_expires_utc=now + timedelta(seconds=lease))
         self.led.put(rec)
         return rec
 
+    # ── 발송 흔적 남기기 ────────────────────────────────────
+
+    def mark_settled(self, item: QueueItem, state: SendState, reason: str) -> bool:
+        """발송하지 않고 **종결**로 못 박는다 (지각 폐기 등). 이미 종결이면 False.
+
+        **왜 필요한가.** 지각으로 버린 항목이 대장에 아무 흔적을 안 남기면
+        다음 틱이 같은 항목을 또 집어 같은 로그·같은 알림을 되풀이한다.
+        종결 상태로 남겨야 `claim()`이 SETTLED_STATES에서 걸러낸다.
+        """
+        if state not in SETTLED_STATES:
+            raise GateError(f"mark_settled에는 종결 상태만 쓴다 ({state.value})")
+        prev = self.led.get(item.idem_key)
+        if prev and prev.state in SETTLED_STATES:
+            return False                                # 이미 기록했다 — 두 번 안 적는다
+        if prev and prev.state is SendState.NEEDS_HUMAN:
+            return False                                # 격리된 것은 건드리지 않는다
+        if (prev and prev.state is SendState.CLAIMED
+                and (prev.last_error or "") == DISPATCH_MARK):
+            # 발송을 시도한 흔적이 있는 항목은 '건너뜀'으로 덮으면 안 된다 —
+            # 나갔을 수도 있다는 사실이 지워진다. 사람이 볼 수 있게 격리로 남긴다.
+            self.led.put(replace(prev, state=SendState.NEEDS_HUMAN,
+                                 claimed_by=None, lease_expires_utc=None,
+                                 last_error=f"{reason} · 다만 발송 시도 흔적이 있어 "
+                                            f"발송 여부 불명 — 사람 확인 필요"))
+            self.notes.append(f"격리(지각 + 발송 여부 불명) "
+                              f"{item.content_type.value} {item.scope}")
+            return True
+        base = prev or SendRecord(idem_key=item.idem_key, state=state,
+                                  chat_id=channel_ref(self.chat_id),
+                                  content_type=item.content_type)
+        self.led.put(replace(base, state=state, message_ids=[], sent_at_utc=None,
+                             claimed_by=None, lease_expires_utc=None,
+                             last_error=reason))
+        return True
+
     # ── 발송 ────────────────────────────────────────────────
 
-    def _release(self, rec: "SendRecord") -> None:
+    def _release(self, rec: "SendRecord", reason: str = "",
+                 count_retry: bool = True) -> None:
         """클레임을 반납해 QUEUED로 되돌린다.
 
         **클레임한 뒤 예외가 나면 그 항목은 영구 격리된다.** 리스가 만료되면
         `claim()`이 NEEDS_HUMAN으로 못 박기 때문이다 — 한 번도 안 보냈는데도.
         게다가 워커 ID가 실행마다 달라(`gha-{run_id}`) "내가 잡은 것 이어서"
         분기는 절대 안 탄다. 그래서 보내지 못했으면 **반드시 반납**한다.
+
+        **`count_retry`가 왜 있나.** 실패해서 되돌리는 것과, 우리 쪽 안전장치가
+        막아서 되돌리는 것은 다르다. 폭주 차단으로 30분 막히는 동안 틱이 세 번 돌면
+        멀쩡한 항목이 재시도 상한에 걸려 격리된다 — 안전장치가 발행을 죽이는 셈이다.
+        그래서 **우리가 일부러 막은 경우는 세지 않는다.**
         """
         self.led.put(replace(rec, state=SendState.QUEUED,
-                             claimed_by=None, lease_expires_utc=None))
+                             claimed_by=None, lease_expires_utc=None,
+                             # 되돌릴 때마다 한 번씩 센다 — 안 세면 상한이 영원히 안 걸린다.
+                             retry_count=rec.retry_count + (1 if count_retry else 0),
+                             last_error=(reason or rec.last_error)))
 
     def send(self, item: QueueItem, payload: Payload) -> SendOutcome:
         # **보내기 전 검사는 클레임 전에 한다.** 클레임 뒤에 터지면
         # 그 항목이 영구 격리된다(실측: 캡션 1200자 → 3시간 뒤 needs_human).
         payload.gate()
 
+        # **대장이 깨졌으면 발송을 강행하지 않는다 (v1.11i).**
+        # 건너뛴 줄이 SENT였다면 그 항목은 '안 보낸 것'이 되어 재발송된다.
+        # 중복 발송은 되돌릴 수 없고, 미발송은 사람이 고칠 수 있다.
+        if getattr(self.led, "broken_lines", 0):
+            return SendOutcome(SendState.QUEUED, [],
+                               f"발송 대장 {self.led.broken_lines}줄 손상 — "
+                               f"중복 발송 위험이 있어 발송하지 않습니다",
+                               reason_code=SkipReason.LEDGER_BROKEN)
+
         day = self.now().astimezone(KST).strftime("%Y-%m-%d")
         if (item.content_type not in UNPLANNED_CONTENT
                 and self.led.count_sent_today(day) >= self.daily_max):
             return SendOutcome(SendState.QUEUED, [],
-                               "하루 발송 상한 도달 (폭주 방지) — 다음 날 재시도")
+                               f"하루 발송 상한({self.daily_max}) 도달 (폭주 방지) — 다음 날 재시도",
+                               reason_code=SkipReason.DAILY_CAP)
 
         rec = self.claim(item)
         if rec is None:
             prev = self.led.get(item.idem_key)
             return SendOutcome(prev.state if prev else SendState.SUPERSEDED,
                                prev.message_ids if prev else [], "이미 처리됨",
-                               already=True)
+                               reason_code=SkipReason.ALREADY, already=True)
 
         self.pacer.wait()
 
@@ -428,14 +766,35 @@ class Sender:
         if item.content_type in REJUDGE_AT_SEND and is_late(
                 item.scheduled_utc, self.now(), item.content_type):
             return self._finish(rec, SendState.SKIPPED_ALREADY_STARTED, [],
-                                "발송 직전 재판정 — 유예 초과")
+                                "발송 직전 재판정 — 유예 초과",
+                                reason_code=SkipReason.LATE_AT_SEND)
+
+        # **폭주 차단기 — 정말 지금 보낼 것이 확정된 뒤에 묻는다.**
+        # allow()는 자동 해제·카나리를 소비하는 부수효과가 있어서, 앞에서 물으면
+        # 다른 이유로 건너뛴 항목이 카나리 한 장을 태워버린다.
+        ok, why = self.burst.allow()
+        if not ok:
+            self.notes.append(why)
+            # 우리 안전장치가 막은 것이므로 재시도 횟수를 세지 않는다 —
+            # 세면 30분 차단 동안 멀쩡한 항목이 상한에 걸려 격리된다.
+            self._release(rec, reason=why, count_retry=False)
+            return SendOutcome(SendState.QUEUED, [], why,
+                               reason_code=SkipReason.BURST_BLOCKED)
+        if why:
+            self.notes.append(why)          # 자동 해제·카나리도 사람이 알아야 한다
+
+        # **여기서부터는 "보냈는지 알 수 없는" 구간이다.**
+        # 표시를 남겨두면, 프로세스가 강제 종료돼 리스가 만료됐을 때
+        # claim()이 '클레임만 함'과 구분해 이 항목만 격리한다.
+        rec = replace(rec, last_error=DISPATCH_MARK)
+        self.led.put(rec)
 
         try:
             ids = self._dispatch(payload)
         except PartialSend as e:
-            # 사진은 나갔고 이어지는 텍스트가 빠졌다. 재발송하면 사진이 중복된다.
+            # 사진은 나갔고 나머지가 빠졌다. 재발송하면 사진이 중복된다.
             return self._finish(rec, SendState.NEEDS_HUMAN, e.sent_ids,
-                                f"부분 발송 — 이어지는 텍스트 {e.missing}건 누락: {e}")
+                                f"부분 발송 — 나머지 {e.missing}건 누락: {e}")
         except AmbiguousSend as e:
             # 가장 위험한 경우. 보냈을 수도 있다 → 사람이 눈으로 확인해야 한다
             return self._finish(rec, SendState.NEEDS_HUMAN, [],
@@ -444,53 +803,77 @@ class Sender:
             if e.status == 429:
                 # 클레임을 **반납**한다. 잡아둔 채로 두면 다음 실행(다른 워커 ID)이
                 # "남이 작업 중"으로 건너뛰다가 리스 만료와 함께 영구 격리된다.
+                # 429는 우리 잘못이 아니라 속도 문제라 retry_count에서 제외한다(규칙 4).
                 self.led.put(replace(rec, state=SendState.QUEUED,
                                      claimed_by=None, lease_expires_utc=None,
                                      retry_429_count=rec.retry_429_count + 1,
                                      last_error=f"429 retry_after={e.retry_after}"))
-                return SendOutcome(SendState.QUEUED, [], f"레이트리밋 — {e.retry_after}초 뒤 재시도")
-            return self._finish(rec, SendState.FAILED, [], f"{e}")
-        except (PartialSend, AmbiguousSend, TelegramError):
-            raise
-        except Exception as e:                                  # noqa: BLE001
+                return SendOutcome(SendState.QUEUED, [],
+                                   f"레이트리밋 — {e.retry_after}초 뒤 재시도",
+                                   reason_code=SkipReason.RATE_LIMITED)
+            return self._finish(rec, SendState.FAILED, [], f"{e}", retry=True)
+        except Exception:                                       # noqa: BLE001
             # 예상 못 한 예외로 클레임이 남으면 그 발행은 영구히 죽는다.
-            self._release(rec)
+            # (PartialSend·AmbiguousSend·TelegramError는 위에서 이미 잡혔으므로
+            #  전에 여기 있던 `except (…): raise` 절은 도달 불가능한 죽은 코드였다.)
+            self._release(rec, reason="예상 못 한 예외로 반납")
             raise
 
+        # 실제로 나간 건수를 폭주 차단기에 기록한다. 여기서 새로 차단이 걸릴 수 있다.
+        blocked = self.burst.record(len(ids))
+        if blocked:
+            self.notes.append(blocked)
         return self._finish(rec, SendState.SENT, ids, "")
 
     def _dispatch(self, p: Payload) -> list[int]:
         if not p.photos:
             res = self.tr.call("sendMessage", {
-                "chat_id": self.chat_id, "text": p.text, "parse_mode": "HTML",
+                "chat_id": self.chat_id, "text": p.text,
+                "parse_mode": TELEGRAM_PARSE_MODE,
                 "disable_web_page_preview": True})
             return [res["message_id"]]
 
         ids: list[int] = []
         idx = 0
+        done_photos = 0
         for method, n in plan_send_parts(len(p.photos)):
             chunk = p.photos[idx:idx + n]
             idx += n
             cap = p.caption if not ids else None      # 캡션은 첫 파트에만
-            if method is SendMethod.PHOTO:
-                name, data, _, _ = chunk[0]
-                res = self.tr.call("sendPhoto",
-                                   {"chat_id": self.chat_id, "parse_mode": "HTML",
-                                    **({"caption": cap} if cap else {})},
-                                   files={"photo": (name, data)})
-                ids.append(res["message_id"])
-            else:
-                media, files = [], {}
-                for i, (name, data, _, _) in enumerate(chunk):
-                    k = f"f{i}"
-                    m = {"type": "photo", "media": f"attach://{k}"}
-                    if i == 0 and cap:
-                        m |= {"caption": cap, "parse_mode": "HTML"}
-                    media.append(m)
-                    files[k] = (name, data)
-                res = self.tr.call("sendMediaGroup",
-                                   {"chat_id": self.chat_id, "media": media}, files=files)
-                ids += [m["message_id"] for m in res]
+            # **여러 파트로 갈리는 앨범의 중간 실패에서 이미 나간 id를 잃지 않는다 (v1.11i).**
+            # 전에는 여기서 TelegramError가 나면 그때까지 모은 `ids`가 그대로 버려지고
+            # `_finish(FAILED, ids=[])`로 끝났다 → 다음 틱이 **처음부터 다시** 보내
+            # 앞 파트의 사진이 채널에 두 번 남는다. `PartialSend`가 후속 텍스트 루프에만
+            # 걸려 있어서 생긴 구멍이다. 지금은 카드가 항상 1장이라 잠복 상태지만
+            # 2장이 되는 순간(plan_send_parts가 파트를 나누는 순간) 활성화된다.
+            try:
+                if method is SendMethod.PHOTO:
+                    name, data, _, _ = chunk[0]
+                    res = self.tr.call("sendPhoto",
+                                       {"chat_id": self.chat_id,
+                                        "parse_mode": TELEGRAM_PARSE_MODE,
+                                        **({"caption": cap} if cap else {})},
+                                       files={"photo": (name, data)})
+                    ids.append(res["message_id"])
+                else:
+                    media, files = [], {}
+                    for i, (name, data, _, _) in enumerate(chunk):
+                        k = f"f{i}"
+                        m = {"type": "photo", "media": f"attach://{k}"}
+                        if i == 0 and cap:
+                            m |= {"caption": cap, "parse_mode": TELEGRAM_PARSE_MODE}
+                        media.append(m)
+                        files[k] = (name, data)
+                    res = self.tr.call("sendMediaGroup",
+                                       {"chat_id": self.chat_id, "media": media},
+                                       files=files)
+                    ids += [m["message_id"] for m in res]
+            except (TelegramError, AmbiguousSend) as e:
+                if ids:
+                    raise PartialSend(
+                        ids, (len(p.photos) - done_photos) + len(p.follow_texts), e) from e
+                raise            # 아직 한 장도 안 나갔다 — 통째로 재시도해도 안전하다
+            done_photos += len(chunk)
             if idx < len(p.photos):
                 self.pacer.wait()
 
@@ -500,7 +883,8 @@ class Sender:
             self.pacer.wait()
             try:
                 res = self.tr.call("sendMessage", {
-                    "chat_id": self.chat_id, "text": t, "parse_mode": "HTML",
+                    "chat_id": self.chat_id, "text": t,
+                    "parse_mode": TELEGRAM_PARSE_MODE,
                     "disable_web_page_preview": True})
             except (TelegramError, AmbiguousSend) as e:
                 raise PartialSend(ids, len(p.follow_texts) - i, e) from e
@@ -508,12 +892,18 @@ class Sender:
         return ids
 
     def _finish(self, rec: SendRecord, state: SendState, ids: list[int],
-                reason: str) -> SendOutcome:
+                reason: str, *, reason_code: str = "",
+                retry: bool = False) -> SendOutcome:
         self.led.put(replace(rec, state=state, message_ids=ids,
                              sent_at_utc=self.now() if state is SendState.SENT else None,
                              sent_count=len(ids), last_error=reason or None,
+                             # 실패로 끝난 것만 재시도 횟수를 센다. 상한에 닿으면
+                             # 다음 클레임에서 격리된다(무한 재시도 방지).
+                             retry_count=rec.retry_count + (1 if retry else 0),
                              claimed_by=None, lease_expires_utc=None))
-        return SendOutcome(state, ids, reason)
+        if state is SendState.NEEDS_HUMAN:
+            self.notes.append(f"격리 {rec.content_type.value}: {reason}"[:200])
+        return SendOutcome(state, ids, reason, reason_code=reason_code)
 
     # ── 오류 알림 ───────────────────────────────────────────
 
@@ -539,8 +929,9 @@ class Sender:
         if gap > 0 and not self._alert_is_new(fp, gap):
             return False                      # 방금 같은 말을 했다
         try:
-            self.tr.call("sendMessage", {"chat_id": self.alert_chat_id, "text": body[:4096],
-                                         "parse_mode": "HTML",
+            self.tr.call("sendMessage", {"chat_id": self.alert_chat_id,
+                                         "text": body[:TELEGRAM_TEXT_MAX],
+                                         "parse_mode": TELEGRAM_PARSE_MODE,
                                          "disable_web_page_preview": True})
             self._alert_mark(fp)
             return True

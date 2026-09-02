@@ -27,7 +27,11 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       start_alert_lead_text, venue_name,
                       assert_result_deadline, kst_day_label, result_deadline,
                       SCORE_UNIT_BY_LEAGUE, ScoreUnit,
-                      shift_out_of_quiet_hours)
+                      shift_out_of_quiet_hours,
+                      # v1.11i — 문안 사실성 헬퍼. 조사·사유 표기·모닝 이름·큐 잔류는
+                      # 계약이 한 번만 정한다. 렌더마다 다시 지으면 반드시 갈라진다.
+                      KBL_SEASON_CATEGORY_ALLOW, needs_local_time,
+                      cancel_reason_text, josa, keep_in_queue, morning_label)
 from contract import assert_card_typography, team_name
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
@@ -195,8 +199,11 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         _m_utc = _m.astimezone(timezone.utc)
         if _m_utc > hi:
             continue
-        # 너무 늦은 것은 여기서 거른다. 남겨두면 매일 빈 항목이 쌓인다.
-        if (now - _m_utc).total_seconds() > GRACE_SECONDS[ContentType.MORNING]:
+        # **버림 판정은 여기서 하지 않는다 (v1.11i).**
+        # 큐 생성부가 유예로 먼저 잘라내면 tick의 is_late()는 영원히 참이 되지 않는다 —
+        # 실제로 38,283건 중 한 번도 참이 아니었고, 그래서 사라진 모닝 24%가
+        # 로그에도 알림에도 남지 않았다. 큐는 남기고, 버림과 기록은 tick 한 곳에서 한다.
+        if not keep_in_queue(_m_utc, now, ContentType.MORNING):
             continue
         day = _m.strftime("%Y-%m-%d")
         # 그날 경기가 없으면 모닝 브리핑도 없다. 큐에 넣어두고 렌더에서 버리면
@@ -240,11 +247,16 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # 125분이었던 이유다. 너무 늦은 것은 is_late()가 버린다.
         if at > hi:
             continue
-        if (now - at).total_seconds() > GRACE_SECONDS[ContentType.START_ALERT]:
+        if not keep_in_queue(at, now, ContentType.START_ALERT):
             continue
         items.append(QueueItem(
+            # **멱등키 성분은 시간에 따라 줄어드는 집합에서 뽑지 않는다 (v1.11i).**
+            # 전에는 `max(start_rev for gs)` — gs는 SCHEDULED만 남긴 집합이라
+            # 경기가 하나 시작하기만 해도 최댓값이 s1→s0으로 **작아졌다.**
+            # 키가 달라지니 같은 날 시작 알림이 두 번 나갔다(KBO 2026-08-29 실증).
+            # 예약 시각(at)은 이미 gs_all에서 뽑고 있다 — 근거 집합을 맞춘다.
             idem_key=idem_key(channel, ContentType.START_ALERT, scope,
-                              start_rev=max(x.start_rev for x in gs)),
+                              start_rev=max(x.start_rev for x in gs_all)),
             content_type=ContentType.START_ALERT, scope=scope, scheduled_utc=at,
             league=gs[0].league, sports_day=gs[0].sports_day))
 
@@ -273,7 +285,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # (전에는 `lo <= deadline` 이라 마감이 1분만 지나도 그날 결과가 통째로 사라졌다)
         if deadline > hi:
             continue
-        if (now - deadline).total_seconds() > GRACE_SECONDS[ContentType.LEAGUE_RESULT]:
+        if not keep_in_queue(deadline, now, ContentType.LEAGUE_RESULT):
             continue
 
         # **그날 경기가 전부 끝났으면 마감을 기다리지 않는다 (v1.11d, 대표님 지시:
@@ -286,7 +298,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # 마감은 **안전망으로 남긴다** — 우천 연기 등으로 마지막 경기가 영영
         # 종결되지 않으면, 마감 시각에 그때까지의 결과로라도 내보낸다.
         # (그러지 않으면 그날 결과가 통째로 사라진다.)
-        settled = league_day_settled(games, day)
+        settled = league_day_settled(games, day, now)
         at = now if settled else deadline
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.LEAGUE_RESULT,
@@ -299,10 +311,30 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     return items
 
 
-def league_day_settled(games: list[Game], sports_day: str) -> bool:
-    """결과 카드 트리거 — '마지막 경기 종료'가 아니라 '미종결 0건'."""
+def league_day_settled(games: list[Game], sports_day: str,
+                       now: datetime | None = None) -> bool:
+    """결과 카드 트리거 — '미종결 0건' **그리고** 그날이 실제로 지나갔을 것.
+
+    **'종결'과 '지나갔다'는 다른 말이다 (v1.11i).**
+    CANCELED도 is_terminal이라, 전 경기가 미리 취소된 날은 경기가 열리기 훨씬 전에
+    `all(is_terminal)`이 참이 된다. 그래서 "내일 KBO 결과" 카드가 전날 밤에 나갔다
+    (KBO 2026-08-28 실증: 예정보다 최소 28.5시간, 최대 30시간 이른 발송).
+    취소는 '결과'가 아니라 '그날 무슨 일이 있었나'인데, 그날이 아직 오지도 않았다.
+
+    그래서 '그날이 실제로 지나갔다'는 근거를 따로 요구한다. 근거는 둘 중 하나다.
+      · 한 경기라도 **실제로 치러져 끝났다**(FINAL) — 그날은 분명히 왔다.
+        (나머지가 취소라면 더 일어날 일이 없으므로 바로 내보내는 것이 맞다.)
+      · 아직 아무도 뛰지 않았다면, 최소한 **첫 경기 시작 시각은 지나야** 한다.
+    여기서 늦춰도 발행이 사라지지 않는다 — 마감(deadline)은 어차피 이보다 뒤이고,
+    이 판정은 '마감을 안 기다리고 앞당길지'만 정하기 때문이다.
+    """
     todays = [g for g in games if g.sports_day == sports_day]
-    return bool(todays) and all(g.is_terminal for g in todays)
+    if not todays or not all(g.is_terminal for g in todays):
+        return False
+    if any(g.status is Status.FINAL for g in todays):
+        return True
+    now = now or datetime.now(timezone.utc)
+    return now >= min(g.start_utc for g in todays)
 
 
 # ── 2. 렌더 ────────────────────────────────────────────────
@@ -376,13 +408,74 @@ _WD = ["월", "화", "수", "목", "금", "토", "일"]
 CARD_ROWS_MAX = 8
 
 
+# **줄임말을 더 줄이면 리그 이름이 아니게 된다 (v1.11i).**
+# "V리그 남"·"LoL 국제"는 자리를 아끼려고 낱말을 중간에서 끊은 것인데,
+# 정식 명칭은 '남자부'·'국제대회'다. 카드 폭은 실렌더로 확인했고 남는다.
 LEAGUE_LABEL = {
-    League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남",
-    League.VLEAGUE_W: "V리그 여", League.KL1: "K리그1", League.LCK: "LCK",
-    League.INTL_LOL: "LoL 국제", League.MLB: "MLB", League.NPB: "NPB",
+    League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
+    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1", League.LCK: "LCK",
+    League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
     League.EPL: "EPL", League.LALIGA: "라리가", League.SERIEA: "세리에A",
     League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "UCL",
 }
+
+
+# ── 포스트시즌 표기 (v1.11i) ─────────────────────────────────
+# 어댑터가 `season_category`를 채워 스냅샷에 넣는데 렌더가 한 번도 읽지 않았다.
+# 그래서 플레이오프 경기가 정규시즌과 똑같은 카드로 나갔다 — 시청자에게는
+# 그 경기의 무게가 완전히 다른데도.
+#
+# **정규시즌은 표시하지 않는다.** 매일 "정규시즌"이 붙으면 아무 정보도 아니고,
+# 정작 포스트시즌일 때 눈에 띄지 않는다. 모르는 값도 표시하지 않는다 —
+# 소스 원문(영문 stage 코드·대회명)을 배지에 그대로 흘리지 않기 위해서다.
+_POSTSEASON_TAG: dict[str, str] = {
+    "PO": "플레이오프", "CP": "챔피언결정전",          # KBL
+    "스플릿A": "파이널A", "스플릿B": "파이널B",         # K리그
+    "승강PO": "승강 플레이오프",
+    "PLAYOFFS": "플레이오프", "ROUND_OF_16": "16강",   # football-data stage
+    "QUARTER_FINALS": "8강", "SEMI_FINALS": "4강", "FINAL": "결승",
+    "THIRD_PLACE": "3-4위전",
+}
+
+
+def season_tag(games: list[Game]) -> str:
+    """카드 배지에 덧붙일 포스트시즌 표기. 없으면 빈 문자열.
+
+    카드 한 장의 경기가 모두 같은 구간일 때만 붙인다 — 섞인 날 한쪽 이름을
+    붙이면 나머지 경기를 잘못 부른다.
+    """
+    cats = {(g.meta.season_category or "").strip() for g in games}
+    if len(cats) != 1:
+        return ""
+    raw = cats.pop()
+    if raw in _POSTSEASON_TAG:
+        return _POSTSEASON_TAG[raw]
+    # KBL 코드표는 계약이 갖는다. 정규시즌(R)은 여기서 걸러진다.
+    ko = KBL_SEASON_CATEGORY_ALLOW.get(raw, "")
+    if ko and ko != "정규시즌":
+        return ko
+    # 한글 원문에 포스트시즌 낱말이 들어 있으면 그대로 쓴다(소스가 한국어인 리그).
+    if any(w in raw for w in ("플레이오프", "챔피언", "결승", "준결승", "와일드카드")):
+        return raw
+    return ""
+
+
+def _pill(lg: League, games: list[Game] | None = None) -> str:
+    """배지 문구 = 리그명 (+ 포스트시즌이면 구간)."""
+    name = LEAGUE_LABEL.get(lg, lg.value)
+    tag = season_tag(games) if games else ""
+    return f"{name} · {tag}" if tag else name
+
+
+def _reason(g: Game) -> str:
+    """취소·연기 사유 한 줄. **카드와 캡션이 같은 함수를 쓴다 (v1.11i).**
+
+    전에는 카드가 `cancel_reason or '취소'`, 캡션이 또 따로 같은 식을 써서
+    상태가 POSTPONED인 경기를 카드는 "연기", 캡션은 "취소"라고 불렀다 —
+    사진과 캡션은 한 메시지라 한 화면에 나란히 보인다.
+    일본어 원문("中止")이 한국어 채널에 그대로 인쇄되던 것도 같은 자리다.
+    """
+    return cancel_reason_text(g.meta.cancel_reason, g.status)
 
 
 def assert_league_render_maps() -> None:
@@ -425,34 +518,53 @@ def render_morning(games: list[Game], day: str,
     dropped = canceled + postponed
 
     shown = sorted(games, key=lambda x: x.start_utc)[:top_n]
+    wd = spans_two_kst_days(games)           # 목록이 한국 날짜 둘에 걸치면 전 행에 요일
+    venue_ok = _venues_fit(shown)            # 경기장은 전 행이 들어갈 때만 넣는다
     rows = []
     for g in shown:
-        kst, loc = format_kickoff(g)
+        kst, loc = format_kickoff(g, with_weekday=True if wd else None)
         gone = g.status in off
-        reason = (g.meta.cancel_reason
-                  or ("연기" if g.status is Status.POSTPONED else "취소")) if gone else ""
+        reason = _reason(g) if gone else ""
+        place = _card_venue(g) if venue_ok else ""
+        # 경기장과 사유는 서로 다른 사실이다. 붙여 쓰면 "사직 폭염취소"가
+        # 한 낱말처럼 읽힌다 — 구분자를 넣는다.
+        meta = esc(place)
+        if gone:
+            meta += (" · " if place else "") + f'<span class="hook">{esc(reason)}</span>'
         rows.append(
             f'<div class="row{" off" if gone else ""}"><div class="mt">'
             f'{esc(team_name(g.away))}<span class="sep">vs</span>'
-            f'{esc(team_name(g.home))}</div>'
-            f'<div class="meta">{esc(_card_venue(g))}'
-            + (f' <span class="hook">{esc(reason)}</span>' if gone else "") +
+            f'{esc(team_name(g.home))}{esc(_dh(g))}</div>'
+            f'<div class="meta">{meta}'
             f'</div><div class="tm"><div class="k">{esc(kst)}</div>'
             + (f'<div class="l">현지 {esc(loc)}</div>' if loc else "") + "</div></div>")
 
     _lg = games[0].league if games else League.KBO
-    h1 = f'{day_word(games, now)} {esc(LEAGUE_LABEL.get(_lg, _lg.value))} <em>{len(playable)}경기</em>'
+    _when = day_word_span(games, now)
+    _name = esc(LEAGUE_LABEL.get(_lg, _lg.value))
     more = len(games) - len(shown)
     bits = []
-    if dropped:
-        _d = [f"{len(games)}경기 편성"]
-        if canceled:
-            _d.append(f"{len(canceled)}경기 취소")
-        if postponed:
-            _d.append(f"{len(postponed)}경기 연기")
-        bits.append(" · ".join(_d))
+    if not playable and dropped:
+        # **전 경기가 취소된 날 "0경기"라고 세지 않는다 (v1.11i).**
+        # 헤드라인이 "오늘 KBO 0경기", 부제가 "5경기 편성 · 5경기 취소"라
+        # 같은 말을 두 번 하면서 정작 '왜'는 헤드라인에 없었다.
+        h1 = f'{_when} {_name} <em>경기 없음</em>'
+        for label, n in _reason_counts(dropped):
+            bits.append(f"{label} {n}경기")
+    else:
+        # 카드와 캡션의 어순·낱말을 맞춘다 — 카드 "오늘 KBO 3경기",
+        # 캡션 "KBO 오늘 편성 3경기"로 갈려 한 화면에서 다르게 읽혔다.
+        h1 = f'{_when} {_name} 편성 <em>{len(playable)}경기</em>'
+        if dropped:
+            _d = [f"{len(games)}경기 편성"]
+            if canceled:
+                _d.append(f"{len(canceled)}경기 취소")
+            if postponed:
+                _d.append(f"{len(postponed)}경기 연기")
+            bits.append(" · ".join(_d))
     if more:
-        bits.append(f"아래에 나머지 {more}경기")
+        # 서술어 없는 명사구("아래에 나머지 3경기")는 안내가 아니다.
+        bits.append(f"나머지 {more}경기는 아래 글에")
     # 안내 문구는 **실제로 하는 일**만 적는다. 예전에는 아직 없는 기능
     # ("예측 투표는 경기 3시간 전")을 안내하고 있었다 — 카드가 거짓말을 하면
     # 카드 전체를 못 믿게 된다.
@@ -461,9 +573,11 @@ def render_morning(games: list[Game], day: str,
     # 찍혀 있었다(헤드라인 아래와 푸터). 쓸 말이 없으면 비운다.
     sub = " · ".join(bits)
     lg = games[0].league if games else League.KBO
-    lgname = LEAGUE_LABEL.get(lg, lg.value)
     _dtk, _dtl = kst_day_label(games, day)
-    body = (_hdr(*LEAGUE_COLORS[lg], lgname, "모닝 브리핑",
+    # **배지 이름을 발송 순간에 정한다 (v1.11i).** 유예가 6시간이라 최악의 날엔
+    # 낮에 나가는데, 그때까지 "모닝 브리핑"이라 부르면 카드가 스스로 거짓말을 한다.
+    body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games),
+                 morning_label(now or datetime.now(timezone.utc)),
                  _dtk, h1, sub, league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
             f'<div class="foot"><div class="tk">{esc(start_alert_lead_text())}</div>'
@@ -476,8 +590,17 @@ def render_morning(games: list[Game], day: str,
 # "에인…", "그레이트…"로 잘려 나갔다 — 잘린 이름은 정보가 아니다.
 # **자리에 안 들어가면 카드에서 빼고 캡션에 남긴다.** 지어내서 줄이지 않는다.
 # 값은 짐작이 아니라 **실렌더로 맞췄다.** 게이트(assert_not_clipped)가 판정한다.
-CARD_VENUE_NAME_BUDGET = 8         # 양 팀 표시명 글자 수 합
-CARD_VENUE_MAX_LEN = 5             # 경기장 표시명 글자 수
+# **자리는 리그마다 다르다 (v1.11i).** 해외 리그 행은 오른쪽 시각 칸에
+# "현지 토 13:05" 한 줄이 더 붙어 가운데 칸이 그만큼 좁아진다.
+# 실측(모닝 카드 .meta 실폭): 병기가 있는 MLB는 116~235px, 없는 NPB는 245~324px.
+# 한 값으로 묶으면 국내·NPB 카드가 들어갈 수 있는 경기장까지 통째로 잃는다
+# (NPB 8/1: 여섯 행 전부 잘림 없이 들어가는데 예산 때문에 여섯 개 다 빠졌다).
+# 값은 짐작이 아니라 전 리그·전 날짜 실렌더로 **경계를 재서** 잡았다
+# (203행을 다 그려 .meta가 …으로 잘리는 조합을 찾고, 잘림이 하나도 없는 최대 예산).
+CARD_VENUE_BUDGET_LOCAL = (8, 5)    # 현지 병기가 있는 리그: (팀명 합, 경기장) 글자 수
+CARD_VENUE_BUDGET_PLAIN = (8, 8)    # 병기가 없는 리그(국내·NPB)
+# 옛 이름은 남겨 둔다 — 바깥에서 참조하는 검증이 있다.
+CARD_VENUE_NAME_BUDGET, CARD_VENUE_MAX_LEN = CARD_VENUE_BUDGET_LOCAL
 
 
 def _card_venue(g: Game) -> str:
@@ -485,10 +608,47 @@ def _card_venue(g: Game) -> str:
     v = venue_name(g.venue)
     if not v:
         return ""
-    names = len(team_name(g.away)) + len(team_name(g.home))
-    if names > CARD_VENUE_NAME_BUDGET or len(v) > CARD_VENUE_MAX_LEN:
+    name_max, venue_max = (CARD_VENUE_BUDGET_LOCAL if needs_local_time(g)
+                           else CARD_VENUE_BUDGET_PLAIN)
+    # 차전 표시도 같은 자리를 먹는다. 예산에서 빼놓으면 더블헤더 행에서
+    # 경기장이 "…"으로 잘린다(잘린 이름은 정보가 아니다).
+    names = len(team_name(g.away)) + len(team_name(g.home)) + len(_dh(g))
+    if names > name_max or len(v) > venue_max:
         return ""
     return v
+
+
+def _venues_fit(shown: list[Game]) -> bool:
+    """경기장을 **전 행에** 넣을 수 있는가.
+
+    **판정은 행이 아니라 카드 단위로 한다 (v1.11i).**
+    예산을 행마다 따로 보니 MLB 모닝 카드 8행 중 1행에만 경기장이 들어갔다.
+    한 장 안에서 어떤 줄엔 있고 어떤 줄엔 없으면, 읽는 사람은 그 차이를
+    '정보가 없는 경기'로 오해한다. 전부 못 넣으면 전부 빼고 캡션에 남긴다 —
+    캡션에는 자리가 넉넉해서 하나도 잃지 않는다.
+    """
+    have = [g for g in shown if venue_name(g.venue)]
+    return bool(have) and all(_card_venue(g) for g in have)
+
+
+def _reason_counts(games: list[Game]) -> list[tuple[str, int]]:
+    """(사유, 건수) 목록. 많은 순. 전 경기 취소일 부제에 쓴다."""
+    c: dict[str, int] = {}
+    for g in games:
+        r = _reason(g)
+        c[r] = c.get(r, 0) + 1
+    return sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def spans_two_kst_days(games: list[Game]) -> bool:
+    """이 목록이 한국 날짜 둘 이상에 걸치는가.
+
+    `format_kickoff`는 KST와 현지 날짜가 다를 때만 요일을 붙인다. 그래서 유럽
+    주말 슬레이트에서는 **같은 목록 안에서 어떤 줄만 요일이 있었다** —
+    요일이 붙었다 말았다 하면 요일 자체가 신호가 아니라 잡음이 된다.
+    한국 날짜가 둘 이상이면 전 행에 요일을 붙여 어느 날 경기인지 줄마다 밝힌다.
+    """
+    return len({g.start_kst.date() for g in games}) > 1
 
 
 def _dh(g: Game) -> str:
@@ -502,8 +662,27 @@ def _dh(g: Game) -> str:
     return f" ({n}차전)" if n and n > 1 else ""
 
 
+def _day_word_at(first, now_kst) -> str:
+    """한 시각(KST)에 대한 '오늘/내일 아침/…' 낱말. day_word·day_word_span이 함께 쓴다."""
+    days = (first.date() - now_kst.date()).days
+    if days < 0:
+        # 지난 날짜다. '오늘'이라 하면 하루 묵은 카드가 오늘 것으로 보인다.
+        return f"{first.month}.{first.day} {_WD[first.weekday()]}"
+    if days == 0:
+        return "오늘"
+    if days == 1:
+        if first.hour < 6:
+            return "내일 새벽"
+        return "내일 아침" if first.hour < 12 else "내일"
+    return f"{first.month}.{first.day} {_WD[first.weekday()]}"
+
+
 def day_word(games: list[Game], now: datetime | None = None) -> str:
-    """'오늘 / 내일 아침 / 내일 새벽 / 9월 3일' — **보내는 순간** 기준으로 고른다.
+    """'오늘 / 내일 아침 / 내일 새벽 / 9.3 수' — **보내는 순간** 기준으로 고른다.
+
+    **날짜 표기를 한 가지로 통일한다 (v1.11i).** 헤더는 `8.30 일`, 헤드라인은
+    `9월 3일`, 병기는 `현지 8.29`라 한 카드에 날짜 표기가 세 가지였다.
+    기준은 헤더와 같은 `M.D 요일`이다.
 
     **'오늘'을 문자열로 박아두면 리그마다 다른 방식으로 거짓말한다 (v1.11f).**
       · 시작 알림: 한국시각 밤 10시에 나가는데 첫 경기는 다음날 새벽 1시였다.
@@ -514,18 +693,28 @@ def day_word(games: list[Game], now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     if not games:
         return "오늘"
-    first = min(g.start_utc for g in games).astimezone(KST)
-    days = (first.date() - now.astimezone(KST).date()).days
-    if days < 0:
-        # 지난 날짜다. '오늘'이라 하면 하루 묵은 카드가 오늘 것으로 보인다.
-        return f"{first.month}월 {first.day}일"
-    if days == 0:
+    return _day_word_at(min(g.start_utc for g in games).astimezone(KST),
+                        now.astimezone(KST))
+
+
+def day_word_span(games: list[Game], now: datetime | None = None) -> str:
+    """한국 날짜 둘에 걸친 슬레이트를 한 낱말로 부르지 않는다 (v1.11i).
+
+    유럽 주말 슬레이트는 한국시각 토요일 밤과 일요일 새벽에 걸쳐 열린다.
+    그 목록 전체를 "오늘"이라 부르면 절반이 틀린 말이 된다. 걸치면 `오늘~내일`처럼
+    양 끝을 함께 적는다 — 목록의 각 줄에는 `spans_two_kst_days()`가 요일을 붙인다.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not games:
         return "오늘"
-    if days == 1:
-        if first.hour < 6:
-            return "내일 새벽"
-        return "내일 아침" if first.hour < 12 else "내일"
-    return f"{first.month}월 {first.day}일"
+    nk = now.astimezone(KST)
+    first = min(g.start_utc for g in games).astimezone(KST)
+    last = max(g.start_utc for g in games).astimezone(KST)
+    a = _day_word_at(first, nk)
+    if first.date() == last.date():
+        return a
+    b = _day_word_at(last, nk)
+    return a if a == b else f"{a}~{b}"
 
 
 def _name_cls(name: str) -> str:
@@ -558,16 +747,37 @@ def render_result(games: list[Game], day: str,
     """
     done = [g for g in games if g.status in SETTLED_FOR_RESULT]
     pending = [g for g in games if g.status not in SETTLED_FOR_RESULT]
+    # **점수 없는 FINAL은 '종료'로 세지 않는다.** 소스가 Final인데 점수를 빼면
+    # 그 경기는 행에도 없고 미확정에도 없어 카드에서 통째로 사라졌다 —
+    # 헤드라인만 "N경기 종료"로 남아 숫자와 본문이 어긋났다.
+    fin = [g for g in games if g.status is Status.FINAL and g.score]
+    canceled = [g for g in games if g.status is Status.CANCELED]
+    # **결과가 하나도 없으면 결과 카드를 만들지 않는다 (v1.11i).**
+    # 취소 1건만 있고 나머지가 진행 중이면 "MLB 전 경기 결과 0경기" 아래
+    # 16줄이 전부 "결과 미확정"인 카드가 만들어졌다 — 그 카드는 아무 사실도
+    # 전하지 않으면서 '결과가 나왔다'고 말한다. 만들지 않는 것이 옳다.
+    if not fin and not canceled:
+        raise GateError(
+            "결과 카드: 종결 0건 · 취소 0건 — 아직 전할 결과가 없습니다 "
+            f"({games[0].league.value if games else '?'} {day}, 미확정 {len(pending)}건)")
     shown = sorted(done, key=lambda x: x.start_utc)[:top_n]
     rows = []
     for g in shown:
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
+        # **더블헤더 차전은 결과 카드 본문에도 붙인다 (v1.11i).**
+        # `_dh()`가 캡션에서만 쓰여, 같은 대진이 카드에 두 줄로 나란히 찍혔다
+        # (v1.11h가 고쳤다고 한 사고가 카드 본문에는 그대로 남아 있었다).
+        # **다만 팀명 칸에 붙이면 안 된다** — 이름 칸은 nowrap 1fr이라 글자가
+        # 늘어난 만큼 격자가 밀려 오른쪽 상태 칸이 카드 밖으로 나갔다(실측 59px).
+        # 행에 대한 주석은 상태 칸(.st)의 일이다.
+        dh = _dh(g).strip(" ()")
+        note = f'<span class="dhq">{esc(dh)}</span>' if dh else ""
         if g.status is Status.CANCELED:
             rows.append(f'<div class="res cx"><div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
                         f'<div class="s1">—</div>'
                         f'<div class="s2">—</div>'
                         f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
-                        f'<div class="st">{esc(g.meta.cancel_reason or "취소")}</div></div>')
+                        f'<div class="st">{note}{esc(_reason(g))}</div></div>')
         elif g.status is Status.FINAL and g.score:
             draw = g.is_draw()
             cls = "dr" if draw else ("w1" if g.score.away > g.score.home else "w2")
@@ -576,12 +786,7 @@ def render_result(games: list[Game], day: str,
                         f'<div class="n1{_name_cls(team_name(g.away))}">{a}</div>'
                         f'<div class="s1">{g.score.away}</div><div class="s2">{g.score.home}</div>'
                         f'<div class="n2{_name_cls(team_name(g.home))}">{h}</div>'
-                        f'<div class="st">{st}</div></div>')
-    # **점수 없는 FINAL은 '종료'로 세지 않는다.** 소스가 Final인데 점수를 빼면
-    # 그 경기는 행에도 없고 미확정에도 없어 카드에서 통째로 사라졌다 —
-    # 헤드라인만 "N경기 종료"로 남아 숫자와 본문이 어긋났다.
-    fin = [g for g in games if g.status is Status.FINAL and g.score]
-    canceled = [g for g in games if g.status is Status.CANCELED]
+                        f'<div class="st">{note}{st}</div></div>')
     lg = games[0].league if games else League.KBO
     lgname = LEAGUE_LABEL.get(lg, lg.value)
     # **실제로 하지 않는 일을 안내하지 않는다 (v1.11h).**
@@ -597,18 +802,35 @@ def render_result(games: list[Game], day: str,
     _dtk, _dtl = kst_day_label(games, day)
     _bits = []
     if len(done) > len(shown):
-        _bits.append(f"아래에 나머지 {len(done) - len(shown)}경기")
+        _bits.append(f"나머지 {len(done) - len(shown)}경기는 아래 글에")
     if canceled:
         # 모닝 카드는 취소를 밝히는데 결과 카드는 안 밝혔다 —
         # "3경기 종료"인데 본문이 5행이면 읽는 사람이 센 수와 안 맞는다.
         _bits.append(f"{len(canceled)}경기 취소")
-    if pending:
+    # **'결과 미확정'은 상태 이름이 아니다 (v1.11i).**
+    # SETTLED_FOR_RESULT가 FINAL·CANCELED뿐이라 연기·서스펜디드가 전부
+    # "결과 미확정"으로 뭉뚱그려졌다. 연기는 결과를 기다리는 상태가 아니라
+    # 그날 열리지 않은 것이고, 서스펜디드는 속개가 예정된 것이다.
+    _post = [g for g in pending if g.status is Status.POSTPONED]
+    _susp = [g for g in pending if g.status is Status.SUSPENDED]
+    _unk = [g for g in pending
+            if g.status not in (Status.POSTPONED, Status.SUSPENDED)]
+    if _post:
+        _bits.append(f"{len(_post)}경기 연기")
+    if _susp:
+        _bits.append(f"{len(_susp)}경기 서스펜디드(속개 예정)")
+    if _unk:
         # 빠진 경기를 숨기지 않는다. 숨기면 '전 경기 결과'가 거짓이 된다.
-        _bits.append(f"{len(pending)}경기는 아직 결과 미확정")
-    body = (_hdr(*LEAGUE_COLORS[lg], lgname, "경기 결과",
-                 _dtk,
-                 (f'{esc(lgname)} <em>전 경기 취소</em>' if (not fin and canceled)
-                  else f'{esc(lgname)} <em>{len(fin)}경기</em> 종료'),
+        _bits.append(f"{len(_unk)}경기는 아직 결과 미확정")
+    if not fin and canceled:
+        # 전 경기가 취소된 날인지, 취소만 확정되고 나머지는 진행 중인지는
+        # 완전히 다른 사실이다. 진행 중이 남았는데 '전 경기 취소'라 하면 거짓이다.
+        _h1 = (f'{esc(lgname)} <em>전 경기 취소</em>' if not pending
+               else f'{esc(lgname)} <em>취소 {len(canceled)}경기</em> · 나머지 진행 중')
+    else:
+        _h1 = f'{esc(lgname)} <em>{len(fin)}경기</em> 종료'
+    body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games), "경기 결과",
+                 _dtk, _h1,
                  " · ".join(_bits),
                  league=lg, dt_local=_dtl) +
             f'<div class="body">{"".join(rows)}</div>'
@@ -665,17 +887,27 @@ LEAGUE_EMOJI = {
 }
 
 
-def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
+def render_start_alert(gs: list[Game], now: datetime | None = None,
+                       all_games: list[Game] | None = None) -> str:
     """오늘 그 리그의 **경기 시간표 전체**를 한 메시지로 (v1.11c).
 
     전에는 같은 시각 경기만 묶어 시각마다 따로 보냈고, 실측 하루 26건이 나왔다.
     이제 하루 한 번이므로 이 한 통에 그날 정보가 다 들어가야 한다 —
     시각별로 묶어 보여주고, 첫 경기까지 남은 시간을 계산해 붙인다.
+
+    `gs`는 **아직 시작 안 한 경기**만 들어온다(발송 경로가 SCHEDULED만 넘긴다).
+    그래서 이 수를 "오늘 N경기"라고 부르면 이미 시작한 경기가 빠진 수가
+    그날 편성 수로 둔갑한다(실측: 편성 5경기인데 "오늘 KBO 3경기").
+    문형을 '곧 시작하는 수'로 바꾸고, 그날 전체를 알 수 있으면(`all_games`)
+    '5경기 중 3경기'로 밝힌다.
     """
     now = now or datetime.now(timezone.utc)
     lg = gs[0].league
     ordered = sorted(gs, key=lambda x: x.start_utc)
     first = ordered[0].start_utc
+    # 목록이 한국 날짜 둘에 걸치면 **전 줄에** 요일을 붙인다 — 어떤 줄만 요일이
+    # 있으면 요일이 신호가 아니라 잡음이 된다(유럽 주말 슬레이트).
+    _wd = True if spans_two_kst_days(ordered) else None
 
     # 같은 시각 경기는 한 줄 아래 모은다. 15경기가 15줄이면 읽히지 않는다.
     # **그룹 키에 요일을 포함한다 (v1.11h).** `%H:%M`만 쓰면 한국 날짜가
@@ -683,14 +915,15 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
     # 알림만 "01:30"이라 같은 사실을 다르게 말한다(유럽 주말 슬레이트).
     by_time: dict[str, list[Game]] = defaultdict(list)
     for g in ordered:
-        _k, _ = format_kickoff(g)
+        _k, _ = format_kickoff(g, with_weekday=_wd)
         by_time[_k].append(g)
 
     lines: list[str] = []
     for t, group in by_time.items():
         lines.append(f"◆ {esc(t)}")
         for g in group:
-            row = f"  {esc(team_name(g.away))} vs {esc(team_name(g.home))}"
+            row = (f"  {esc(team_name(g.away))} vs "
+                   f"{esc(team_name(g.home))}{esc(_dh(g))}")
             if g.venue:
                 row += f" · {esc(venue_name(g.venue))}"
             lines.append(row)
@@ -704,17 +937,22 @@ def render_start_alert(gs: list[Game], now: datetime | None = None) -> str:
     else:
         when = "잠시 뒤"
 
-    # 현지 시간 병기가 필요한 리그(해외)는 첫 경기 기준으로 한 줄 덧붙인다
-    _, loc = format_kickoff(ordered[0])
-    first_kst = ordered[0].start_kst
-    tail = (f"\n첫 경기 {first_kst:%H:%M} 시작 ({esc(when)})"
+    # 현지 시간 병기가 필요한 리그(해외)는 첫 경기 기준으로 한 줄 덧붙인다.
+    # **주 표기(KST)에도 요일을 붙인다 (v1.11i).** 전에는 꼬리말만 `%H:%M`을
+    # 직접 찍어 "첫 경기 03:10 시작 · 현지 금 14:10"이 됐다 —
+    # 요일이 붙은 현지 시각만 보이고 정작 우리 시각은 어느 날인지 알 수 없었다.
+    kst_first, loc = format_kickoff(ordered[0], with_weekday=_wd)
+    tail = (f"\n첫 경기 {esc(kst_first)} 시작 ({esc(when)})"
             + (f" · 현지 {esc(loc)}" if loc else ""))
 
-    head_when = day_word(ordered, now)
+    head_when = day_word_span(ordered, now)
 
     emoji = LEAGUE_EMOJI.get(lg, "🏟")
     label = LEAGUE_LABEL.get(lg, lg.value)
-    head = f"{emoji} <b>{head_when} {esc(label)} {len(gs)}경기</b>\n"
+    _total = len(all_games) if all_games else 0
+    _count = (f"{_total}경기 중 {len(gs)}경기 곧 시작" if _total > len(gs)
+              else f"{len(gs)}경기 곧 시작")
+    head = f"{emoji} <b>{head_when} {esc(label)} {_count}</b>\n"
     # 경기가 많으면(MLB 15경기) 접고펼치기로 채널 스크롤을 아낀다
     return head + quote(lines, expandable=len(lines) > QUOTE_EXPANDABLE_THRESHOLD_LINES) + tail
 
@@ -741,7 +979,25 @@ from contract import (TEAM_NAMES, WLD, LeaderEntry, RecordBook, Standing,  # noq
                       StreakKind, assert_recordbook)
 
 # 순위표를 9열로 넓히기 위한 변형. 최소 폰트 28px 규칙은 지킨다.
-EXTRA_CSS = ""   # v3.0에서 카드 CSS로 흡수됨
+#
+# v1.11i에서 두 가지가 되살아났다. 둘 다 **카드 CSS 파일이 아니라 여기**에 둔다 —
+# 렌더가 만드는 마크업과 짝이 맞아야 하는 규칙이라 같은 파일에 있어야 안 어긋난다.
+#
+#  ① 점수 구분자 — 카드는 `지바롯데 5 3 니혼햄`처럼 구분자 없이 두 숫자를 붙여
+#     내보내 어느 쪽이 몇 점인지 한눈에 안 잡혔다(같은 사실을 캡션은 `1 : 15`로
+#     썼다). 취소 행(`— —`)에는 붙이지 않는다.
+#  ② 상대전적 막대의 무승부 몫 — 막대를 두 칸(승/무)으로 나누려면 가로로 쌓여야 한다.
+EXTRA_CSS = """
+.res:not(.cx) .s1{text-align:right;position:relative;padding-right:20px;white-space:nowrap;}
+.res:not(.cx) .s1::after{content:":";position:absolute;top:0;left:100%;
+  transform:translateX(-50%);color:var(--dim);font-weight:800;}
+.res:not(.cx) .s2{text-align:left;padding-left:20px;white-space:nowrap;}
+.res .st .dhq{display:block;font-size:28px;font-weight:800;color:var(--dim);
+  line-height:1.15;}
+.brow .bar{display:flex;}
+.brow .fill{flex:0 0 auto;border-radius:18px 0 0 18px;}
+.brow .fdraw{flex:0 0 auto;height:100%;background:#c8d2e0;}
+"""
 
 
 def _dt(day: str) -> str:
@@ -765,9 +1021,27 @@ def _wld(w: WLD, three: bool | None = None) -> str:
 
 
 def _streak(s: Standing) -> str:
+    """연속 기록 표기. **'6승'이 아니라 '6연승'이다 (v1.11i).**
+
+    전에는 `f"{len}{승/패}"`라 6연승이 "6승"으로 찍혔다. 같은 캡션에 시즌 승수
+    ("81-59")가 나란히 있어 어느 쪽이 연속인지 구분되지 않았고, 같은 값을
+    카드 골드 패널은 "6연승"이라 써서 한 시스템이 한 사실을 두 표기로 말했다.
+    """
     if s.streak_kind is StreakKind.NONE or not s.streak_len:
         return "—"
-    return f"{s.streak_len}{ {'W': '승', 'L': '패', 'D': '무'}[s.streak_kind.value] }"
+    return f"{s.streak_len}연{ {'W': '승', 'L': '패', 'D': '무'}[s.streak_kind.value] }"
+
+
+def _tn(s: Standing) -> str:
+    """순위표 한 행의 팀 표시명."""
+    return TEAM_NAMES[s.league].get(s.team_code, s.team_code)
+
+
+def _longest(cands: list[Standing]) -> tuple[Standing, bool]:
+    """(최댓값 하나, 동률이 있는가). `max()`는 동률 중 첫 번째를 조용히 고른다."""
+    best = max(c.streak_len for c in cands)
+    tied = [c for c in cands if c.streak_len == best]
+    return tied[0], len(tied) > 1
 
 
 def record_headline(rb: RecordBook) -> tuple[str, str]:
@@ -775,38 +1049,73 @@ def record_headline(rb: RecordBook) -> tuple[str, str]:
 
     후보를 우선순위대로 훑어 첫 번째로 성립하는 것을 쓴다.
     성립하는 게 없으면 선두-2위 승차라는 항상 성립하는 문장으로 떨어진다.
+
+    **단정("리그 최장"·"리그 최고 페이스")은 유일할 때만 한다 (v1.11i).**
+    `max()`도 `for ... : return`도 동률을 조용히 하나로 줄여버려, 같은 표에
+    똑같은 9연승 팀이 또 있는데도 한 팀만 "리그 최장"이라 불렀다.
     """
     order = sorted(rb.standings, key=lambda x: x.rank)
     top, second = order[0], order[1]
 
     # 1) 5연승 이상 / 5연패 이상
-    hot = [s for s in order if s.streak_kind is StreakKind.WIN and s.streak_len >= 5]
-    if hot:
-        s = max(hot, key=lambda x: x.streak_len)
-        return ("연승", f"<b>{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</b> {s.streak_len}연승 "
-                        f"— 리그 최장 (현재 {s.rank}위)")
-    cold = [s for s in order if s.streak_kind is StreakKind.LOSS and s.streak_len >= 5]
-    if cold:
-        s = max(cold, key=lambda x: x.streak_len)
-        return ("연패", f"<b>{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</b> {s.streak_len}연패 "
-                        f"— 리그 최장 (현재 {s.rank}위)")
+    for kind, word, label in ((StreakKind.WIN, "연승", "연승"),
+                              (StreakKind.LOSS, "연패", "연패")):
+        cands = [s for s in order if s.streak_kind is kind and s.streak_len >= 5]
+        if not cands:
+            continue
+        s, tied = _longest(cands)
+        # 동률이면 '리그 최장'이라 단정하지 않는다 — 공동임을 밝힌다.
+        note = "— 리그 공동 최장" if tied else "— 리그 최장"
+        return (label, f"<b>{esc(_tn(s))}</b> {s.streak_len}{word} "
+                       f"{note} (현재 {s.rank}위)")
 
     # 2) 최근 10경기 8승 이상 / 8패 이상
-    for s in order:
-        if s.last10 and s.last10.win >= 8:
-            return ("최근 10경기",
-                    f"<b>{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</b> 최근 10경기 "
-                    f"{s.last10.win}승{s.last10.loss}패 — 리그 최고 페이스")
-    for s in order:
-        if s.last10 and s.last10.loss >= 8:
-            return ("최근 10경기",
-                    f"<b>{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</b> 최근 10경기 "
-                    f"{s.last10.win}승{s.last10.loss}패")
+    #    **순위 순서로 처음 만난 팀이 아니라 최댓값을 뽑는다.** 전에는 같은 표에
+    #    9승1패가 있어도 순위가 앞선 8승2패 팀을 "리그 최고 페이스"라 불렀다.
+    hot = [s for s in order if s.last10 and s.last10.win >= 8]
+    if hot:
+        best = max(s.last10.win for s in hot)
+        tied = [s for s in hot if s.last10.win == best]
+        s = tied[0]
+        note = " — 리그 공동 최고 페이스" if len(tied) > 1 else " — 리그 최고 페이스"
+        return ("최근 10경기",
+                f"<b>{esc(_tn(s))}</b> 최근 10경기 "
+                f"{s.last10.win}승 {s.last10.loss}패{note}")
+    cold = [s for s in order if s.last10 and s.last10.loss >= 8]
+    if cold:
+        s = max(cold, key=lambda x: x.last10.loss)
+        return ("최근 10경기",
+                f"<b>{esc(_tn(s))}</b> 최근 10경기 "
+                f"{s.last10.win}승 {s.last10.loss}패")
 
     # 3) 항상 성립 — 선두-2위 승차
+    #    **승차 0.0은 '앞선 선두'가 아니라 공동 선두다 (v1.11i).**
+    #    또 팀명 뒤에 조사를 박아두면 받침 있는 이름이 전부 비문이 된다
+    #    ("보스턴가 2위 …", "전북가", "인천가"). 조사는 josa()가 고른다.
+    n1, n2 = _tn(top), _tn(second)
+    if _gb_zero(second.games_behind):
+        # 순위 순서로 승차 0이 이어지는 데까지가 공동 선두다.
+        co = [top]
+        for s in order[1:]:
+            if not _gb_zero(s.games_behind):
+                break
+            co.append(s)
+        names = "·".join(esc(_tn(s)) for s in co)
+        return ("선두 경쟁", f"<b>{names}</b> 공동 선두 (승차 없음)")
     return ("선두 경쟁",
-            f"<b>{esc(TEAM_NAMES[rb.league].get(top.team_code, top.team_code))}</b>가 2위 "
-            f"{esc(TEAM_NAMES[rb.league].get(second.team_code, second.team_code))}에 {second.games_behind}경기 앞선 선두")
+            f"선두 <b>{esc(n1)}</b> · 2위 {esc(n2)}{josa(n2, '과', '와')} "
+            f"{esc(second.games_behind)}경기 차")
+
+
+def _gb_zero(gb: str) -> bool:
+    """승차가 0인가. 소스는 '0.0'·'-'·''처럼 여러 표기로 준다."""
+    s = str(gb).strip()
+    if s in ("", "-", "—"):
+        return True
+    try:
+        return float(s) == 0.0
+    except ValueError:
+        return False
 
 
 def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
@@ -847,23 +1156,42 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     label, line = record_headline(rb)
     lgname = LEAGUE_LABEL.get(rb.league, rb.league.value)
     sub = f"전체 {total}팀 중 상위 {len(order)}팀" if len(order) < total else ""
+    # 승차 0.0을 "0.0경기 차"라 쓰면 차이가 있는 것처럼 읽힌다. 공동 선두다.
+    h1 = ('1·2위 <em>승차 없음</em>' if _gb_zero(gap)
+          else f'1·2위 <em>{esc(gap)}경기</em> 차')
     body = (_hdr(*LEAGUE_COLORS[rb.league], lgname, "팀 순위", _dt(day),
-                 f'1·2위 <em>{esc(gap)}경기</em> 차', sub, league=rb.league) +
+                 h1, sub, league=rb.league) +
             f'<div class="body"><table class="stb">{head}{"".join(rows)}</table></div>'
             f'<div class="rec"><div class="l">{esc(label)}</div>'
             f'<div class="t">{line}</div></div>'
-            f'<div class="foot"><div class="tk">최근10 = {"승-패-무" if l10_draw else "승-패"} · {esc(lgname)} 공식기록</div>'
+            f'<div class="foot"><div class="tk">최근10 = {"승-패-무" if l10_draw else "승-패"} · {esc(lgname)} 공식 기록</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
 
 
 # 리더보드 세트 — 요일로 돌린다. 부문명은 Top5 페이지의 표기를 그대로 쓴다.
+# **세트 이름에 '부문'을 붙였다 말았다 하지 않는다 (v1.11i).**
+# 넷 중 둘만 "…부문"이라 같은 자리에 들어가는 이름이 두 계열로 갈렸다.
 LEADER_SETS: list[tuple[str, list[str]]] = [
     ("타격 부문", ["타율", "홈런", "타점", "도루"]),
     ("투수 부문", ["평균자책점", "승리", "탈삼진", "세이브"]),
-    ("출루·장타", ["출루율", "장타율", "OPS", "안타"]),
-    ("제구·이닝", ["WHIP", "QS", "이닝", "피안타율"]),
+    ("출루·장타 부문", ["출루율", "장타율", "OPS", "안타"]),
+    ("제구·이닝 부문", ["WHIP", "QS", "이닝", "피안타율"]),
 ]
+
+# 야구가 아닌 리그의 세트 이름. **제목은 부문명을 이어 붙인 것이 아니라 이름이어야 한다.**
+# "득점 · 리바운드 · 어시스트 · 3점"은 제목 자리에 들어가면 제목으로 안 읽히고
+# 카드 폭을 넘긴다(h1은 한 줄짜리 자리다). 부문이 무엇인지는 바로 아래 4개
+# 상자의 머리글이 이미 말하고 있으므로, 제목은 묶음의 이름만 말하면 된다.
+_LEADER_SET_NAMES: dict[League, list[str]] = {
+    League.KBL: ["공격 부문", "수비 부문"],
+    League.VLEAGUE_M: ["공격 부문", "수비 부문"],
+    League.VLEAGUE_W: ["공격 부문", "수비 부문"],
+    League.KL1: ["공격 부문", "수비 부문"],
+    League.LCK: ["개인 지표", "교전 지표"],
+    League.INTL_LOL: ["개인 지표", "교전 지표"],
+}
+LEADER_SET_FALLBACK = "주요 부문"
 
 
 def leader_set(rb: "RecordBook", set_idx: int) -> tuple[str, list[str]]:
@@ -876,24 +1204,55 @@ def leader_set(rb: "RecordBook", set_idx: int) -> tuple[str, list[str]]:
     "타격 부문 / 투수 부문 / 출루·장타 / 제구·이닝" 제목만 바꿔 달고 나갔다.
     요일 로테이션이 같은 카드를 네 번 내면서 제목으로 거짓말을 하는 셈이다.
     """
-    want_title, wanted = LEADER_SETS[set_idx % len(LEADER_SETS)]
-    cats = [c for c in wanted if c in rb.leaders]
-    if len(cats) >= 4:
-        return want_title, cats[:4]
+    sets = leader_sets_for(rb)
+    if not sets:
+        return LEADER_SET_FALLBACK, []
+    return sets[set_idx % len(sets)]
 
-    # 이 리그에는 그 세트가 없다. 가진 부문을 **세트 번호로 나눠** 돌린다 —
-    # 같은 카드를 제목만 바꿔 네 번 내지 않기 위해서다.
-    have = [c for c in rb.leaders if c not in cats]
-    pool = cats + have
-    if not pool:
-        return want_title, []
-    n = len(LEADER_SETS)
-    if len(pool) <= 4:
-        # 부문이 4개 이하면 로테이션할 것이 없다. 한 세트만 쓰고 제목도 그대로.
-        return " · ".join(pool[:4]), pool[:4]
-    start = (set_idx % n) * 4 % len(pool)
-    picked = [pool[(start + i) % len(pool)] for i in range(4)]
-    return " · ".join(picked), picked
+
+def leader_sets_for(rb: "RecordBook") -> list[tuple[str, list[str]]]:
+    """이 리그에서 **실제로 만들 수 있는** (제목, 부문 4개) 목록.
+
+    **이름과 내용을 함께 정한다 (v1.11i).** 전에는 세트 번호로 부문 목록을
+    잘라 쓰면서 제목은 따로 골랐다. 그래서 두 가지가 어긋났다:
+
+      · 부문 수가 4의 배수가 아니면 목록이 되감겨(`pool[(start+i) % len]`)
+        `수비 부문` 칸에 득점·리바운드 같은 공격 부문이 섞였다 — 제목이 거짓이 된다.
+      · KBO처럼 부문이 정확히 8개면 세트 0과 세트 2의 **내용이 완전히 같은데**
+        제목만 `타격 부문` / `주요 부문`으로 갈렸다. 요일 로테이션이 같은 카드를
+        두 번 내보내는 셈이다.
+
+    그래서 "만들 수 있는 만큼만 만든다". 세트 수를 4로 고정하지 않고,
+    한 번 쓴 부문은 다시 쓰지 않으며, 4개를 못 채우는 나머지는 세트로 만들지 않는다.
+    """
+    out: list[tuple[str, list[str]]] = []
+    used: set[str] = set()
+
+    # 1) 이름 붙은 세트(야구) 중 요구 부문이 네 개 다 있는 것만.
+    for title, wanted in LEADER_SETS:
+        cats = [c for c in wanted if c in rb.leaders and c not in used]
+        if len(cats) >= 4:
+            out.append((title, cats[:4]))
+            used.update(cats[:4])
+
+    # 2) 남은 부문을 그 리그의 세트 이름으로 묶는다. 이름이 있는 만큼만 만든다 —
+    #    이름 없는 묶음에 공용 이름을 붙여 늘리면 1)과 같은 내용이 다시 나올 수 있다.
+    rest = [c for c in rb.leaders if c not in used]
+    names = _LEADER_SET_NAMES.get(rb.league) or []
+    for i, name in enumerate(names):
+        chunk = rest[i * 4:i * 4 + 4]
+        if len(chunk) < 4:
+            break
+        out.append((name, chunk))
+        used.update(chunk)
+
+    if out:
+        return out
+
+    # 3) 세트를 하나도 못 만들었다 — 부문이 4개 미만이거나 이름표가 없는 리그다.
+    #    가진 것을 한 묶음으로 내되 제목은 아무것도 주장하지 않는 공용 이름을 쓴다.
+    pool = [c for c in rb.leaders]
+    return [(LEADER_SET_FALLBACK, pool[:4])] if pool else []
 
 
 def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -> str:
@@ -912,11 +1271,12 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
         rows = []
         for e in rb.leaders[c][:top_n]:
             r1 = " r1" if e.rank == 1 else ""
-            # 이름+팀이 길면 팀은 약칭으로. MLB는 선수 이름이 영문이라 한글 팀명까지
-            # 붙이면 자리가 없어 '애스…'처럼 잘린다 — 잘린 팀명은 정보가 아니다.
-            tn = TEAM_NAMES[rb.league].get(e.team_code, e.team_code)
-            if len(e.name) + len(tn) > 9:
-                tn = e.team_code
+            # **한 표 안에서 팀 표기를 한 가지로 통일한다 (v1.11i).**
+            # 전에는 이름 길이에 따라 한글 팀명·팀 코드·표기 없음 세 가지가
+            # 한 카드에 섞였다(실측 20행 중 세 종류). 읽는 사람은 그 차이를
+            # 뜻으로 읽는다 — 실제로는 자리 계산 결과일 뿐인데도.
+            # 자리가 확실한 팀 코드로 전 행을 맞추고, 꼬리말에 약칭임을 밝힌다.
+            tn = e.team_code
             if len(e.name) > 11:
                 tn = ""              # 이름만으로 자리가 찬다. 잘린 팀명보다 없는 편이 낫다
             rows.append(
@@ -934,7 +1294,8 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
                  # 코드 어디에도 규정 미달 포함 여부를 확인하는 로직이 없다.
                  f"{esc(lgname)} 공식 부문 순위", league=rb.league) +
             f'<div class="body"><div class="lb">{"".join(boxes)}</div></div>'
-            f'<div class="foot"><div class="tk">{esc(lgname)} 공식기록 · {esc(_dt(day))} 기준</div>'
+            f'<div class="foot"><div class="tk">팀은 약칭 표기 · {esc(lgname)} 공식 기록 · '
+            f'{esc(_dt(day))} 기준</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
 
@@ -954,16 +1315,26 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     # **무승부를 분모에서 빼면 막대가 전적을 과장한다 (v1.11h).**
     # 7-4-1을 64:36으로 그렸는데, 실제로는 12경기 중 7승이다.
     # 같은 카드의 가운데에는 '7-4-1'이 찍혀 있어 서로 어긋났다.
+    #
+    # **홈 막대를 `100-원정`으로 채우면 무승부 몫이 홈에 얹힌다 (v1.11i).**
+    # 7-4-1에서 홈은 4승(33%)인데 막대는 42%를 그렸다 — 있지도 않은 1승이
+    # 그림에만 있었다. 양쪽 다 자기 승수로 계산하고, 남는 몫은 무승부 색으로 둔다.
     aw = round(wld.win / played * 100) if played else 50
+    hw = round(wld.loss / played * 100) if played else 50
+    dw = max(0, 100 - aw - hw)
+    # 두 팀의 전적 표기는 **한 카드 안에서 같은 형식**이어야 한다. 행마다
+    # `w.draw`를 보고 정하면 한쪽만 '78-63-3'이 되어 열이 갈린다.
+    _three = bool(sa.record.draw or sh.record.draw)
+    _three10 = bool((sa.last10 and sa.last10.draw) or (sh.last10 and sh.last10.draw))
     kst, _ = format_kickoff(game)
 
     def side(s: Standing, right: bool) -> str:
         # 한 줄에 몰아넣으면 폭이 모자라 줄바꿈이 깨진다. 두 줄로 나눈다.
         cls = "tr rt" if right else "tr"
-        l10 = f"최근10 {_wld(s.last10)}" if s.last10 else ""
+        l10 = f"최근10 {_wld(s.last10, _three10)}" if s.last10 else ""
         return (f'<div{" class=rt" if right else ""}>'
                 f'<div class="tn">{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</div>'
-                f'<div class="{cls}">{s.rank}위 · {_wld(s.record)}</div>'
+                f'<div class="{cls}">{s.rank}위 · {_wld(s.record, _three)}</div>'
                 f'<div class="{cls} l2">{l10}</div></div>')
 
     # 막대 색은 '우세팀'이 골드. 원정/홈이 아니라 전적이 색을 정한다.
@@ -980,7 +1351,9 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
         edge = (f"시즌 상대전적 <b>{esc(TEAM_NAMES[rb.league].get(lead_t, lead_t))} "
                 f"{lw}승 {ll}패{_d}</b> 우세")
     # "두산 7승 4패 우세" 바로 밑에 "두산 2패"만 있으면 무슨 2패인지 모른다.
-    parts = [f"{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))} {s.streak_len}연{ {'W':'승','L':'패','D':'무'}[s.streak_kind.value] }"
+    # 연속 기록 표기는 _streak() 한 곳에서만 만든다 — 여기서 따로 조립했더니
+    # 순위표 '연속' 열과 표기가 갈렸다.
+    parts = [f"{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))} {_streak(s)}"
              for s in (sa, sh) if s.streak_kind is not StreakKind.NONE and s.streak_len]
     streaks = "현재 " + " · ".join(parts) if parts else ""
 
@@ -993,15 +1366,22 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
             f'<span class="mv">{wld.win}-{wld.loss}-{wld.draw}</span></div>'
             f'{side(sh, True)}</div>'
             f'<div class="brow {ca}"><span class="bn">{esc(TEAM_NAMES[rb.league].get(a, a))}</span>'
-            f'<div class="bar"><div class="fill" style="width:{aw}%"></div></div>'
+            f'<div class="bar"><div class="fill" style="width:{aw}%"></div>'
+            + (f'<div class="fdraw" style="width:{dw}%"></div>' if dw else "") +
+            f'</div>'
             f'<span class="pct">{wld.win}승</span></div>'
             f'<div class="brow {ch}"><span class="bn">{esc(TEAM_NAMES[rb.league].get(h, h))}</span>'
-            f'<div class="bar"><div class="fill" style="width:{100-aw}%"></div></div>'
+            f'<div class="bar"><div class="fill" style="width:{hw}%"></div>'
+            + (f'<div class="fdraw" style="width:{dw}%"></div>' if dw else "") +
+            f'</div>'
             f'<span class="pct">{wld.loss}승</span></div></div>'
             f'<div class="rec"><div class="l">맞대결</div><div class="t">{edge}'
             + (f'<br>{streaks}' if streaks else "") +
             f'</div></div>'
-            f'<div class="foot"><div class="tk">시즌 상대전적 = 승-패-무 · {esc(lgname)} 공식기록</div>'
+            # 꼬리말은 한 줄에 들어가야 한다 — 넘치면 로고와 겹친다(실렌더로 확인).
+            f'<div class="foot"><div class="tk">상대전적 = 승-패-무'
+            + (" · 회색 = 무" if dw else "") +
+            f' · {esc(lgname)} 공식 기록</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
 
@@ -1019,16 +1399,17 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
 CAPTION_MAX = 1024
 
 
-def _clip(head: str, lines: list[str], tail: str = "") -> str:
+def _clip(head: str, lines: list[str], tail: str = "", unit: str = "경기") -> str:
     """캡션 하나로 만든다. 넘치면 줄인다 — 하지만 버리지는 않는다.
 
     잘린 나머지는 `_clip_parts()`가 후속 텍스트 메시지로 이어 보낸다.
     이 함수만 쓰면 초과분이 사라지므로, 발송 경로는 반드시 `_clip_parts()`를 쓴다.
     """
-    return _clip_parts(head, lines, tail)[0]
+    return _clip_parts(head, lines, tail, unit)[0]
 
 
-def _clip_parts(head: str, lines: list[str], tail: str = "") -> list[str]:
+def _clip_parts(head: str, lines: list[str], tail: str = "",
+                unit: str = "경기") -> list[str]:
     """캡션 + (필요하면) 후속 텍스트 메시지들.
 
     대표님 지시: **"카드에 다 안 들어가는 내용은 상위 옵션을 넣고, 전체 내용은 텍스트로."**
@@ -1042,8 +1423,18 @@ def _clip_parts(head: str, lines: list[str], tail: str = "") -> list[str]:
     """
     def build(ls: list[str], more: int) -> str:
         body = quote(ls, expandable=True)
-        note = f"\n<i>나머지 {more}건은 이어지는 메시지에</i>" if more else ""
+        # 서술어가 없는 명사구는 안내가 아니다. 단위도 내용에 맞춘다 —
+        # 경기 목록에 "3건"이라 쓰면 무엇이 셋인지 읽는 사람이 되짚어야 한다.
+        # 단위가 바뀌면 조사도 바뀐다("3경기는" / "19팀은"). 박아두면 반드시 틀린다.
+        note = (f"\n<i>나머지 {more}{unit}{josa(unit, '은', '는')} "
+                f"다음 메시지에 이어집니다</i>" if more else "")
         return head + body + note + (("\n" + tail) if tail else "")
+
+    # **0건이면 인용블록을 만들지 않는다 (v1.11i).**
+    # `quote([])`는 GateError로 죽는다. 경기 0건은 오류가 아니라 사실이고,
+    # 그 사실을 전하지 못해 캡션 전체가 사라지면 카드도 함께 못 나간다.
+    if not lines:
+        return [head.rstrip() + (("\n" + tail) if tail else "")]
 
     out = build(lines, 0)
     if len(out) <= CAPTION_MAX:
@@ -1083,64 +1474,118 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
     as_parts=True면 [캡션, 이어지는 텍스트...] 목록을 준다(발송 경로가 쓴다).
     """
     off = {Status.CANCELED, Status.POSTPONED}
+    wd = spans_two_kst_days(games)      # 카드와 같은 규칙 — 걸치면 전 줄에 요일
     lines = []
     for g in sorted(games, key=lambda x: x.start_utc):
-        kst, _ = format_kickoff(g)
-        mark = f" · {esc(g.meta.cancel_reason or '취소')}" if g.status in off else ""
+        kst, _ = format_kickoff(g, with_weekday=True if wd else None)
+        # 사진과 캡션은 한 메시지로 함께 나간다. 카드가 "연기"라 쓴 경기를
+        # 캡션이 "취소"라 부르면 한 화면 안에서 서로 모순된다 — 같은 함수를 쓴다.
+        mark = f" · {esc(_reason(g))}" if g.status in off else ""
         # 카드에서 자리가 없어 뺀 경기장을 여기서 살린다 — 캡션은 자리가 넉넉하다.
         place = venue_name(g.venue)
         vv = f" · {esc(place)}" if place else ""
         lines.append(f"{esc(kst)}  {esc(team_name(g.away))} vs "
-                     f"{esc(team_name(g.home))}{vv}{mark}")
+                     f"{esc(team_name(g.home))}{esc(_dh(g))}{vv}{mark}")
     lg = games[0].league if games else League.KBO
     # **카드와 같은 수를 말한다 (v1.11h).** 카드 헤드라인은 열리는 경기 수,
     # 캡션은 전체 수를 쓰고 있었다. 사진과 캡션은 한 메시지로 함께 나가므로
     # "오늘 KBO 0경기 / 전체 편성 5경기"가 한 화면에 보였다(실측 불일치 16일).
-    _play = [g for g in games if g.status not in {Status.CANCELED, Status.POSTPONED}]
-    _off = len(games) - len(_play)
-    head = (f"📋 <b>{esc(LEAGUE_LABEL.get(lg, lg.value))} "
-            f"{day_word(games, now)} 편성 {len(_play)}경기"
-            + (f" (+{_off}경기 취소·연기)" if _off else "") + "</b>\n")
+    _play = [g for g in games if g.status not in off]
+    _cx = [g for g in games if g.status is Status.CANCELED]
+    _po = [g for g in games if g.status is Status.POSTPONED]
+    # 취소와 연기를 "(+2경기 취소·연기)" 한 덩어리로 묶으면 어느 쪽이 몇인지 없다.
+    _off = " · ".join(x for x in (f"{len(_cx)}경기 취소" if _cx else "",
+                                  f"{len(_po)}경기 연기" if _po else "") if x)
+    # **카드 배지와 캡션 머리말이 같은 이름을 쓴다 (v1.11i).**
+    # 카드는 "모닝 브리핑", 캡션은 "편성"이라 한 메시지가 스스로를 두 이름으로 불렀다.
+    # 어순·낱말도 카드 헤드라인("오늘 KBO 편성 3경기")에 맞춘다.
+    _pre = (f"📋 <b>{esc(morning_label(now or datetime.now(timezone.utc)))} · "
+            f"{day_word_span(games, now)} {esc(LEAGUE_LABEL.get(lg, lg.value))} ")
+    if not _play and (_cx or _po):
+        # 카드가 "경기 없음"이라 쓰는 날 캡션만 "편성 0경기"라 하면 또 갈린다.
+        _why = " · ".join(f"{lab} {n}경기"
+                          for lab, n in _reason_counts(_cx + _po))
+        head = _pre + f"경기 없음 ({_why})</b>\n"
+    else:
+        head = _pre + f"편성 {len(_play)}경기" + (f" ({_off})" if _off else "") + "</b>\n"
     tail = start_alert_lead_text()
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
 
 def caption_result(games: list[Game], day: str, *, as_parts: bool = False):
     """그날 전 경기 결과. as_parts=True면 파트 목록."""
+    # **한 목록, 시작 시각순 (v1.11i).** 카드 본문은 시간순인데 캡션만 미확정
+    # 경기를 뒤로 몰아, 같은 메시지의 사진과 글이 다른 순서로 같은 날을 말했다.
+    # 시간순은 '언제 무슨 일이 있었나'를 읽는 유일한 순서다.
     lines = []
     for g in sorted(games, key=lambda x: x.start_utc):
         a, h = esc(team_name(g.away)), esc(team_name(g.home))
+        dh = esc(_dh(g))
         if g.status is Status.CANCELED:
-            lines.append(f"{a} — {h} · {esc(g.meta.cancel_reason or '취소')}")
+            # 대진 구분자는 카드·캡션·알림 전부 `vs`로 통일한다 —
+            # 취소 행만 `—`라 같은 목록 안에서 두 기호가 섞였다.
+            lines.append(f"{a} vs {h}{dh} · {esc(_reason(g))}")
         elif g.status is Status.FINAL and g.score:
-            lines.append(f"{a} {g.score.away} : {g.score.home} {h}{_dh(g)}")
-    # 결과가 안 나온 경기는 **점수 없이** 이름만 남긴다. 빼버리면 그날 편성이
-    # 통째로 줄어든 것처럼 보이고, 점수를 적으면 진행 중 점수가 결과가 된다.
-    pending = [g for g in sorted(games, key=lambda x: x.start_utc)
-               if g.status not in SETTLED_FOR_RESULT]
-    for g in pending:
-        lines.append(f"{esc(team_name(g.away))} — {esc(team_name(g.home))} · 결과 미확정")
+            # 점수 표기도 카드와 같은 `1:15` 한 가지로 (카드는 구분자가 없었고
+            # 캡션은 `1 : 15`였다). 무승부는 카드에만 있고 캡션엔 없었다.
+            draw = " (무승부)" if g.is_draw() else ""
+            lines.append(f"{a} {g.score.away}:{g.score.home} {h}{dh}{draw}")
+        elif g.status is Status.POSTPONED:
+            lines.append(f"{a} vs {h}{dh} · {esc(_reason(g))}")
+        elif g.status is Status.SUSPENDED:
+            lines.append(f"{a} vs {h}{dh} · 서스펜디드(속개 예정)")
+        else:
+            # 결과가 안 나온 경기는 **점수 없이** 이름만 남긴다. 빼버리면 그날
+            # 편성이 줄어든 것처럼 보이고, 점수를 적으면 진행 중 점수가 결과가 된다.
+            lines.append(f"{a} vs {h}{dh} · 결과 미확정")
     lg = games[0].league if games else League.KBO
     fin = [g for g in games if g.status is Status.FINAL and g.score]
     cx = [g for g in games if g.status is Status.CANCELED]
+    po = [g for g in games if g.status is Status.POSTPONED]
+    sp = [g for g in games if g.status is Status.SUSPENDED]
+    unk = [g for g in games if g.status not in SETTLED_FOR_RESULT
+           and g.status not in (Status.POSTPONED, Status.SUSPENDED)]
     _name = esc(LEAGUE_LABEL.get(lg, lg.value))
-    if not fin and cx:
+    if not fin and cx and not (po or sp or unk):
         head = f"📋 <b>{_name} 전 경기 취소 {len(cx)}경기</b>\n"
+    elif not fin and cx:
+        # "결과 0경기"는 말이 안 된다 — 아직 결과가 없고 취소만 확정된 날이다.
+        # 카드 헤드라인과 같은 문형을 쓴다.
+        head = f"📋 <b>{_name} 취소 {len(cx)}경기 · 나머지 진행 중</b>\n"
     else:
-        head = (f"📋 <b>{_name} 전 경기 결과 {len(fin)}경기</b>"
-                + (f" (+{len(cx)}경기 취소)" if cx else "") + "\n")
+        # **'전 경기 결과'라 부를 수 있는 날에만 그렇게 부른다 (v1.11i).**
+        # 미확정이 남아 있는데 머리말이 그대로라 캡션이 스스로를 반박했다.
+        _bits = [f"편성 {len(games)}"]
+        for _n, _w in ((cx, "취소"), (po, "연기"), (sp, "서스펜디드"), (unk, "미확정")):
+            if _n:
+                _bits.append(f"{_w} {len(_n)}")
+        # 취소는 '그날 있었던 일'이 확정된 것이므로 '전 경기'를 깨지 않는다.
+        # 깨는 것은 아직 결과를 모르는 경기(연기·서스펜디드·진행 중)다.
+        _whole = not (po or sp or unk)
+        head = (f"📋 <b>{_name} {'전 경기 결과' if _whole else '경기 결과'} {len(fin)}경기"
+                + (f" ({' · '.join(_bits)})" if len(_bits) > 1 else "") + "</b>\n")
     return _clip_parts(head, lines) if as_parts else _clip(head, lines)
 
 
 def caption_standings(rb: RecordBook, *, as_parts: bool = False):
     """순위표 전체. MLB는 30팀이라 카드엔 10팀만 실린다. as_parts=True면 파트 목록."""
     names = TEAM_NAMES.get(rb.league, {})
-    lines = [f"{s.rank:>2}. {esc(names.get(s.team_code, s.team_code))} "
-             f"{_wld(s.record)} · {esc(s.pct)}"
-             for s in sorted(rb.standings, key=lambda x: x.rank)]
+    order = sorted(rb.standings, key=lambda x: x.rank)
+    # 전적 표기는 **열 단위로 통일한다** — 캡션도 카드와 같은 규칙이다.
+    # 행마다 정하면 한 목록에 '80-55'와 '78-63-3'이 섞여, 두 칸짜리가
+    # 무승부 0인지 무승부가 없는 리그인지 알 수 없어진다.
+    three = any(s.record.draw for s in order)
+    # 텔레그램은 가변폭 글꼴이라 `{rank:>2}`로 자리를 맞출 수 없다.
+    # 정렬은 안 되고 한 자리 순위 앞에 공백만 생겨 목록이 들쭉날쭉해 보였다.
+    lines = [f"{s.rank}. {esc(names.get(s.team_code, s.team_code))} "
+             f"{_wld(s.record, three)} · {esc(s.pct)}"
+             for s in order]
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"전체 순위 {len(rb.standings)}팀</b>\n")
-    return _clip_parts(head, lines) if as_parts else _clip(head, lines)
+    # 값에 라벨이 없으면 '0.579'가 승률인지 승차인지 알 수 없다.
+    tail = f"순위. 팀 {'승-패-무' if three else '승-패'} · 승률"
+    return (_clip_parts(head, lines, tail, unit="팀") if as_parts
+            else _clip(head, lines, tail, unit="팀"))
 
 
 def caption_leaders(rb: RecordBook, set_idx: int = 0, top_n: int = 5,
@@ -1174,7 +1619,8 @@ def caption_leaders(rb: RecordBook, set_idx: int = 0, top_n: int = 5,
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"{esc(title)} 전체</b>\n")
     tail = f"{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} 공식 부문 순위"
-    return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
+    return (_clip_parts(head, lines, tail, unit="줄") if as_parts
+            else _clip(head, lines, tail, unit="줄"))
 
 
 def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
@@ -1187,20 +1633,32 @@ def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
     na, nh = esc(names.get(a, a)), esc(names.get(h, h))
     wld = rb.between(a, h)
 
+    # **한 캡션 안에서 전적 표기를 한 형식으로 (v1.11i).**
+    # 첫 줄은 서술형("7승 4패 1무"), 아래 줄은 하이픈형("81-59-4")이라
+    # 같은 종류의 값이 두 문법으로 적혀 있었다. 열 단위로 정하고 하이픈으로 맞춘다
+    # (꼬리말 범례가 하이픈 표기를 설명하므로 그쪽이 기준이다).
+    # 홈/방문 전적은 없을 수 있다(소스가 안 주는 리그) — None을 그냥 읽으면 죽는다.
+    _splits = [x for x in (sa.home, sa.away, sh.home, sh.away) if x]
+    three = bool((wld and wld.draw) or sa.record.draw or sh.record.draw
+                 or any(x.draw for x in _splits))
+    three10 = bool((sa.last10 and sa.last10.draw) or (sh.last10 and sh.last10.draw))
+
     lines = []
     if wld is not None:
-        lines.append(f"시즌 상대전적 {na} {wld.win}승 {wld.loss}패"
-                     + (f" {wld.draw}무" if wld.draw else ""))
+        lines.append(f"시즌 상대전적 {na} {_wld(wld, three)}")
     for s, nm in ((sa, na), (sh, nh)):
-        bits = [f"{s.rank}위", _wld(s.record), f"승률 {esc(s.pct)}"]
+        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {esc(s.pct)}"]
         if s.last10:
-            bits.append(f"최근10 {_wld(s.last10)}")
+            bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
             bits.append(_streak(s))
         lines.append(f"{nm} — " + " · ".join(esc(b) for b in bits))
-        lines.append(f"  홈 {_wld(s.home)} · 방문 {_wld(s.away)}")
+        # 홈/방문 전적을 주지 않는 리그가 있다. 없는 값을 억지로 찍지 않는다.
+        if s.home and s.away:
+            lines.append(f"  홈 {_wld(s.home, three)} · 방문 {_wld(s.away, three)}")
 
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"{na} vs {nh} 맞대결</b>\n")
-    tail = "상대전적 = 승-패-무"
-    return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
+    tail = f"전적 = {'승-패-무' if three else '승-패'}"
+    return (_clip_parts(head, lines, tail, unit="줄") if as_parts
+            else _clip(head, lines, tail, unit="줄"))

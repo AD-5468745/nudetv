@@ -16,7 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from contract import (ContentType, GateError, KST, League, LEASE_SECONDS,
                       QueueItem, SendState, idem_key)
-from sender import (ALERT_REPEAT_SECONDS,
+from sender import (ALERT_REPEAT_SECONDS, DISPATCH_MARK, SEND_MAX_RETRIES,
                     AmbiguousSend, Ledger, Pacer, PartialSend, Payload, Secret, Sender,
                     TelegramError, load_token, new_webhook_secret, redact,
                     verify_webhook, webhook_setup_payload)
@@ -148,20 +148,160 @@ r2 = snd.send(it, Payload(photos=photos(1), caption="결과"))
 check("needs_human은 자동 재발송 안 함", len(tr.sent) == 1, len(tr.sent))
 check("격리 목록에 잡힘", len(led.needs_human()) == 1)
 
-# 클레임만 하고 프로세스가 죽은 뒤 리스가 만료된 경우
+# ── 리스 만료 — '보낸 적 있나'로 갈린다 (기대 변경 2026-09-02) ──────────
+#
+# **[옛 기대] 리스가 만료되면 무조건 needs_human으로 격리한다.**
+# **[새 기대] 대장에 발송 흔적(DISPATCH_MARK)이 있느냐로 갈린다.**
+#   · 마크 없음 = API를 한 번도 안 두드렸다 = 중복 위험 0 → QUEUED로 되돌려 재클레임
+#   · 마크 있음 = 보냈는지 알 수 없다 → NEEDS_HUMAN 격리 (옛 동작 그대로)
+#
+# **왜 바꿨나(v1.11i).** 리스는 `유예/3`(시작알림 38분·모닝 120분)인데 실측 시계
+# 간격이 30~240분이라, 러너가 정상 회수되기만 해도 다음 틱 전에 리스가 만료된다.
+# 그러면 **한 번도 안 보낸 항목**이 영구 격리되고, 코드 어디에도 NEEDS_HUMAN을
+# 되돌리는 쓰기가 없어 사람이 대장을 손으로 고쳐야 했다. 동시 실행은 워크플로의
+# `concurrency: nudetv-tick`이 막고, 코드상 마크 기록이 `_dispatch()`보다 먼저다.
+#
+# **원래 목적("구독자에게 같은 카드가 두 번 나가는 일은 없다")은 더 촘촘히 지킨다.**
+# 되돌림이 생긴 만큼 "되돌려도 발송은 0건"과 "마크가 있으면 절대 안 되돌린다"를
+# 각각 못 박고, 되돌린 항목이 결국 **딱 한 번만** 나가는지까지 본다.
+
+
+class Killed(BaseException):
+    """프로세스가 통째로 사라지는 상황(SIGKILL·러너 회수·OOM)을 흉내낸다.
+
+    `BaseException`이라야 sender의 `except Exception`(클레임 반납)을 지나쳐
+    **대장에 마크가 남은 채로** 죽는다 — 실제 강제 종료와 같은 흔적이 된다.
+    """
+
+
+class DeadDrop:
+    """마크를 남긴 직후, API에 닿기 전에 죽는 전송기.
+
+    호출 순간의 대장 상태를 기록해 둔다 — 마크가 `_dispatch()`보다 **먼저**
+    쓰이는지(이 구분 전체가 그 순서 위에 서 있다)를 검증하기 위해서다.
+    """
+
+    def __init__(self, led=None, key=None):
+        self.calls = []          # 실제로 나간 것: 늘 0건이다(도달 전에 죽으므로)
+        self.mark_at_call = None
+        self._led, self._key = led, key
+
+    def call(self, method, payload, files=None):
+        if self._led is not None:
+            self.mark_at_call = (self._led.get(self._key) or None) and \
+                self._led.get(self._key).last_error
+        raise Killed("프로세스 강제 종료 — 요청이 나갔는지 알 수 없다")
+
+    @property
+    def sent(self):
+        return self.calls
+
+
+# (1) 마크 없이 만료 — 큐로 되돌아가고, 되돌아가는 동안 발송은 0건이다
 led3 = Ledger(pathlib.Path(tmp) / "lease.jsonl")
 tr3 = Fake()
 dead = Sender(tr3, led3, CHAT, worker_id="dead",
               pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: NOW)
-it = q(ContentType.START_ALERT, "2026-08-27@18:30")
+it = q(ContentType.MORNING, "2026-08-27@lease")
 dead.claim(it)                                   # 클레임만 하고 죽었다고 가정
-later = NOW + timedelta(seconds=LEASE_SECONDS[ContentType.START_ALERT] + 10)
+later = NOW + timedelta(seconds=LEASE_SECONDS[ContentType.MORNING] + 10)
 alive = Sender(tr3, led3, CHAT, worker_id="alive",
                pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: later)
 got = alive.claim(it)
-check("리스 만료 → 다른 워커도 못 집음", got is None)
-check("리스 만료 → needs_human 격리", led3.get(it.idem_key).state is SendState.NEEDS_HUMAN)
-check("리스 만료 → 재발송 0건", len(tr3.sent) == 0)
+check("마크 없이 리스 만료 → 다른 워커가 이어받는다 (영구 격리 아님)", got is not None)
+check("이어받은 워커가 대장에 적힌다",
+      led3.get(it.idem_key).claimed_by == "alive", led3.get(it.idem_key).claimed_by)
+check("되돌려도 격리로 못 박지 않는다",
+      led3.get(it.idem_key).state is not SendState.NEEDS_HUMAN,
+      led3.get(it.idem_key).state.value)
+check("되돌린 횟수를 센다 (무한 되돌림 방지)", led3.get(it.idem_key).retry_count == 1,
+      led3.get(it.idem_key).retry_count)
+check("리스 만료 → 재발송 0건", len(tr3.sent) == 0)      # 옛 검사 유지 — 목적 그대로
+
+# 되돌아간 항목이 다음 틱에 정상 발송되면 **딱 한 번만** 나가야 한다
+out = alive.send(it, Payload(text="모닝"))
+check("되돌아간 항목은 다음 틱에 정상 발송된다", out.state is SendState.SENT, out.state.value)
+check("되돌아간 항목도 딱 한 번만 나간다", len(tr3.sent) == 1, len(tr3.sent))
+out2 = alive.send(it, Payload(text="모닝"))
+check("발송 뒤에는 다시 안 나간다", out2.reason == "이미 처리됨" and len(tr3.sent) == 1,
+      f"{out2.reason}/{len(tr3.sent)}")
+
+# 되돌림이 끝없이 반복되지는 않는다 — 상한에 닿으면 결국 사람에게 넘긴다
+led4 = Ledger(pathlib.Path(tmp) / "lease_loop.jsonl")
+tr4 = Fake()
+it4 = q(ContentType.MORNING, "2026-08-27@loop")
+_states = []
+for _i in range(SEND_MAX_RETRIES + 2):
+    _t = NOW + timedelta(seconds=(LEASE_SECONDS[ContentType.MORNING] + 10) * _i)
+    Sender(tr4, led4, CHAT, worker_id=f"w{_i}",
+           pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0),
+           now=lambda _t=_t: _t).claim(it4)      # 매번 클레임만 하고 죽는다
+    _states.append(led4.get(it4.idem_key).state)
+check("되돌림이 상한에 닿으면 격리한다 (무한 반복 금지)",
+      _states[-1] is SendState.NEEDS_HUMAN, str([s.value for s in _states]))
+check("상한까지 가는 동안에도 발송은 0건", len(tr4.sent) == 0, len(tr4.sent))
+
+# (2) **마크가 있는 상태로 만료 → 반드시 격리, 재클레임 불가.**
+#     중복 발송을 막는 핵심이 이 한 갈래다 — 여기가 뚫리면 (1)의 되돌림이
+#     그대로 "보냈을지도 모르는 것을 다시 보내는" 경로가 된다.
+led5 = Ledger(pathlib.Path(tmp) / "lease_mark.jsonl")
+it5 = q(ContentType.MORNING, "2026-08-27@mark")
+tr5 = DeadDrop(led5, it5.idem_key)
+dead5 = Sender(tr5, led5, CHAT, worker_id="dead",
+               pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: NOW)
+try:
+    dead5.send(it5, Payload(text="모닝"))
+    check("발송 도중 강제 종료를 흉내냈다", False, "죽지 않았다")
+except Killed:
+    check("발송 도중 강제 종료를 흉내냈다", True)
+_row = led5.get(it5.idem_key)
+check("발송 직전에 대장에 마크가 남는다",
+      _row.state is SendState.CLAIMED and _row.last_error == DISPATCH_MARK,
+      f"{_row.state.value}/{_row.last_error}")
+check("마크는 API 호출보다 **먼저** 기록된다 (이 순서가 구분의 근거다)",
+      tr5.mark_at_call == DISPATCH_MARK, str(tr5.mark_at_call))
+
+later5 = NOW + timedelta(seconds=LEASE_SECONDS[ContentType.MORNING] + 10)
+tr5b = Fake()
+alive5 = Sender(tr5b, led5, CHAT, worker_id="alive",
+                pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0), now=lambda: later5)
+check("마크 있는 채로 리스 만료 → 다른 워커도 못 집는다", alive5.claim(it5) is None)
+check("마크 있는 채로 리스 만료 → needs_human 격리",
+      led5.get(it5.idem_key).state is SendState.NEEDS_HUMAN,
+      led5.get(it5.idem_key).state.value)
+check("격리 사유에 '발송 여부 불명'이 남는다",
+      "발송 여부 불명" in (led5.get(it5.idem_key).last_error or ""),
+      led5.get(it5.idem_key).last_error)
+check("격리 목록에 잡힌다", len(led5.needs_human()) == 1)
+
+# 사람이 풀기 전까지는 몇 틱을 돌려도 발송 0건이어야 한다
+for _i in range(5):
+    _t = later5 + timedelta(hours=_i + 1)
+    Sender(tr5b, led5, CHAT, worker_id=f"tick{_i}",
+           pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0),
+           now=lambda _t=_t: _t).send(it5, Payload(text="모닝"))
+check("격리된 항목은 몇 틱을 돌려도 발송 0건", len(tr5b.sent) == 0, len(tr5b.sent))
+check("몇 틱을 돌려도 상태가 풀리지 않는다",
+      led5.get(it5.idem_key).state is SendState.NEEDS_HUMAN,
+      led5.get(it5.idem_key).state.value)
+
+# 마크가 있는 항목은 '지각 폐기'로 덮어써도 안 된다 — 덮으면 나갔을 수도 있다는
+# 사실이 대장에서 지워지고, 그 자리가 그대로 중복 발송의 입구가 된다.
+led6 = Ledger(pathlib.Path(tmp) / "lease_mark2.jsonl")
+it6 = q(ContentType.MORNING, "2026-08-27@mark2")
+tr6 = DeadDrop(led6, it6.idem_key)
+try:
+    Sender(tr6, led6, CHAT, worker_id="dead",
+           pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0),
+           now=lambda: NOW).send(it6, Payload(text="모닝"))
+except Killed:
+    pass
+Sender(Fake(), led6, CHAT, worker_id="late",
+       pacer=Pacer(sleep=lambda s: None, clock=lambda: 0.0),
+       now=lambda: NOW).mark_settled(it6, SendState.SKIPPED_ALREADY_STARTED, "지각 폐기")
+check("마크 있는 항목은 '지각 폐기'로 덮이지 않고 격리로 남는다",
+      led6.get(it6.idem_key).state is SendState.NEEDS_HUMAN,
+      led6.get(it6.idem_key).state.value)
 
 # ══ D. 레이트리밋·권한 오류 ══════════════════════════════════
 print("\nD. 오류 처리")

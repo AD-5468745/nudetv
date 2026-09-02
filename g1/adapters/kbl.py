@@ -42,6 +42,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch, make_opener
+from _notices import NoticeMixin
 
 from contract import (GateError, Game, GameMeta, KBL_SEASON_CATEGORY_ALLOW,
                       KBL_PUBLISH_CATEGORIES, League,
@@ -85,12 +86,15 @@ def _get(url: str) -> list:
     return data
 
 
-class KblAdapter:
+class KblAdapter(NoticeMixin):
     league = League.KBL
 
     def __init__(self) -> None:
         # 소관 밖이라 격리한 경기. 조용히 사라지면 안 되므로 호출자가 꺼내 볼 수 있게 둔다.
+        # (v1.11i부터 정식 창구는 `skipped_report()`·`notices`다. 아래 두 속성은
+        #  기존 검증 스크립트가 읽고 있어 그대로 유지한다.)
         self.unresolved: list[dict] = []
+        self.skipped_categories = 0
 
     def fetch(self, start: str, end: str, *, now_utc: datetime | None = None) -> list[Game]:
         """start/end는 YYYYMMDD."""
@@ -98,6 +102,7 @@ class KblAdapter:
         now = now_utc or datetime.now(ZoneInfo("UTC"))
         resultless = SOURCE_RESULTLESS_CATEGORIES.get(League.KBL, frozenset())
         out: list[Game] = []
+        self.reset_notices()
         self.unresolved = []
         self.skipped_categories = 0
         for r in rows:
@@ -109,9 +114,14 @@ class KblAdapter:
             # 구분 신호는 `seasonGrade`(1=KBL · 2=D리그)와 `seasonName1`이다.
             if int(r.get("seasonGrade") or 1) != 1:
                 self.skipped_categories += 1
+                self.note("D리그(2군)라 제외",
+                          f"{r.get('gameDate')} {r.get('seasonName1')} "
+                          f"{r.get('tnameA')}-{r.get('tnameH')}")
                 continue
             cat = (r.get("seasonCategory") or "").strip()
             if cat not in KBL_SEASON_CATEGORY_ALLOW:
+                self.note("발행 대상 아닌 시즌 구분이라 제외",
+                          f"{r.get('gameDate')} seasonCategory={cat!r}")
                 continue                       # 오픈매치 등은 여기서 걸러진다
             # **EASL·올스타는 발행 대상이 아니다 (v1.11h).**
             # 외국 구단(뉴타이베이킹스…)·가상팀(팀아시아…)이 등장해
@@ -119,6 +129,9 @@ class KblAdapter:
             # 수집 창이 21일이라 그 경기 하나가 3주간 KBL을 침묵시킨다.
             if cat not in KBL_PUBLISH_CATEGORIES:
                 self.skipped_categories += 1
+                self.note("외국 구단·가상팀이 나오는 구간이라 제외(EASL·올스타)",
+                          f"{r.get('gameDate')} {cat} "
+                          f"{r.get('tnameA')}-{r.get('tnameH')}")
                 continue
             g = self._parse(r, cat)
 
@@ -132,6 +145,8 @@ class KblAdapter:
                     "source_key": g.source_key, "sports_day": g.sports_day,
                     "category": cat, "home": g.home.team_code, "away": g.away.team_code,
                     "reason": "KBL API가 EASL 결과를 제공하지 않음(편성만 게시)"})
+                self.note("소스가 결과를 안 주는 지난 경기라 격리",
+                          f"{g.sports_day} {cat} {g.away.team_code}-{g.home.team_code}")
                 continue
             out.append(g)
         return out

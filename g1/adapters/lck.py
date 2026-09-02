@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch, make_opener
+from _notices import NoticeMixin
 
 from contract import (GateError, Game, GameMeta, League, Score, ScoreUnit, Status,
                       TeamRef, UnknownStatus)
@@ -66,6 +67,23 @@ EXCLUDED_LEAGUES = frozenset({
     "LCK Challengers League",    # 2군
     "LCK Academy Series",        # 아카데미
 })
+
+# **`League`가 맞아도 우리 대회가 아닌 것이 섞여 온다 (v1.11i).**
+# `T.League='World Championship'` 안에 `T.Name='LPL 2026 Regional Finals'`
+# 3경기(2026-09-17~19)가 들어 있다. 롤드컵 본선이 아니라 **LPL 지역 선발전**이다
+# (MatchId도 `LPL/2026 Season/Regional Finals_…`로 시작한다).
+# 지금은 대진이 전부 `TBD`라 자리표시자 필터에 걸려 안 나가지만,
+# 9월 중순에 대진이 확정되는 순간 **중국 지역예선이 롤드컵 콘텐츠로 발행된다.**
+# 대회 이름(`T.Name`)에 지역 선발전 표시가 있으므로 그것으로 거른다.
+EXCLUDED_TOURNAMENT_PATTERNS = (
+    "regional finals",       # LPL/LEC/LCS 지역 선발전
+    "regional qualifier",
+)
+
+
+def _is_excluded_tournament(name: str) -> bool:
+    n = (name or "").strip().lower()
+    return any(p in n for p in EXCLUDED_TOURNAMENT_PATTERNS)
 
 # 팀이 아닌 자리표시자. 대진 미확정 상태로 그대로 쓰면 'TBD 대 TBD' 카드가 나간다.
 PLACEHOLDER_TEAMS = frozenset({"TBD", "TBA", "?", "-", ""})
@@ -208,7 +226,7 @@ def _team_code(name: str, league: League = League.INTL_LOL) -> str:
     return re.sub(r"[^A-Za-z0-9가-힣]", "", n).upper()[:12] or "UNK"
 
 
-class LckAdapter:
+class LckAdapter(NoticeMixin):
     """LCK 및 LoL 국제대회. league_filter로 대회를 고른다."""
 
     def __init__(self, league: League = League.LCK) -> None:
@@ -217,6 +235,8 @@ class LckAdapter:
         self.league = league
         self._names = [k for k, v in LEAGUE_OF.items() if v is league]
         # 조용히 사라지면 안 되는 것들. 호출자가 꺼내 보고 보고한다.
+        # (v1.11i부터는 `skipped_report()`·`notices`가 정식 창구다.
+        #  아래 두 속성은 기존 검증 스크립트가 읽고 있어 그대로 둔다.)
         self.skipped_placeholder = 0      # TBD 등 대진 미확정으로 건너뛴 수
         self.cache_age_seconds = 0.0      # 0보다 크면 캐시로 버틴 것 = 묵은 데이터
 
@@ -226,6 +246,7 @@ class LckAdapter:
         limit 기본값이 200이던 시절 2026 시즌 257경기 중 57경기가 조용히 잘렸다.
         잘림은 '경기가 없다'와 구분이 안 되므로, 상한에 닿으면 막는다.
         """
+        self.reset_notices()
         cond = " OR ".join(f"T.League='{n}'" for n in self._names)
         rows = _cargo(
             tables="MatchSchedule=MS,Tournaments=T",
@@ -234,7 +255,9 @@ class LckAdapter:
                     "MS.Winner,MS.BestOf,MS.MatchId,T.League,T.Name"),
             where=f"({cond}) AND MS.DateTime_UTC >= '{since}'",
             order_by="MS.DateTime_UTC", limit=str(limit))
-        self.cache_age_seconds = last_cache_age_seconds
+        # 캐시로 버틴 사실은 속성과 보고서 양쪽에 남긴다 — 속성에만 두면
+        # 알림에 싣는 것을 잊는다(실제로 48시간 묵은 스냅샷이 그렇게 나갔다).
+        self.note_cache_age(last_cache_age_seconds)
 
         if len(rows) >= limit:
             raise GateError(
@@ -255,6 +278,12 @@ class LckAdapter:
             lg = str(r.get("League") or "").strip()
             if lg not in LEAGUE_OF:
                 raise UnknownStatus(f"LCK: 요청하지 않은 대회 {lg!r}가 섞여 왔습니다")
+            name = str(r.get("Name") or "").strip()
+            if _is_excluded_tournament(name):
+                # 지역 선발전은 롤드컵 본선이 아니다(위 주석 참조).
+                self.note("우리 대회가 아니라 제외(지역 선발전)",
+                          f"{name} — {r.get('MatchId')}")
+                continue
             g = self._parse(r)
             if g:
                 out.append(g)
@@ -284,6 +313,8 @@ class LckAdapter:
         # 그대로 두면 'TBD 대 TBD' 카드가 나간다 — 실제로 2026 Worlds 대진에 있다.
         if t1.upper() in PLACEHOLDER_TEAMS or t2.upper() in PLACEHOLDER_TEAMS:
             self.skipped_placeholder = getattr(self, "skipped_placeholder", 0) + 1
+            self.note("대진 미확정(TBD)이라 건너뜀",
+                      f"{dt[:10]} {r.get('Name')} {t1 or '?'} vs {t2 or '?'}")
             return None                       # 대진 미발행(토너먼트 등록만 된 상태)
 
         # **끝났는지는 Winner만이 안다 (v1.11h).**
@@ -304,18 +335,39 @@ class LckAdapter:
             status = Status.LIVE          # 세트는 진행됐지만 매치는 안 끝났다
         else:
             status = Status.SCHEDULED
+        # ── 홈/원정 자리 (v1.11i에서 바로잡음) ──────────────────
+        #
+        # **LoL에는 홈이 없다.** LCK는 전 경기가 서울 LoL파크 한 곳에서 열리고
+        # 국제대회는 개최지가 옮겨 다닌다. 즉 `home`/`away`는 '연고지'가 아니라
+        # **좌우 자리**를 뜻할 수밖에 없다. 그러면 어느 쪽이 왼쪽이어야 하는가.
+        #
+        # 소스(Leaguepedia)의 `Team1`은 중계·대진표의 **왼쪽** 팀이다.
+        # 우리 렌더러(pipeline.render_result / render_morning)는 예외 없이
+        # `away`를 왼쪽에, `home`을 오른쪽에 그린다.
+        # 전에는 `home=Team1, away=Team2`로 두었기 때문에 좌우가 뒤집혔다 —
+        # 2026-09-01 `Team1=Gen.G(3) / Team2=KT Rolster(0)`가 카드에서는
+        # "KT 0 : 3 젠지"로 나갔다. 점수-팀 짝은 맞아 사실 오류는 아니지만
+        # 중계 화면과 좌우가 반대라 같은 경기를 두 번 보는 사람이 헷갈린다.
+        #
+        # 그래서 **Team1을 `away`(왼쪽), Team2를 `home`(오른쪽)** 으로 둔다.
+        # 점수도 같이 뒤집어야 짝이 유지된다 — `Score(home=Team2Score, away=Team1Score)`.
+        # 야구·축구처럼 홈이 실재하는 종목과 달리, 여기서 home/away는
+        # **표시 순서 이상의 의미가 없다**는 것을 기억할 것.
+        left, right = t1, t2                  # 중계 좌 / 중계 우
+        left_score, right_score = s1, s2
+
         score = None
         if status is Status.FINAL and has_score:
-            # LoL은 세트(맵) 스코어다. team1=홈 자리로 둔다(중립 경기가 많다).
-            score = Score(int(float(s1)), int(float(s2)), ScoreUnit.MAPS)
+            # LoL은 세트(맵) 스코어다.
+            score = Score(int(float(right_score)), int(float(left_score)), ScoreUnit.MAPS)
 
         bo = r.get("BestOf")
         key = str(r.get("MatchId") or f"{dt}-{t1}-{t2}")
 
         g = Game(
             league=self.league, season=str(start.year), source_key=key,
-            home=TeamRef(self.league, _team_code(t1, self.league)),
-            away=TeamRef(self.league, _team_code(t2, self.league)),
+            home=TeamRef(self.league, _team_code(right, self.league)),
+            away=TeamRef(self.league, _team_code(left, self.league)),
             start_utc=start,
             # 국제대회는 개최지가 옮겨 다닌다. 한국 대회는 KST가 홈 시간대다.
             # **국제 대회 개최지 시간대를 모르면 UTC를 '현지'라고 부르지 않는다.**

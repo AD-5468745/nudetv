@@ -32,6 +32,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch
+from _notices import NoticeMixin
 
 from contract import (GateError, League, LeaderEntry, RecordBook, Standing,
                       StreakKind, UnknownStatus, WLD, assert_recordbook)
@@ -42,6 +43,32 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 _BASE = "https://www.koreabaseball.com"
 _RANK = _BASE + "/Record/TeamRank/TeamRankDaily.aspx"
 _TOP5 = _BASE + "/Record/Ranking/Top5.aspx"
+
+# ASP.NET 컨트롤 이름 접두사(이 페이지의 마스터 페이지 중첩 깊이에서 나온다).
+_CTL = "ctl00$ctl00$ctl00$cphContents$cphContents$cphContents$"
+_SERIES_REGULAR = "0"          # ddlSeries: 0=정규시즌 · 1=시범경기
+
+# ── `season` 인자에 관한 정정 (v1.11i) ────────────────────────
+#
+# **전에는 `fetch(season)`이 아무 일도 하지 않았다.** `TeamRankDaily.aspx`는
+# 쿼리스트링을 받지 않아서 `fetch(2025)`가 `season="2025"`라는 라벨만 붙이고
+# 내용은 2026년 순위였다. 라벨이 틀린 기록은 없는 것보다 나쁘다.
+#
+# 그래서 **정말로 과거 시즌을 받을 수 있는지 실제 요청으로 확인했다**(2026-09-02):
+#   · `TeamRankDaily.aspx?searchYear=2025` → 무시. 여전히 2026.
+#   · 같은 페이지에는 연도 선택 자체가 없다(`ddlSeries` 하나뿐).
+#   · 연도 선택이 있는 `TeamRank.aspx`로 `ddlYear=2025` 포스트백을 쳐 봤다.
+#     드롭다운은 2025로 선택돼 돌아오지만 **표는 그대로 2026이다**
+#     (2025·2020 둘 다, 1·2차 포스트백 모두 '삼성 116경기 69승'=2026 진행 중 값).
+#   → 이 경로로는 과거 시즌을 받을 수 없다. 인자를 살릴 방법이 없다.
+#
+# 결론: **인자로 시즌을 고르지 않는다.** 시즌은 페이지가 스스로 말하는 값
+# (`hfSearchYear`)을 읽어 붙인다. 호출자가 굳이 시즌을 주면 그것은 '선택'이 아니라
+# **확인**으로 쓴다 — 다르면 막는다. 거짓 라벨이 붙을 자리를 아예 없앤다.
+#
+# `ddlSeries`(정규시즌/시범경기)는 반대로 **포스트백이 먹는다**(series=1을 치면
+# 시범경기 12경기 표가 온다). 기본값에 기대지 않고 매번 확인하고, 다르면 바로잡는다.
+_HIDDEN = re.compile(r'<input[^>]*type="hidden"[^>]*>', re.I)
 
 # Top5 페이지에서 '볼넷 TOP5'가 타자·투수 양쪽에 나온다.
 # 부문명만으로는 키가 겹치므로 stat_key로 갈라 이름을 붙인다.
@@ -78,7 +105,25 @@ _STREAK = re.compile(r"^(\d+)([승패무])$")
 _STREAK_KIND = {"승": StreakKind.WIN, "패": StreakKind.LOSS, "무": StreakKind.DRAW}
 
 
-class KboRecordAdapter:
+def _hidden_fields(html: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for m in _HIDDEN.finditer(html):
+        tag = m.group(0)
+        n = re.search(r'name="([^"]*)"', tag)
+        v = re.search(r'value="([^"]*)"', tag)
+        if n:
+            out[n.group(1)] = v.group(1) if v else ""
+    return out
+
+
+def _hidden_value(html: str, name: str) -> str:
+    m = re.search(r'name="%s"[^>]*value="([^"]*)"' % re.escape(name), html)
+    if not m:
+        m = re.search(r'%s"[^>]*value="([^"]*)"' % re.escape(name.split("$")[-1]), html)
+    return m.group(1).strip() if m else ""
+
+
+class KboRecordAdapter(NoticeMixin):
     league = League.KBO
 
     def __init__(self) -> None:
@@ -95,10 +140,43 @@ class KboRecordAdapter:
         return _fetch(self._op, url,
                       label=f"KBO 기록 {url.rsplit('/', 1)[-1]}").decode("utf-8", "replace")
 
+    def _post(self, url: str, html: str, fields: dict[str, str]) -> str:
+        form = _hidden_fields(html)
+        form.update(fields)
+        req = urllib.request.Request(
+            url, data=urllib.parse.urlencode(form).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Referer": url, "User-Agent": _UA})
+        return _fetch(self._op, req, label="KBO 기록 포스트백").decode("utf-8", "replace")
+
+    def _rank_html(self) -> tuple[str, str]:
+        """(HTML, 페이지가 말하는 시즌). 정규시즌 표임을 확인하고 아니면 바로잡는다."""
+        html = self._get(_RANK)
+        series = _hidden_value(html, _CTL + "hfSearchSeries")
+        if series and series != _SERIES_REGULAR:
+            # 기본값이 시범경기로 바뀐 상태. 조용히 그 표를 쓰면 3월에
+            # '시범경기 순위'가 정규시즌 순위 자리에 실린다.
+            self.note_text("순위 표 구분 보정",
+                           f"기본값이 ddlSeries={series}였습니다 — 정규시즌으로 다시 요청")
+            html = self._post(_RANK, html, {
+                "__EVENTTARGET": _CTL + "ddlSeries", "__EVENTARGUMENT": "",
+                _CTL + "ddlSeries": _SERIES_REGULAR,
+                _CTL + "hfSearchSeries": _SERIES_REGULAR})
+            series = _hidden_value(html, _CTL + "hfSearchSeries")
+            if series != _SERIES_REGULAR:
+                raise GateError(
+                    f"KBO 순위: 정규시즌 표를 못 받았습니다 (ddlSeries={series!r}) — "
+                    f"시범경기 순위를 정규시즌 순위로 내보내지 않습니다")
+        page_season = _hidden_value(html, _CTL + "hfSearchYear")
+        if not re.fullmatch(r"\d{4}", page_season):
+            raise GateError(
+                f"KBO 순위: 페이지가 시즌을 안 알려줍니다 (hfSearchYear={page_season!r}) — "
+                f"어느 해 순위인지 모른 채 라벨을 붙이지 않습니다")
+        return html, page_season
+
     # ── 1) 팀 순위 + 2) 상대전적 ────────────────────────────────
 
-    def _fetch_rank_page(self, season: int) -> tuple[list[Standing], dict]:
-        html = self._get(_RANK)
+    def _fetch_rank_page(self, html: str, season: str) -> tuple[list[Standing], dict]:
         tables = re.findall(r"<table[^>]*>.*?</table>", html, re.S)
         if len(tables) < 2:
             raise GateError(f"KBO 순위: 표 {len(tables)}개 (기대 2개 — 페이지 구조 변경)")
@@ -209,11 +287,25 @@ class KboRecordAdapter:
 
     # ── 공개 API ───────────────────────────────────────────────
 
-    def fetch(self, season: int, *, with_leaders: bool = True) -> RecordBook:
-        standings, h2h = self._fetch_rank_page(season)
+    def fetch(self, season: "int | str | None" = None, *,
+              with_leaders: bool = True) -> RecordBook:
+        """소스는 **현재 시즌만** 준다 (이유는 파일 위 `season` 인자 주석 참조).
+
+        `season`은 고르는 값이 아니라 **확인용**이다. 주면 페이지가 말하는 시즌과
+        대조해 다르면 막는다. 안 주면 페이지가 말하는 시즌을 그대로 붙인다.
+        """
+        self.reset_notices()
+        html, page_season = self._rank_html()
+        if season is not None and str(season).strip() != page_season:
+            raise GateError(
+                f"KBO 기록: {season} 시즌을 요청했지만 소스가 주는 것은 {page_season} 시즌입니다. "
+                f"이 페이지에는 연도 선택이 없고 `TeamRank.aspx`의 연도 포스트백도 "
+                f"표를 바꾸지 못합니다(실측). 과거 시즌 라벨을 붙이지 않습니다.")
+
+        standings, h2h = self._fetch_rank_page(html, page_season)
         leaders = self._fetch_leaders() if with_leaders else {}
         rb = RecordBook(
-            league=League.KBO, season=str(season),
+            league=League.KBO, season=page_season,
             collected_utc=datetime.now(timezone.utc), source_url=_RANK,
             standings=standings, h2h=h2h, leaders=leaders)
         assert_recordbook(rb)                 # 교차 대조 게이트

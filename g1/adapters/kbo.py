@@ -19,6 +19,7 @@ import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _http import fetch as _fetch
+from _notices import NoticeMixin
 from contract import (Game, GameMeta, League, Score, ScoreUnit, Status, TeamRef,
                       GateError, UnknownStatus, KBO_NOTE_NORMAL,
                       KBO_KNOWN_CANCEL_REASONS, KBO_RELAY_DONE)
@@ -29,8 +30,50 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 _PAGE = "https://www.koreabaseball.com/Schedule/Schedule.aspx"
 _API = "https://www.koreabaseball.com/ws/Schedule.asmx/GetScheduleList"
 
-# 정규시즌(0) · 포스트시즌(9) · 올스타(6). D리그·시범경기는 제외된다.
-_SERIES = "0,9,6"
+# ── 시리즈(srId) ─────────────────────────────────────────────
+#
+# **전에는 `_SERIES = "0,9,6"` 하나였고 주석은 "정규시즌(0)·포스트시즌(9)·올스타(6)"라
+# 적혀 있었다. 셋 다 틀렸다 (v1.11i 전수조사).**
+#
+# 2025시즌 전 월(03~11) × srId 0~9 전수 실측 — 실제 도메인:
+#     0 정규시즌      804경기   (3~10월)
+#     1 시범경기       50경기   (3월)                       → 제외
+#     2 퓨처스(2군)     1경기   (9/21 경산, 11:00)          → 제외
+#     3 준플레이오프    5경기   (10/09~, SSG-삼성)
+#     4 와일드카드      2경기   (10/06~, NC-삼성)
+#     5 플레이오프      6경기   (10/17~, 삼성-한화)
+#     7 한국시리즈      5경기   (10/26~, LG-한화)
+#     8 국가대표 평가전  4경기   (11월, 한국-일본-체코)      → 제외
+#                     2026-03에는 47경기(WBC)                → 제외
+#     9 올스타전        1경기   (7/12, '나눔' vs '드림')     → 제외(아래 근거)
+# 6은 어느 달에도 0건이었다 — **없는 코드를 포스트시즌이라고 부르고 있었다.**
+# 즉 `"0,9,6"`은 포스트시즌 18경기(3·4·5·7)를 **한 경기도 안 가져왔다.**
+# 정규시즌이 10월 초에 끝나므로 그 뒤로 KBO가 통째로 침묵했다.
+#
+# **올스타(9)를 넣지 않는 이유** — 팀 자리에 구단이 아니라 '나눔'·'드림'이 온다.
+# 이 이름은 `TEAM_CODE`에도 계약의 `TEAM_NAMES[KBO]`에도 없다. 넣으면
+# `_parse_row`가 `UnknownStatus`를 던져 **7월 올스타 주간 내내 KBO 전체가 죽는다**
+# (MLB 어댑터가 올스타·시범경기를 `_GAME_TYPES`로 제외한 것과 같은 이유다).
+# 8(국가대표)도 같다 — 팀 자리에 '한국'·'일본'·'체코'가 온다.
+_SERIES_REGULAR = "0"
+_SERIES_POSTSEASON = ("4", "3", "5", "7")     # 와일드카드 → 준PO → PO → 한국시리즈
+SERIES_IDS: tuple[str, ...] = (_SERIES_REGULAR,) + _SERIES_POSTSEASON
+
+# 사람이 읽는 이름 — 보고에 쓴다.
+SERIES_NAMES = {"0": "정규시즌", "3": "준플레이오프", "4": "와일드카드",
+                "5": "플레이오프", "7": "한국시리즈"}
+
+# **콤마 목록을 쓰지 않는 이유 (실제 요청으로 확인).**
+# 소스는 `srIdList`에 콤마 목록을 받지만 **원소를 잃는다.** 2025-07 실측:
+#     '0' = 110 · '9' = 1 · '6' = 0
+#     '0,9'   = 111  (정상)      '6,9,0' = 111  (정상)
+#     '0,9,6' = 110  ← srId 9의 1건(20250712EAWE0)이 **사라진다**
+# 순서만 바꾸면 살아나므로 우리 파싱 문제가 아니라 서버 쪽 목록 처리 문제다.
+# 2025-10에서는 '0,3,4,5,7'=27로 개별 합(9+5+2+6+5)과 정확히 맞아 **어떤 목록은
+# 멀쩡하다.** 즉 "이 목록은 되고 저 목록은 안 된다"를 코드가 알 방법이 없다.
+# 그래서 **시리즈마다 따로 요청해 합친다.** 요청은 월당 5회로 늘지만,
+# 조용히 한 시리즈가 통째로 빠지는 것보다 낫다.
+# (합친 뒤 `gameId`로 중복을 없앤다 — 시리즈가 겹쳐 오는 경우에 대비.)
 
 # 팀 약칭 매핑 — 소스가 주는 한글명 → 팀 코드
 # gameId(20260901LGOB0)에도 같은 코드가 들어 있어 교차 검증이 된다
@@ -51,7 +94,15 @@ VENUE = {
 }
 
 
-class KboAdapter:
+# 같은 키가 겹쳤을 때 남길 우선순위. 종료 > 진행 > 예정 > 취소.
+_RESOLUTION = {Status.FINAL: 3, Status.LIVE: 2, Status.SCHEDULED: 1}
+
+
+def _resolution_rank(g: Game) -> tuple[int, str]:
+    return (_RESOLUTION.get(g.status, 0), str(g.start_utc))
+
+
+class KboAdapter(NoticeMixin):
     league = League.KBO
 
     def __init__(self) -> None:
@@ -76,10 +127,10 @@ class KboAdapter:
             raise GateError("KBO: 세션 쿠키 획득 실패")
         self._warm = True
 
-    def _fetch_month(self, season: int, month: str) -> list[dict]:
+    def _fetch_month(self, season: int, month: str, series: str) -> list[dict]:
         self._ensure_session()
         body = urllib.parse.urlencode({
-            "leId": 1, "srIdList": _SERIES, "seasonId": season,
+            "leId": 1, "srIdList": series, "seasonId": season,
             "gameMonth": month, "teamId": "",
         }).encode()
         req = urllib.request.Request(_API, data=body, headers={
@@ -87,7 +138,8 @@ class KboAdapter:
             "Referer": _PAGE, "X-Requested-With": "XMLHttpRequest",
             "Origin": "https://www.koreabaseball.com",
         })
-        raw = _fetch(self._op, req, label=f'KBO 일정 {month}').decode("utf-8")
+        raw = _fetch(self._op, req,
+                     label=f'KBO 일정 {month} 시리즈{series}').decode("utf-8")
         return json.loads(raw).get("rows", [])
 
     # ── 파싱 ────────────────────────────────────────────────
@@ -130,12 +182,6 @@ class KboAdapter:
         home_sc = int(m_r.group(1)) if (m_r and m_r.group(1)) else None
         if away_name not in TEAM_CODE or home_name not in TEAM_CODE:
             raise UnknownStatus(f"KBO: 미등록 팀명 {away_name!r} / {home_name!r}")
-
-        # 경기 키 — 소스가 주면 그대로, 없으면 확정 규칙대로 생성
-        if gid:
-            game_key = gid.group(1)
-        else:
-            game_key = f"{cur_date}{TEAM_CODE[away_name]}{TEAM_CODE[home_name]}0"
 
         hhmm = re.match(r"(\d{2}):(\d{2})", tm)
         if not hhmm or not cur_date:
@@ -194,6 +240,31 @@ class KboAdapter:
         else:
             status = Status.SCHEDULED
 
+        # ── 경기 키 ──────────────────────────────────────────
+        # 소스가 `gameId`를 주면 그대로 쓴다. 취소·미래 경기에는 안 준다.
+        #
+        # **생성 키가 충돌한 사례 (v1.11i 실측).** 2025-09-17 창원에서
+        #   15:00 SSG vs NC — 우천취소 (gameId 없음 → 생성 키 `20250917SKNC0`)
+        #   18:30 SSG 0 vs 4 NC — 종료 (gameId `20250917SKNC0`)
+        # 두 행이 **같은 키**를 갖는다. 서로 다른 경기인데 `game_id`가 같아지니
+        # 하나가 다른 하나를 덮는다. 어느 쪽이 남는지는 행 순서에 달려 있어서,
+        # 하필 취소 행이 남으면 **실제로 열린 경기가 '우천취소'로 발행된다.**
+        # 취소 행은 영원히 `gameId`를 받지 못하므로 키가 나중에 바뀔 일도 없다.
+        # → 취소 행에만 시각을 붙여 가른다. 정상 경기의 키 형식은 건드리지 않는다
+        #   (예정 경기 키를 바꾸면 스냅샷 대조가 한 번 어긋난다).
+        if gid:
+            game_key = gid.group(1)
+        elif cancel_reason:
+            game_key = (f"{cur_date}{TEAM_CODE[away_name]}{TEAM_CODE[home_name]}"
+                        f"0C{hhmm.group(1)}{hhmm.group(2)}")
+        else:
+            game_key = f"{cur_date}{TEAM_CODE[away_name]}{TEAM_CODE[home_name]}0"
+
+        # 더블헤더 차수는 `gameId`의 끝자리에만 있다. 생성 키에서 읽으면
+        # 시각의 마지막 숫자를 차수로 오해한다.
+        tail = gid.group(1)[-1] if gid else ""
+        dh_seq = (int(tail) or None) if tail.isdigit() else None
+
         lat_lon_dome = VENUE.get(venue or "", (None, None, False))
         g = Game(
             league=League.KBO, season=str(season), source_key=game_key,
@@ -202,7 +273,7 @@ class KboAdapter:
             start_utc=start.astimezone(ZoneInfo("UTC")),
             home_tz="Asia/Seoul", status=status, score=score, venue=venue,
             meta=GameMeta(is_dome=lat_lon_dome[2],
-                          doubleheader_seq=int(game_key[-1]) or None,
+                          doubleheader_seq=dh_seq,
                           cancel_reason=cancel_reason),
         )
         g.validate()
@@ -211,17 +282,50 @@ class KboAdapter:
     # ── 공개 API ────────────────────────────────────────────
 
     def fetch(self, season: int, months: list[str]) -> list[Game]:
-        games: list[Game] = []
+        """월 × 시리즈로 나눠 긁고 `source_key`로 합친다.
+
+        **시리즈를 나눠 부르는 이유는 위 `_SERIES_*` 주석 참조** — 콤마 목록이
+        원소를 잃는 것을 실제 요청으로 확인했다. 나눠 부르면 그 위험이 사라지는
+        대신 같은 경기가 두 시리즈에서 올 여지가 생기므로, 여기서 한 번 더 합친다.
+        """
+        self.reset_notices()
         self.unknown_notes.clear()
+        by_key: dict[str, Game] = {}
+        per_series: dict[str, int] = {}
         for mm in months:
-            cur = ""
-            for row in self._fetch_month(season, mm):
-                try:
-                    cur, g = self._parse_row(row, season, cur)
-                except UnknownStatus:
-                    raise            # 미등록 팀 → 게이트 차단 + DM (추측 금지)
-                except GateError:
-                    raise
-                if g:
-                    games.append(g)
+            for sr in SERIES_IDS:
+                cur = ""
+                n = 0
+                for row in self._fetch_month(season, mm, sr):
+                    try:
+                        cur, g = self._parse_row(row, season, cur)
+                    except UnknownStatus:
+                        raise        # 미등록 팀 → 게이트 차단 + DM (추측 금지)
+                    except GateError:
+                        raise
+                    if not g:
+                        continue
+                    n += 1
+                    prev = by_key.get(g.source_key)
+                    if prev is None:
+                        by_key[g.source_key] = g
+                        continue
+                    # 키가 겹치면 **더 확정된 쪽**을 남긴다. 먼저 온 쪽을 남기면
+                    # 행 순서에 따라 결과가 취소로 덮이는 사고가 난다(위 키 주석 참조).
+                    keep = max((prev, g), key=_resolution_rank)
+                    by_key[g.source_key] = keep
+                    self.note("같은 키의 행이 둘 이상 — 확정된 쪽만 남김",
+                              f"{g.source_key} {prev.status.value}/{g.status.value}"
+                              f" → {keep.status.value}")
+                per_series[sr] = per_series.get(sr, 0) + n
+
+        games = sorted(by_key.values(), key=lambda g: (g.start_utc, g.source_key))
+        # 포스트시즌이 잡히는지 운영에서 눈으로 확인할 수 있게 시리즈별 건수를 남긴다.
+        # (10월에 '정규시즌 0건 · 포스트시즌 0건'이면 그 자체가 사고 신호다.)
+        picked = " · ".join(f"{SERIES_NAMES.get(sr, sr)} {per_series.get(sr, 0)}"
+                            for sr in SERIES_IDS)
+        self.note_text("시리즈별 수집", picked)
+        if self.unknown_notes:
+            for note in sorted(self.unknown_notes):
+                self.note("처음 보는 취소 사유", note)
         return games

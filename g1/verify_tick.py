@@ -677,8 +677,22 @@ check("현재 설정이 게이트를 통과한다",
 check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
       lookahead_for(ContentType.MORNING, 90 * 60) == 0,
       str(lookahead_for(ContentType.MORNING, 90 * 60)))
+# v1.11i: 앞창 값을 상수로 못 박던 검사였다(2시간). 전수조사에서 실측 최악
+# 시계 간격이 240분인데 시작 알림 창이 235분이라 1.67%가 조용히 사라지는 것을
+# 발견해 앞창을 2.5시간으로 넓혔다. **지켜야 할 것은 특정 숫자가 아니라**
+# ① 일찍부터 잡는다 ② 창이 실측 최악 간격을 덮는다 — 두 가지다.
 check("시작 알림은 일찍부터 잡는다 (문구가 실시간이라 안전)",
-      lookahead_for(ContentType.START_ALERT, 6 * 60) == 2 * 3600)
+      lookahead_for(ContentType.START_ALERT, 6 * 60) >= 2 * 3600,
+      str(lookahead_for(ContentType.START_ALERT, 6 * 60)))
+_WORST_OBSERVED_TICK_SECONDS = 240 * 60      # 실측 최악(깃허브 자동 시계)
+check("시작 알림 창이 실측 최악 간격을 덮는다",
+      send_window_seconds(ContentType.START_ALERT,
+                          T.LOOKAHEAD_SECONDS) >= _WORST_OBSERVED_TICK_SECONDS,
+      f"{send_window_seconds(ContentType.START_ALERT, T.LOOKAHEAD_SECONDS) // 60}분")
+check("모닝 브리핑 창도 실측 최악 간격을 덮는다 (전 리그가 같은 창이라 함께 사라진다)",
+      send_window_seconds(ContentType.MORNING,
+                          T.LOOKAHEAD_SECONDS) >= _WORST_OBSERVED_TICK_SECONDS,
+      f"{send_window_seconds(ContentType.MORNING, T.LOOKAHEAD_SECONDS) // 60}분")
 # **결과 카드를 일찍 보내면 경기가 빠진다.** 예약 시각은 '마감'이고, 렌더는
 # "한 경기라도 끝났으면" 카드를 만든다. 앞창을 열면 5경기 중 1경기만 끝난
 # 시점에 카드가 나가고 나머지는 영영 빠진다(멱등키가 재발송을 막으므로).
@@ -822,7 +836,7 @@ check("MLB는 연고지 기준 (네이버 스포츠 표기)",
       and _mlb["STL"] == "세인트루이스", str(_mlb.get("BOS")))
 check("같은 도시 두 팀만 구분자를 붙인다",
       _mlb["NYY"] == "뉴욕양키스" and _mlb["NYM"] == "뉴욕메츠"
-      and _mlb["CHC"] == "시카고컵스" and _mlb["CWS"] == "시카고W"
+      and _mlb["CHC"] == "시카고컵스" and _mlb["CWS"] == "화이트삭스"
       and _mlb["LAD"] == "LA다저스" and _mlb["LAA"] == "LA에인절스")
 check("커뮤니티 축약어를 쓰지 않는다",
       not ({"화삭스", "D-백스", "파이리츠"} & set(_mlb.values())),

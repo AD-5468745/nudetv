@@ -262,9 +262,27 @@ check("day_word 다음날 새벽",
       P.day_word([mk(League.MLB, "2026-09-01", 12, 15, tz="America/New_York", h="ATL", a="SF")],
                  send) == "내일 새벽",
       P.day_word([mk(League.MLB, "2026-09-01", 12, 15, tz="America/New_York", h="ATL", a="SF")], send))
-check("day_word 이틀 뒤는 날짜로",
-      P.day_word([mk(League.KBO, "2026-09-03", 18, 30, tz="Asia/Seoul", h="LG", a="OB")],
-                 send) == "9월 3일")
+# **[기대 변경 2026-09-02] `9월 3일` → `9.3 목`.**
+# **원래 목적**: "이틀 뒤를 '오늘'이나 상대어로 말하지 않는다". 그 목적은 그대로다.
+# 바뀐 것은 **표기뿐**이다 — 카드 헤더는 `8.30 일`인데 헤드라인만 `9월 3일`이라
+# 한 카드 안에 날짜 표기가 두 종류였다. v1.11i에서 `day_word()`도 헤더와 같은
+# `M.D 요일`로 통일했다(pipeline._day_word_at).
+# 기대값만 바꾸면 검증이 무뎌지므로 목적을 **세 갈래로 나눠** 지킨다:
+#   ① 새 형식과 정확히 같은가  ② 상대어가 섞이지 않았는가(원래 목적 그 자체)
+#   ③ 붙인 요일이 **실제 요일**과 맞는가 — 형식만 보면 요일을 틀려도 통과한다
+#   ④ 카드 헤더(kst_day_label)와 **같은 문자열**인가 — 통일이 목적이었으므로
+#      둘이 갈라지면 고친 이유 자체가 사라진다
+_far_day = "2026-09-03"
+_far = [mk(League.KBO, _far_day, 18, 30, tz="Asia/Seoul", h="LG", a="OB")]
+_fw = P.day_word(_far, send)
+check("day_word 이틀 뒤는 날짜로 (헤더와 같은 M.D 요일)", _fw == "9.3 목", _fw)
+check("day_word 이틀 뒤에 상대어를 쓰지 않는다",
+      not any(w in _fw for w in ("오늘", "내일", "모레", "어제")), _fw)
+check("day_word가 붙인 요일이 실제 요일과 같다",
+      _fw.endswith(P._WD[datetime.fromisoformat(_far_day).weekday()]), _fw)
+check("헤드라인 날짜 표기가 카드 헤더와 같은 형식",
+      _fw == kst_day_label(_far, _far_day)[0],
+      f"{_fw} vs {kst_day_label(_far, _far_day)[0]}")
 check("day_word 빈 입력", P.day_word([], send) == "오늘")
 
 
@@ -495,10 +513,18 @@ check("캡션이 취소 수를 병기한다", "2경기 취소" in cap_m.splitlin
       cap_m.splitlines()[0])
 
 # (6) 지난 날짜를 '오늘'이라 하지 않는다
-past = [mk(League.KBO, "2026-08-01", 18, 30, tz="Asia/Seoul", h="OB", a="LG")]
-check("지난 날짜는 날짜로 말한다",
-      P.day_word(past, datetime(2026, 9, 1, 12, 0, tzinfo=KST)) == "8월 1일",
-      P.day_word(past, datetime(2026, 9, 1, 12, 0, tzinfo=KST)))
+# **[기대 변경 2026-09-02] `8월 1일` → `8.1 토`.** 위 5-2절과 같은 이유다 —
+# 날짜 표기를 카드 헤더와 같은 `M.D 요일` 한 가지로 통일했다(v1.11i).
+# **원래 목적**("하루 묵은 카드가 오늘 것으로 보이지 않게 한다")은 표기와 무관하므로
+# 형식·상대어·요일을 나눠 확인해 그대로 지킨다.
+past_day = "2026-08-01"
+past = [mk(League.KBO, past_day, 18, 30, tz="Asia/Seoul", h="OB", a="LG")]
+_pw = P.day_word(past, datetime(2026, 9, 1, 12, 0, tzinfo=KST))
+check("지난 날짜는 날짜로 말한다", _pw == "8.1 토", _pw)
+check("지난 날짜에 상대어를 쓰지 않는다",
+      not any(w in _pw for w in ("오늘", "내일", "어제", "그제")), _pw)
+check("지난 날짜의 요일도 실제 요일과 같다",
+      _pw.endswith(P._WD[datetime.fromisoformat(past_day).weekday()]), _pw)
 
 # (7) 더블헤더 표시
 dh = [mk(League.MLB, "2026-08-29", 13, 5, tz="America/New_York", h="NYY", a="BOS",
@@ -550,19 +576,106 @@ def _rb(lg: League, cats) -> RecordBook:
                       leaders={c: [_le(c, i) for i in range(5)] for c in cats})
 
 
-# (1) 비야구 리그 리더보드가 야구 제목을 달지 않는다
+# (1) 리더보드 제목이 카드 내용을 속이지 않는가
 kbl_rb = _rb(League.KBL, ("득점", "리바운드", "어시스트", "3점",
                           "스틸", "블록", "자유투", "야투"))
 sets = [P.leader_set(kbl_rb, i) for i in range(4)]
 check("비야구 리그에 야구 제목을 안 쓴다",
       all("타격" not in t and "투수" not in t for t, _ in sets), str([t for t, _ in sets]))
 check("세트마다 다른 부문을 싣는다", sets[0][1] != sets[1][1], str(sets[0][1]))
-check("제목이 실제 실린 부문과 같다",
-      all(all(c in t for c in cats) for t, cats in sets), str(sets[0]))
 kbo_rb = _rb(League.KBO, ("타율", "홈런", "타점", "도루",
                           "평균자책점", "승리", "탈삼진", "세이브"))
 check("야구 리그는 이름 붙은 세트를 그대로 쓴다",
       P.leader_set(kbo_rb, 0)[0] == "타격 부문", str(P.leader_set(kbo_rb, 0)))
+
+# ── 제목 검사 교체 (2026-09-02) ─────────────────────────────────────────
+# **[기대 변경] 옛 검사 "제목이 실제 실린 부문과 같다"를 뺐다.**
+# 옛 동작은 부문명 4개를 이어 붙인 것을 제목으로 썼다(`득점 · 리바운드 · 어시스트 · 3점`).
+# 그것은 제목으로 읽히지 않고 h1 한 줄 폭을 넘겨서, v1.11i에서 **리그별 고정
+# 세트명**(`공격 부문`/`수비 부문`, 표가 없으면 `주요 부문`)으로 바꿨다.
+# 이제 제목이 부문명을 포함하지 않으므로 옛 검사는 성립할 수 없다.
+#
+# **원래 목적은 "제목이 카드 내용을 속이지 않는다"**이고, 그 목적은 남는다.
+# 제목이 더 이상 내용에서 만들어지지 않으므로, **제목이 거짓이 될 수 있는 경로**를
+# 새로 찾아 넷으로 나눠 막는다. 리그마다 부문 수가 다르고(수집이 일부 실패하면
+# 더 줄어든다) 세트는 요일로 4번 돈다 — 그 조합 전부를 훑는다.
+#   (a) 지어낸 제목이 나오지 않는다
+#   (b) **뜻이 있는 제목이 다르면 실린 부문 구성도 다르다**
+#       (같은 카드를 제목만 바꿔 네 번 낸 것이 애초에 이 자리를 고친 이유다.
+#        `주요 부문`처럼 아무 부문도 지목하지 않는 공용 이름은 비교에서 뺀다 —
+#        공용 이름은 무엇도 주장하지 않으므로 거짓이 될 수 없다.)
+#   (c) **제목이 특정 부문을 지목하면 그 부문이 실제로 실려 있다**
+#       (야구 세트명은 그 세트의 4부문이 전부 있을 때만 쓴다)
+#   (d) 제목이 다시 부문명 나열로 돌아가지 않는다 (옛 결함 회귀 방지)
+
+# "뜻이 있는 제목" = 부문 묶음을 지목하는 이름. 공용 이름(`주요 부문`)은 뺀다.
+_SPECIFIC_TITLES = ({t for t, _ in P.LEADER_SETS}
+                    | {n for v in P._LEADER_SET_NAMES.values() for n in v})
+
+_POOLS = {   # 리그별로 실제로 올 만한 부문 이름 (Top5 페이지 표기 계열)
+    League.KBL: ["득점", "리바운드", "어시스트", "3점", "스틸", "블록", "자유투", "야투",
+                 "턴오버", "파울"],
+    League.LCK: ["KDA", "분당 CS", "분당 데미지", "킬 관여", "퍼스트블러드", "오브젝트",
+                 "시야점수", "솔로킬"],
+    League.KL1: ["득점", "도움", "슈팅", "유효슈팅", "태클", "인터셉트", "세이브", "클린시트"],
+    League.VLEAGUE_M: ["득점", "공격 성공률", "서브", "블로킹", "디그", "리시브", "세트", "범실"],
+    League.KBO: ["타율", "홈런", "타점", "도루", "평균자책점", "승리", "탈삼진", "세이브",
+                 "출루율", "장타율", "OPS", "안타", "WHIP", "QS", "이닝", "피안타율"],
+    League.MLB: ["타율", "홈런", "타점", "도루", "평균자책점", "승리", "탈삼진", "세이브",
+                 "출루율", "장타율", "OPS", "안타"],
+}
+
+_made_up: list[str] = []      # (a) 어디에도 정의되지 않은 제목
+_same_cats: list[str] = []    # (b) 뜻이 다른 제목인데 실린 부문이 똑같다
+_unearned: list[str] = []     # (c) 야구 세트명을 달았는데 그 부문이 없다
+_listy: list[str] = []        # (d) 제목이 부문명 나열이다
+
+for _lg, _pool in _POOLS.items():
+    _allowed = (set(P._LEADER_SET_NAMES.get(_lg, [])) | {P.LEADER_SET_FALLBACK}
+                | {t for t, _ in P.LEADER_SETS})
+    for _n in range(1, len(_pool) + 1):          # 부문이 일부만 수집된 날까지
+        _rbx = _rb(_lg, tuple(_pool[:_n]))
+        _s = [P.leader_set(_rbx, i) for i in range(4)]
+        for _i, (_t, _c) in enumerate(_s):
+            if _t not in _allowed:
+                _made_up.append(f"{_lg.value} n={_n} set{_i}: {_t}")
+            # 옛 형식은 "실린 부문명 **전부**를 ' · '로 이어 붙인 것"이었다.
+            # (고정 세트명이 부문 낱말 하나를 품는 것은 정상이다 —
+            #  `제구·이닝 부문`은 나열이 아니라 이름이다.)
+            if (_c and all(_cat in _t for _cat in _c)) or " · " in _t:
+                _listy.append(f"{_lg.value} n={_n} set{_i}: {_t} ← {_c}")
+            for _wt, _wc in P.LEADER_SETS:       # 야구 세트명은 '지목하는' 제목이다
+                if _t == _wt and set(_c) != set(_wc):
+                    _unearned.append(f"{_lg.value} n={_n} set{_i}: {_t} ← {_c}")
+            for _j in range(_i + 1, 4):
+                _t2, _c2 = _s[_j]
+                if (_t != _t2 and _c == _c2
+                        and _t in _SPECIFIC_TITLES and _t2 in _SPECIFIC_TITLES):
+                    _same_cats.append(f"{_lg.value} n={_n}: {_t}/{_t2} ← {_c}")
+
+check("제목을 지어내지 않는다 (정의된 세트명·공용 이름 중 하나)",
+      not _made_up, "; ".join(_made_up[:3]))
+check("뜻이 다른 제목이면 실린 부문 구성도 다르다 (같은 카드를 제목만 바꿔 내지 않는다)",
+      not _same_cats, "; ".join(_same_cats[:3]))
+check("제목이 지목한 부문이 실제로 실려 있다 (야구 세트명은 4부문이 다 있을 때만)",
+      not _unearned, "; ".join(_unearned[:3]))
+check("제목이 부문명 나열로 돌아가지 않았다 (h1 한 줄)",
+      not _listy, "; ".join(_listy[:3]))
+check("제목이 한 줄에 들어가는 길이",
+      all(len(P.leader_set(_rb(lg, tuple(p[:8])), i)[0]) <= 12
+          for lg, p in _POOLS.items() for i in range(4)))
+
+# 요구 부문이 하나라도 빠지면 그 세트 이름을 쓰지 않는다 —
+# "타격 부문"이라 적고 평균자책점을 싣는 것이 곧 제목의 거짓말이다.
+_kbo_missing = _rb(League.KBO, ("타율", "홈런", "타점",          # 도루가 빠졌다
+                                "평균자책점", "승리", "탈삼진", "세이브"))
+_tm, _cm = P.leader_set(_kbo_missing, 0)
+check("요구 부문이 빠지면 그 세트 이름을 쓰지 않는다",
+      _tm != "타격 부문", f"{_tm} ← {_cm}")
+check("이름표가 없는 리그는 공용 이름으로 떨어진다 (야구 이름을 빌려 쓰지 않는다)",
+      P.leader_set(_rb(League.MLB, tuple(_POOLS[League.KBL][:8])), 0)[0]
+      == P.LEADER_SET_FALLBACK,
+      str(P.leader_set(_rb(League.MLB, tuple(_POOLS[League.KBL][:8])), 0)))
 
 # (2) 근거 없는 단정을 카드에 쓰지 않는다.
 # 렌더 전체를 돌리려면 순위표·부문값이 게이트를 전부 통과해야 해서(그 자체가 좋은

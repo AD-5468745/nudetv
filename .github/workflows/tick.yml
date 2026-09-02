@@ -97,11 +97,29 @@ jobs:
         #                      이게 사라지면 30분 제동장치가 풀려 5분마다 전 리그를
         #                      새로 긁습니다(하루 288번). 소스가 차단합니다.
         #   g1/cache         — LoL 원본 보관함. 호출 한도에 걸린 날 여기서 꺼내 버팁니다.
+        #
+        #   state/ticks.json — **"시계가 실제로 몇 분마다 도는가"의 유일한 근거입니다.**
+        #                      이게 없어서 실측 간격이 늘 0초로 나왔고, 발송 창
+        #                      게이트는 사람이 손으로 적은 100분(스스로 통과하도록
+        #                      맞춰둔 값)만 보게 되어 **무조건 통과**했습니다.
+        #                      커밋이 아니라 캐시에 두는 이유: 매 실행 내용이 바뀌므로
+        #                      커밋하면 하루 최대 288커밋이 되고, 무엇보다 아래
+        #                      **대장 커밋의 리베이스 충돌 확률을 올립니다** — 대장
+        #                      커밋이 실패하면 그날 것을 전부 다시 보냅니다.
+        #                      이 파일은 잃어도 '게이트가 몇 틱 눈을 감는' 정도이고,
+        #                      틱이 기록 부족을 알림에 실어 조용히 사라지지 않습니다.
+        #   state/ledger_mark.json
+        #                    — 대장 유실 감시 표식(줄 수·발송 수).
+        #                      **대장(git)과 일부러 다른 저장소(캐시)에 둡니다.**
+        #                      대장 커밋이 실패해 다음 실행의 대장이 되감기면,
+        #                      이 표식이 그것을 잡아 발송을 통째로 보류합니다.
         uses: actions/cache/restore@v4
         with:
           path: |
             state/games
             state/fetch.json
+            state/ticks.json
+            state/ledger_mark.json
             g1/cache
           key: data-${{ github.run_id }}
           restore-keys: data-
@@ -156,14 +174,23 @@ jobs:
           # 대장을 남기는 함수 — 연속 운전 중에도 매번 남겨야 합니다.
           # 실행이 6시간을 살다 중간에 죽으면, 그때까지 보낸 기록이 없어져
           # **이미 보낸 카드를 다시 보냅니다.** 되돌릴 수 없는 사고입니다.
+          #
+          # **실패를 실패로 돌려줍니다 (v1.11i).** 전에는 3회 다 실패해도
+          # 루프가 그냥 끝나 함수의 반환값이 마지막 `sleep`의 0이었습니다 —
+          # 대장이 안 올라갔는데 아무도 몰랐고, 다음 실행이 모닝·시작알림·결과를
+          # 전부 다시 보냈습니다. 이제 실패하면 1을 돌려주고 연속 운전을 멈춥니다
+          # (대장 없이 계속 보내는 것보다 멈추는 편이 낫습니다).
           save_ledger() {
-            git add -A state/ledger.jsonl state/alerts.json state/.gitkeep 2>/dev/null || true
+            git add -A state/ledger.jsonl state/alerts.json state/burst.json \
+                       state/.gitkeep 2>/dev/null || true
             git diff --cached --quiet && return 0
-            git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 0
+            git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 1
             for i in 1 2 3; do
               git pull -q --rebase --autostash && git push -q && return 0
               sleep $((i * 5))
             done
+            echo "::error::발송 대장을 저장소에 올리지 못했습니다 — 다음 실행이 재발송할 위험이 있어 연속 운전을 멈춥니다."
+            return 1
           }
           git config user.name  "nudetv-bot"
           git config user.email "bot@users.noreply.github.com"
@@ -181,7 +208,14 @@ jobs:
             echo "───── ${i}/${LOOPS} ─────"
             python g1/tick.py $DRY
             LAST=$?
-            save_ledger
+            # 대장을 못 올렸으면 **더 보내지 않고 멈춥니다.**
+            # 그대로 계속 돌면, 이 실행이 죽는 순간 그때까지 보낸 것이 통째로
+            # 유실되어 다음 실행이 전량 재발송합니다.
+            if ! save_ledger; then
+              echo "대장 저장 실패 — 연속 운전을 중단합니다."
+              LAST=1
+              break
+            fi
             [ "$i" -lt "$LOOPS" ] && sleep 300
           done
           # 연속 운전을 **끝까지** 마쳤다는 표시입니다. 다음 실행을 예약할지
@@ -215,6 +249,8 @@ jobs:
           path: |
             state/games
             state/fetch.json
+            state/ticks.json
+            state/ledger_mark.json
             g1/cache
           key: data-${{ github.run_id }}
 
@@ -229,17 +265,34 @@ jobs:
           # 대장만 커밋합니다. 경기 데이터(state/games)는 캐시가 들고 있습니다.
           # alerts.json도 함께 — **이게 없으면 같은 알림이 5분마다 다시 나갑니다**
           # (매 실행이 새 컨테이너라 "방금 보냈다"를 파일로만 기억할 수 있습니다).
-          git add -A state/ledger.jsonl state/alerts.json state/.gitkeep 2>/dev/null || true
+          # burst.json도 함께 — 폭주 차단 상태가 실행 사이에 살아남아야
+          # 차단이 뜻을 갖습니다(메모리에 두면 다음 실행이 또 폭주합니다).
+          git add -A state/ledger.jsonl state/alerts.json state/burst.json \
+                     state/.gitkeep 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음"
-          else
-            git commit -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC"
-            # 다른 실행이 먼저 밀어 넣었을 수 있습니다. 우리 것을 덮어쓰지 않고 얹습니다.
-            for i in 1 2 3; do
-              git pull --rebase --autostash && git push && break
-              sleep $((i * 5))
-            done
+            exit 0
           fi
+          git commit -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC"
+          # 다른 실행이 먼저 밀어 넣었을 수 있습니다. 우리 것을 덮어쓰지 않고 얹습니다.
+          #
+          # **3회 다 실패하면 이 스텝을 실패로 끝냅니다 (v1.11i).**
+          # 전에는 `for … do … && break; sleep …; done` 이라 세 번 다 실패해도
+          # 루프가 정상 종료하고 스텝의 exit code는 마지막 `sleep`의 0이었습니다.
+          # 대장이 안 올라가면 다음 실행은 그 회차 발송분을 모르고
+          # **모닝·시작알림·결과를 전부 다시 보냅니다** — 되돌릴 수 없는 사고인데
+          # 로그는 초록불이었습니다. 이제 빨간불로 드러납니다.
+          # (틱 쪽에도 방어가 있습니다: state/ledger_mark.json 표식이 캐시에 남아,
+          #  다음 실행에서 대장이 되감긴 것을 보면 발송을 통째로 보류합니다.)
+          for i in 1 2 3; do
+            if git pull --rebase --autostash && git push; then
+              echo "대장 저장 완료"
+              exit 0
+            fi
+            sleep $((i * 5))
+          done
+          echo "::error::발송 대장을 3회 시도 모두 저장하지 못했습니다. 다음 실행이 오늘 것을 다시 보낼 수 있습니다 — 즉시 확인하세요."
+          exit 1
 
       - name: 다음 실행 예약 (시계 안정화)
         # ─────────────────────────────────────────────────────────

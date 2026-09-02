@@ -280,34 +280,15 @@ def assert_transition(old: Status, new: Status) -> None:
 
 # 리그별 상태 매핑 화이트리스트. 여기 없는 값은 UnknownStatus.
 # NPB는 상태 표기 도메인이 미확보라 비어 있다 — 확보 전까지 NPB 활성화 금지.
+# ── STATUS_MAP은 '상태 문자열 → Status'만 담는다 ─────────────────────
+# v1.11i 전수조사에서 이 딕셔너리 앞부분에 **TEAM_NAMES를 잘못 붙여넣은 5블록**
+# (KL1·KBL·VLEAGUE_M·VLEAGUE_W·NPB)이 발견됐다. 파이썬 딕셔너리 리터럴은
+# 중복 키를 조용히 덮어쓰므로 KL1·NPB는 뒤 블록이 이겨 정상이었지만,
+# KBL·V리그 남/여는 STATUS_MAP[리그]["KT"] == "KT" 처럼 **Status가 아닌 문자열**을
+# 돌려주는 상태였다. 지금은 KBL(isEnded)·V리그(getime)가 parse_status를 부르지 않아
+# 터지지 않았을 뿐이고, 누가 부르는 순간 `status is Status.FINAL`이 전부 조용히 False가 된다.
+# 표를 지우면 parse_status가 UnknownStatus로 막는다 — 조용히 틀리는 것보다 낫다.
 STATUS_MAP: dict[League, dict[str, Status]] = {
-    League.KL1: {
-        "K21": "강원", "K22": "광주", "K35": "김천", "K10": "대전", "K26": "부천",
-        "K09": "서울", "K27": "안양", "K01": "울산", "K18": "인천", "K05": "전북",
-        "K04": "제주", "K03": "포항",
-    },
-    League.KBL: {
-        "KT": "KT", "MOB": "현대모비스", "DB": "DB", "SS": "삼성", "LG": "LG",
-        "SK": "SK", "KCC": "KCC", "KOGAS": "가스공사", "SONO": "소노", "KGC": "정관장",
-    },
-    League.VLEAGUE_M: {
-        "KAL": "대한항공", "HDC": "현대캐피탈", "SFI": "삼성화재", "WOORI": "우리카드",
-        "OK": "OK저축은행", "KEPCO": "한국전력", "KB": "KB손보",
-    },
-    League.VLEAGUE_W: {
-        "HK": "흥국생명", "HDE": "현대건설", "GS": "GS칼텍스", "KEC": "도로공사",
-        "IBK": "IBK기업은행", "KGC": "정관장", "SOOP": "SOOP",
-        # 페퍼저축은행은 2026년 SOOP에 인수되어 'SOOP 수퍼스'가 됐다.
-        # 지금 소스는 SOOP 코드만 보내지만, 과거 경기를 다시 긁을 때를 대비해 남긴다.
-        # (지우면 그 경기들의 팀명이 카드에 'PEPPER'로 찍힌다.)
-        "PEPPER": "페퍼저축",
-    },
-    League.NPB: {
-        "YOG": "요미우리", "DEN": "DeNA", "HAN": "한신", "CHU": "주니치",
-        "YAK": "야쿠르트", "HIR": "히로시마", "SOF": "소프트뱅크", "NIP": "니혼햄",
-        "LOT": "지바롯데", "RAK": "라쿠텐", "ORI": "오릭스", "SEI": "세이부",
-        "CEN": "센트럴", "PAC": "퍼시픽",
-    },
     League.MLB: {
         "scheduled": Status.SCHEDULED, "pre-game": Status.SCHEDULED, "warmup": Status.SCHEDULED,
         "in progress": Status.LIVE, "live": Status.LIVE,
@@ -453,7 +434,11 @@ DECIDED_BY_ALLOWED: dict[ScoreUnit, frozenset[DecidedBy]] = {
 }
 
 # 무승부가 존재하지 않는 단위 — is_draw()가 항상 False
-NO_DRAW_UNITS = frozenset({ScoreUnit.SETS, ScoreUnit.MAPS})
+#
+# v1.11i: POINTS(농구)가 빠져 있었다. 농구는 동점이면 연장을 치므로 무승부가 없는데,
+# 소스가 0:0(미시작 EASL 행 등)을 주면 is_draw()가 "무승부"라고 카드에 찍는다.
+# 지금은 KBL_PUBLISH_CATEGORIES가 그 행을 걸러서 도달하지 않지만, 구조로 막는다.
+NO_DRAW_UNITS = frozenset({ScoreUnit.SETS, ScoreUnit.MAPS, ScoreUnit.POINTS})
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -715,8 +700,14 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # 모닝 브리핑은 **늦게 나가도 유효하다** — 경기가 저녁이라 10시에 받아도 오늘 안내다.
     # (반대로 일찍은 안 된다. 07:30보다 이르면 '모닝'이 아니다 — 그래서 앞창이 아니라
     #  뒷창을 늘린다.)
-    ContentType.MORNING: 3 * 3600,
-    ContentType.NIGHT_BRIEF: 3 * 3600,   # 모닝과 같은 성격 — 늦게 나가도 유효하다
+    # v1.11i: 3h → 6h. 실측 최악 시계 간격이 240분인데 창이 180분이라
+    # **모닝만 24.17% 유실**했고, 모닝 창은 9개 리그가 전부 같아서
+    # 사라질 때 리그별이 아니라 **그날 채널의 모닝이 통째로 0건**이 됐다
+    # (시뮬 200일-시드 중 13일). 앞창은 여전히 0으로 잠근다 — 일찍 나가면 '모닝'이 아니다.
+    # 대신 뒷창을 6시간으로 열고, 10시를 넘겨 나가는 건은 배지·머리말을
+    # morning_label()로 바꿔 '모닝 브리핑'이라 우기지 않는다.
+    ContentType.MORNING: 6 * 3600,
+    ContentType.NIGHT_BRIEF: 6 * 3600,   # 모닝과 같은 성격 — 늦게 나가도 유효하다
     ContentType.KOREAN_DAILY: 7200,
     ContentType.LEADERBOARD: 7200,
     ContentType.POLL_SETTLEMENT: 21600,
@@ -838,9 +829,83 @@ def shift_out_of_quiet_hours(at_utc: datetime) -> datetime:
     return at_utc
 
 
+# ── 늦게 나가는 모닝 브리핑 (v1.11i) ─────────────────────────────────
+# 유예를 6시간으로 넓힌 대가로, 최악의 날엔 낮 1시에 나갈 수 있다.
+# 그때까지 '모닝 브리핑'이라 부르면 카드가 스스로 거짓말을 한다.
+MORNING_ON_TIME_UNTIL_HOUR_KST = 10
+
+
+def morning_label(now_utc: datetime) -> str:
+    """모닝 브리핑 배지·머리말에 쓸 이름. 발송 순간에 정한다."""
+    return ("모닝 브리핑"
+            if now_utc.astimezone(KST).hour < MORNING_ON_TIME_UNTIL_HOUR_KST
+            else "오늘의 경기")
+
+
+# ── 한국어 조사 (v1.11i) ────────────────────────────────────────────
+# 카드 문안에 "가"/"를"/"은"이 하드코딩돼 있어 받침 있는 팀명이 전부 비문이 됐다
+# (실측: "보스턴가 2위 뉴욕양키스에…", "전북가", "인천가"). 팀명·선수명은 변수라
+# 문자열에 조사를 박으면 반드시 절반이 틀린다.
+def has_final_consonant(word: str) -> bool:
+    """마지막 글자에 받침이 있는가. 한글이 아니면 False(조사 선택은 호출부 기본값)."""
+    for ch in reversed(word.strip()):
+        if ch.isspace():
+            continue
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            return (code - 0xAC00) % 28 != 0
+        # 한글이 아닌 글자로 끝나면(영문 약칭·숫자) 받침 없음으로 본다.
+        return False
+    return False
+
+
+def josa(word: str, with_batchim: str, without_batchim: str) -> str:
+    """`word + josa(word, '이', '가')` 형태로 쓴다. 앞 글자 받침에 맞춰 고른다."""
+    return with_batchim if has_final_consonant(word) else without_batchim
+
+
+# ── 취소·연기 사유 표기 (v1.11i) ─────────────────────────────────────
+# NPB 사유가 일본어 원문("中止")으로 한국어 채널에 그대로 인쇄되고 있었다.
+# KBO '그라운드사정'은 셋 중 혼자 '취소'로 끝나지 않아 그 행만 취소인지 지연인지
+# 읽을 수 없었다. 표기는 렌더가 아니라 여기서 한 번에 정한다.
+CANCEL_REASON_LABEL: dict[str, str] = {
+    # NPB (일본어 원문)
+    "中止": "우천취소",
+    "ノーゲーム": "노게임",
+    "延期": "연기",
+    "サスペンデッド": "서스펜디드",
+    "(予備日)": "예비일",
+    "予備日": "예비일",
+    # KBO
+    "그라운드사정": "그라운드사정 취소",
+}
+
+
+def cancel_reason_text(raw: Optional[str], status: Optional["Status"] = None) -> str:
+    """카드·캡션에 찍을 사유 문구. 미등록 원문은 상태 기본값으로 떨어뜨린다.
+
+    번역표에 없는 외국어를 그대로 내보내지 않는다 — 한국어 채널이다.
+    """
+    s = (raw or "").strip()
+    if s in CANCEL_REASON_LABEL:
+        return CANCEL_REASON_LABEL[s]
+    if s and all(ch.isalnum() or ch.isspace() or ch in "()·-" for ch in s) and \
+            any('가' <= ch <= '힣' for ch in s):
+        return s                      # 한글이 섞인 사유는 그대로 쓴다 (우천취소·폭염취소)
+    if status is not None and getattr(status, "value", None) == "postponed":
+        return "연기"
+    return "취소"
+
+
 LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 일찍 보내도 된다 — 문구가 "N시간 M분 뒤 시작"으로 그때그때 계산된다.
-    ContentType.START_ALERT: 2 * 3600,
+    # v1.11i: 2h → 2.5h. 뒷창은 (리드타임-5분)에 묶여 있어 늘릴 수 없다
+    # (경기가 시작된 뒤 "곧 시작" 알림은 거짓말이다). 그래서 창을 넓히려면
+    # 앞창밖에 없는데, 실측 최악 간격 240분에서 창 235분은 1.67%가 사라졌다.
+    # 2.5시간이면 창 265분 > 240분이라 유실이 0이 된다.
+    # 대가로 알림이 첫 경기 2~4.5시간 전에 나가지만, 문구가 실제 남은 시간을
+    # 그때그때 계산하므로 언제 나가도 내용은 정확하다.
+    ContentType.START_ALERT: 9000,
     # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
@@ -881,7 +946,33 @@ QUEUED_CONTENT_TYPES: frozenset = frozenset({
 })
 
 
-def assert_send_windows(tick_interval_seconds: int, default_lookahead: int) -> None:
+# 창에 둘 안전 여유. 늦게 나가도 유효한 콘텐츠는 넉넉히, 늦으면 거짓이 되어
+# 뒷창을 늘릴 수 없는 콘텐츠는 "창 ≥ 간격"까지만 요구한다(위 독스트링 참조).
+WINDOW_SAFETY_FACTOR_DEFAULT = 1.5
+WINDOW_SAFETY_FACTOR: dict["ContentType", float] = {
+    ContentType.START_ALERT: 1.0,
+}
+
+
+def narrow_window_types(tick_interval_seconds: int, default_lookahead: int
+                        ) -> list[tuple["ContentType", int, int]]:
+    """(콘텐츠, 창 초, 필요 초) — **아직 큐에 없는 것까지 포함해** 전부 검사한다.
+
+    v1.11i: 게이트는 QUEUED_CONTENT_TYPES 3종만 본다(오탐으로 발행 전체가 멈추면 안 되므로).
+    그래서 아직 안 켠 콘텐츠 9종이 240분 시계에서 40~60% 사라진다는 사실이
+    아무 데도 안 나타났다. 이 함수는 켜기 전에 미리 볼 수 있는 목록을 준다.
+    """
+    need = int(tick_interval_seconds * 1.5)
+    out = []
+    for ct in sorted(ContentType, key=lambda c: c.value):
+        w = send_window_seconds(ct, default_lookahead)
+        if w < need:
+            out.append((ct, w, need))
+    return out
+
+
+def assert_send_windows(tick_interval_seconds: int, default_lookahead: int,
+                        extra_types: "Optional[frozenset]" = None) -> None:
     """시계 간격에 비해 발송 창이 좁은 콘텐츠가 있으면 막는다.
 
     **왜 게이트가 필요한가.** 창이 좁으면 아무 오류 없이 조용히 아무것도 안 나간다 —
@@ -891,11 +982,21 @@ def assert_send_windows(tick_interval_seconds: int, default_lookahead: int) -> N
     (최소 폰트를 상수로만 두었다가 하루 만에 어긴 것과 같은 계열이다.)
 
     여유를 1.5배 두는 이유: 시계 간격은 평균일 뿐이고 실제로는 들쭉날쭉하다.
+
+    **다만 여유를 둘 수 있는 콘텐츠와 없는 콘텐츠가 있다** (v1.11i).
+    시작 알림의 뒷창은 (리드타임-5분)에 묶여 있다 — 경기가 시작된 뒤에 보내면
+    문구가 거짓이 되기 때문이다. 앞창만으로는 1.5배를 채울 수 없고, 억지로 채우면
+    첫 경기 6시간 전에 "곧 시작" 알림이 나간다. 그래서 이 콘텐츠만 1.0배로 둔다 —
+    창이 간격 이상이면 이론상 유실은 0이고, 그 이상의 여유는 시계를 고쳐야 얻는다.
+    (근본 해결은 시계를 규칙적으로 만드는 것이고, 그건 이 게이트의 일이 아니다.)
     """
-    need = int(tick_interval_seconds * 1.5)
+    need = int(tick_interval_seconds * WINDOW_SAFETY_FACTOR_DEFAULT)
     bad = []
-    for ct in sorted(QUEUED_CONTENT_TYPES, key=lambda c: c.value):
+    for ct in sorted(QUEUED_CONTENT_TYPES | frozenset(extra_types or ()),
+                     key=lambda c: c.value):
         w = send_window_seconds(ct, default_lookahead)
+        need = int(tick_interval_seconds * WINDOW_SAFETY_FACTOR.get(
+            ct, WINDOW_SAFETY_FACTOR_DEFAULT))
         if w < need:
             bad.append(f"{ct.value}: 창 {w // 60}분 < 필요 {need // 60}분 "
                        f"(앞창 {lookahead_for(ct, default_lookahead) // 60}분 + "
@@ -1581,6 +1682,26 @@ def is_late(scheduled_utc: datetime, now_utc: datetime, content_type: ContentTyp
     return (now_utc - scheduled_utc).total_seconds() > GRACE_SECONDS[content_type]
 
 
+# ── 사라진 발행을 기록으로 남기는 여유 (v1.11i) ──────────────────────
+#
+# **왜 필요한가.** `is_late()`는 "유예를 넘겼으니 버린다"를 판정하고 로그와 알림을
+# 남기라고 만든 함수인데, 전수조사에서 **38,283건 중 단 한 번도 참이 된 적이 없다**.
+# 큐를 만드는 쪽(pipeline.build_queue)이 똑같은 부등식으로 **먼저** 항목을 잘라내기
+# 때문이다. 그래서 모닝 24%가 사라져도 로그에는 "큐 N"의 숫자가 조용히 작아질 뿐이고,
+# `⏰ 지각으로 버림`과 `시각을 놓쳐 취소` 알림은 도달 불가능한 죽은 코드였다.
+#
+# 고치는 법: 큐 생성부는 유예 + 이 여유까지 항목을 **남기고**, 버리는 판정과 기록은
+# `is_late()` 한 곳에서만 한다. 그래야 사라진 발행이 반드시 알림에 실린다.
+DROP_REPORT_MARGIN_SECONDS = 6 * 3600
+
+
+def keep_in_queue(scheduled_utc: datetime, now_utc: datetime,
+                  content_type: ContentType) -> bool:
+    """큐에 남겨 둘 것인가. 여기서 남긴 뒤 is_late()가 버림을 판정·기록한다."""
+    age = (now_utc - scheduled_utc).total_seconds()
+    return age <= GRACE_SECONDS[content_type] + DROP_REPORT_MARGIN_SECONDS
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 팀 표시명 (v1.11 신설)
 #
@@ -1636,7 +1757,9 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
         "BOS": "보스턴", "NYY": "뉴욕양키스", "TB": "탬파베이", "TOR": "토론토",
         "BAL": "볼티모어",
         "CLE": "클리블랜드", "MIN": "미네소타", "DET": "디트로이트", "KC": "캔자스시티",
-        "CWS": "시카고W",
+        # v1.11i: '시카고W'는 한글+로마자 한 글자 혼종이라 오타로 읽힌다.
+        # 시카고컵스와 구별하면서 실제로 쓰는 약칭은 '화이트삭스'다.
+        "CWS": "화이트삭스",
         "HOU": "휴스턴", "SEA": "시애틀", "TEX": "텍사스", "LAA": "LA에인절스",
         "ATH": "애슬레틱스",
         "ATL": "애틀랜타", "NYM": "뉴욕메츠", "PHI": "필라델피아", "MIA": "마이애미",
@@ -2020,7 +2143,10 @@ def venue_name(venue: "str | None") -> str:
 # 여기에 없는 리그는 잔여 경기를 표시하지 않는다(추측 금지).
 REGULAR_SEASON_GAMES: dict[League, Optional[int]] = {
     League.KBO: 144, League.MLB: 162, League.NPB: 143,
-    League.KBL: 54, League.VLEAGUE_M: 36, League.VLEAGUE_W: 30,
+    # v1.11i 실측(KOVO 2026-27 seasonCode 023): 남 126경기/7팀 = 36, 여 126경기/7팀 = 36.
+    # 여자부가 30으로 적혀 있어 Standing.remaining이 음수가 되고 31경기째부터
+    # "경기수 31 > 정규시즌 30"으로 순위표가 막히던 자리다.
+    League.KBL: 54, League.VLEAGUE_M: 36, League.VLEAGUE_W: 36,
     League.KL1: 38, League.EPL: 38, League.LALIGA: 38, League.SERIEA: 38,
     League.BUNDESLIGA: 34, League.LIGUE1: 34,
     League.UCL: None, League.LCK: None, League.INTL_LOL: None,
