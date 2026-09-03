@@ -1443,14 +1443,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     sent = failed = already = quarantined = corrected = deferred = 0
     # 다음 틱이 올 때까지의 예상 시간 — '정확도를 위해 미루기' 판정에 쓴다.
     next_tick, worst_tick = _next_tick_estimate(now)
+    # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
+    #
+    # **선언이 사용보다 먼저다 (v1.11m).** fix30에서 아래 기록 수집을 이 줄
+    # **위에** 끼워 넣어, 실발송 경로가 매 틱 UnboundLocalError로 죽었다.
+    # 예외가 알림 코드보다 앞에서 터지므로 채널도 알림도 통째로 조용했다.
+    # 드라이런은 이 줄에 닿기 전에 return 하므로 검증 823건이 전부 통과했다.
+    fact_notes: list[str] = []
     # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
     # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
     records = _collect_records(now, fact_notes)
     team_stats_by_league = {
         name: _team_stats_for(name, fact_notes) for name in records
     }
-    # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
-    fact_notes: list[str] = []
     skip_kinds: dict[str, int] = {}
     nothing_to_render = 0
     missed: list[str] = []
@@ -1682,6 +1687,51 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     return 1 if (errors or failed or hold or not cov.ok) else 0
 
 
+def _crash_alert() -> None:
+    """**틱이 예외로 죽으면 아무도 모른다 — 그것이 가장 위험한 실패다 (v1.11m).**
+
+    알림을 만드는 코드는 tick() 맨 끝에 있다. 그 앞에서 예외가 터지면
+    채널도 조용하고 알림도 조용하다. 워크플로 로그를 사람이 직접 열어보기
+    전에는 알 방법이 없다 — 실제로 fix30의 UnboundLocalError가 그렇게
+    **발송 0건 · 알림 0건**을 만들었다.
+
+    그래서 마지막 그물을 여기 둔다. 알림 자체가 실패해도 조용히 넘어간다
+    (알림 실패가 종료 코드를 바꾸면 원인 진단이 더 어려워진다).
+    """
+    import traceback
+    tb = traceback.format_exc()
+    print(tb, file=sys.stderr)
+    try:
+        alert_to = os.environ.get("ALERT_CHAT_ID", "").strip()
+        if not alert_to:
+            return
+        snd = Sender(Transport(load_token()), Ledger(LEDGER),
+                     os.environ.get("TELEGRAM_CHAT_ID", "").strip() or "0",
+                     alert_chat_id=alert_to,
+                     worker_id=os.environ.get("WORKER_ID") or None)
+        rows = [ln for ln in tb.strip().splitlines() if ln.strip()]
+        where = ""
+        for ln in rows:
+            if ln.strip().startswith("File ") and "/g1/" in ln:
+                where = ln.strip()[:160]
+        # 되풀이 방지는 '내용이 같으면 1시간'이다. 같은 버그로 5분마다
+        # 도배하지 않으면서, 원인이 바뀌면 바로 다시 알린다.
+        snd.alert("시계가 예외로 죽었습니다 — 이번 틱 발송 0건", [
+            rows[-1][:200] if rows else "(추적 정보 없음)",
+            where or "(위치 불명)",
+            "저절로 풀리지 않습니다. 배포된 코드를 고쳐야 합니다.",
+        ], repeat_after=3600)
+    except Exception:                                        # noqa: BLE001
+        print("    (예외 알림도 실패했습니다)", file=sys.stderr)
+
+
 if __name__ == "__main__":
     args = set(sys.argv[1:])
-    sys.exit(tick(dry_run="--dry-run" in args, force_fetch="--force-fetch" in args))
+    try:
+        sys.exit(tick(dry_run="--dry-run" in args,
+                      force_fetch="--force-fetch" in args))
+    except SystemExit:
+        raise
+    except BaseException:                                    # noqa: BLE001
+        _crash_alert()
+        sys.exit(1)
