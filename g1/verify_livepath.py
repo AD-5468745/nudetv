@@ -294,9 +294,17 @@ _nb_item = next((i for i in T.build_all_queues({"KBO": _nb_games},
                  if i.content_type is ContentType.NIGHT_BRIEF), None)
 check("나이트 브리핑이 큐에 오른다", _nb_item is not None)
 if _nb_item is not None:
-    check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
-          T.render_for(_nb_item, [], all_games=_nb_games) is not None,
-          "None이 돌아왔다 — 리그 문지기에 걸린다")
+    # 이 검사만 브라우저(playwright)를 쓴다. 없는 환경에서는 **통과로 세지 않고**
+    # 건너뛴다 — 도구가 없어서 초록불이 되는 것이 가장 나쁘다.
+    try:
+        _nb_made = T.render_for(_nb_item, [], all_games=_nb_games)
+        check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
+              _nb_made is not None, "None이 돌아왔다 — 리그 문지기에 걸린다")
+    except ModuleNotFoundError as e:
+        print(f"  SKIP  나이트 브리핑 실렌더 — 이 환경에 브라우저가 없다 ({e})")
+    except Exception as e:                                   # noqa: BLE001
+        check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
+              False, f"{type(e).__name__}: {str(e)[:120]}")
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
