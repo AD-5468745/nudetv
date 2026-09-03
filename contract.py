@@ -690,7 +690,10 @@ GRACE_SECONDS: dict[ContentType, int] = {
     ContentType.INPLAY_BOARD: 600,
     ContentType.FINAL_FLASH: 900,
     ContentType.POLL: 1800,
-    ContentType.ANALYSIS: 1800,
+    # v1.11k: 30분 → 3h. 창 90분이라 240분 시계에서 62%가 사라졌다.
+    # 분석 카드는 경기 전 정보라 늦으면 값이 떨어지지만, 경기 시작 전이면 유효하다.
+    # (경기가 시작된 뒤에는 큐에서 빠지도록 예약 시각을 T-3h로 잡는다.)
+    ContentType.ANALYSIS: 3 * 3600,
     ContentType.QUIZ: 1800,
     ContentType.MILESTONE: 1800,
     # **모닝 브리핑 유예는 시계 간격보다 넉넉해야 한다 (v1.11d에서 1h → 3h).**
@@ -708,8 +711,10 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # morning_label()로 바꿔 '모닝 브리핑'이라 우기지 않는다.
     ContentType.MORNING: 6 * 3600,
     ContentType.NIGHT_BRIEF: 6 * 3600,   # 모닝과 같은 성격 — 늦게 나가도 유효하다
-    ContentType.KOREAN_DAILY: 7200,
-    ContentType.LEADERBOARD: 7200,
+    # v1.11k: 2h → 6h. 창이 180분이라 240분 시계에서 25%가 조용히 사라졌다.
+    # 둘 다 '늦게 나가도 유효한' 콘텐츠다(오늘의 기록·오늘의 코리안리거).
+    ContentType.KOREAN_DAILY: 6 * 3600,
+    ContentType.LEADERBOARD: 6 * 3600,
     ContentType.POLL_SETTLEMENT: 21600,
     ContentType.LEAGUE_RESULT: 21600,
     ContentType.STANDINGS: 21600,
@@ -939,6 +944,14 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 유예가 6시간이라 창은 그것만으로 충분하다 — 앞창은 필요 없다.
     ContentType.LEAGUE_RESULT: 0,
     ContentType.STANDINGS: 0,
+    # **나이트 브리핑도 일찍 보내면 안 된다** — 23:00 카드가 저녁에 나가면
+    # 그날 결과가 아직 다 안 들어온 채로 '하루 마감'을 말하게 된다.
+    ContentType.NIGHT_BRIEF: 0,
+    # **분석 카드는 일찍 나가도 된다** (v1.11k). 경기 전 정보라 언제 읽어도 유효하고,
+    # 앞창이 좁으면 240분 시계에서 62%가 조용히 사라진다.
+    # 정확도(T-3시간)는 `defer_for_precision`이 되찾는다 — 시계가 촘촘하면
+    # 목표 시각에 가까운 틱까지 미루고, 뜸하면 일찍이라도 내보낸다.
+    ContentType.ANALYSIS: 6 * 3600,
 }
 
 
@@ -962,6 +975,11 @@ def send_window_seconds(content_type: "ContentType", default_lookahead: int) -> 
 # 아직 만들지 않은 콘텐츠까지 검사하면 오탐으로 발행 전체가 멈춘다.
 QUEUED_CONTENT_TYPES: frozenset = frozenset({
     ContentType.MORNING, ContentType.START_ALERT, ContentType.LEAGUE_RESULT,
+    # v1.11k — 대표님 지시로 약속했던 콘텐츠를 되살린다.
+    # "경기분석이나 처음에 하기로 했던 다른 정보들은 전혀 올라오고 있지 않아."
+    # 계약에 19종이 선언돼 있는데 실제로 나가는 것은 3종뿐이었다.
+    ContentType.STANDINGS, ContentType.LEADERBOARD,
+    ContentType.NIGHT_BRIEF, ContentType.ANALYSIS,
 })
 
 
@@ -2110,6 +2128,53 @@ class SendRecord:
     retry_count: int = 0
     retry_429_count: int = 0        # 429는 재시도 카운터에서 제외되므로 별도 집계
     last_error: Optional[str] = None
+
+
+# ── 정확도를 위해 한 틱 미루기 (v1.11k) ─────────────────────────────
+#
+# **대표님 요구: "경기 시작 몇 시간 전 규칙적으로 시작시간 안내".**
+# 핵심 낱말은 '규칙적으로'다. 실측은 첫 경기 136~268분 전 산포였고,
+# 13건 중 목표(120분)±30분에 든 것이 1건뿐이었다.
+#
+# **왜 앞창을 좁히는 것으로 안 푸나.** 교환비를 실측했다 — 앞창을 1분 좁힐 때마다
+# 정확도 0.3분을 얻고 유실 0.22%p를 낸다. 앞창 0으로 닫으면 정확해지지만
+# 28~53%가 조용히 사라진다. 불규칙 시계 위에서 두 가지를 동시에 얻는 설정은 없다.
+#
+# **그래서 앞창은 그대로 두고, 발송 순간에 판단한다.**
+#   "목표 시각에 더 가까운 틱이 곧 온다면, 이번엔 보내지 않는다."
+# 미뤄도 항목은 큐에 남으므로(유예 안) 다음 틱에 다시 기회가 온다.
+#
+# 이 규칙의 좋은 점은 **시계가 좋아지면 자동으로 정확해진다**는 것이다:
+#   · 5분 시계  → 목표 −10분~0분에 발송(편차 ≤10분)
+#   · 240분 시계 → 앞창 265분이 여유의 상한이라 한 번도 안 미룸 = 지금과 동일(유실 0)
+# 설정을 바꿔 켜는 스위치가 아니라, 시계 상태에 스스로 맞춘다.
+DEFER_SAFETY_FACTOR = 2.0
+
+# 미루기를 적용할 콘텐츠 — '일찍 보내도 되지만 목표 시각이 있는' 것만.
+# 앞창이 0인 콘텐츠(모닝·결과·순위)는 애초에 일찍 나가지 않으므로 대상이 아니다.
+DEFER_FOR_PRECISION: frozenset = frozenset({
+    ContentType.START_ALERT,
+    # 분석 카드·리더보드도 '목표 시각이 있고 일찍 보내도 되는' 콘텐츠다.
+    # 앞창을 넓혀 유실을 막고, 정확도는 미루기가 되찾는다.
+    ContentType.ANALYSIS, ContentType.LEADERBOARD,
+})
+
+
+def defer_for_precision(scheduled_utc: datetime, now_utc: datetime,
+                        content_type: ContentType, next_tick_seconds: int) -> bool:
+    """목표 시각에 더 가까운 틱이 곧 오면 이번 틱에는 보내지 않는다.
+
+    `next_tick_seconds`는 **다음 틱이 올 때까지의 예상 시간**(실측 기반).
+    0이면 시계를 모른다는 뜻이므로 미루지 않는다 — 모를 때는 보내는 쪽이 안전하다.
+    """
+    if content_type not in DEFER_FOR_PRECISION:
+        return False
+    if next_tick_seconds <= 0:
+        return False
+    ahead = (scheduled_utc - now_utc).total_seconds()
+    if ahead <= 0:
+        return False                      # 목표를 이미 지났다 — 더 미루면 늦어질 뿐이다
+    return ahead > next_tick_seconds * DEFER_SAFETY_FACTOR
 
 
 def is_late(scheduled_utc: datetime, now_utc: datetime, content_type: ContentType) -> bool:

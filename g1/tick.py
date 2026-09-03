@@ -39,13 +39,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # import 하고 다른 분기에서 쓰면, 그 분기는 실행되는 순간 NameError로 죽는다.
 # 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
+import dataclasses
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
+                      RecordBook, Standing, LeaderEntry,
                       Status, UnknownStatus, assert_home_away,
                       demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
-                      content_digest, correction_key_from, idem_key)
+                      content_digest, correction_key_from, idem_key,
+                      defer_for_precision)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
@@ -184,6 +187,116 @@ def _measured_interval_seconds(now: datetime) -> int:
         return 0
     gaps = [(b - a).total_seconds() for a, b in zip(ts, ts[1:]) if b > a]
     return int(max(gaps)) if gaps else 0
+
+
+# ── 기록(RecordBook) 수집·보관 (v1.11k) ──────────────────────────────
+#
+# **이것이 콘텐츠가 3종에 묶여 있던 병목이었다.**
+# 순위표·부문 순위·맞대결 렌더는 **이미 완성품**인데, 시계가 기록 어댑터를
+# 한 번도 부르지 않아 먹일 데이터가 없었다. 그래서 계약에 선언된 19종 중
+# 3종만 나갔다("경기분석이나 처음에 하기로 했던 다른 정보들은 전혀 올라오고 있지 않아").
+#
+# 경기 스냅샷과 같은 규칙을 따른다:
+#   · 제동을 둔다 — 기록은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
+#   · **0건·실패가 기존 것을 덮지 못하게 한다** — 소스가 흔들려도 어제 순위표는 남는다.
+#   · 실패하면 그 콘텐츠를 큐에 올리지 않는다(빈 카드를 내보내지 않는다).
+def _collect_records(now: datetime, notes: list) -> dict:
+    """기록을 수집하거나 보관본을 돌려준다. {리그이름: RecordBook}.
+
+    기록 어댑터가 있는 리그만 대상이다(현재 KBO). 없는 리그는 조용히 빠지고,
+    그 리그의 순위표·부문 순위·분석 카드는 큐에 오르지 않는다.
+    """
+    out: dict = {}
+    log = _fetch_log()
+    for name, make in _record_jobs().items():
+        key = f"record:{name}"
+        try:
+            # **보관은 어댑터 캐시에 맡긴다.** 여기서 RecordBook을 직접 직렬화하려다
+            # 중첩 dataclass(record·last10)와 tuple 키(h2h)에서 깨졌다. 어댑터가
+            # 이미 캐시를 갖고 있고(신선 창 안이면 네트워크 0회, 실패 시 묵은 캐시로 버팀)
+            # 그쪽이 자기 자료구조를 가장 잘 안다.
+            rb = make()
+            out[name] = rb
+            log[key] = {"at": _iso(now)}
+        except Exception as e:                               # noqa: BLE001
+            notes.append(f"기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:70]}")
+            log[key] = {"at": log.get(key, {}).get("at"), "failed_at": _iso(now),
+                        "error": f"{type(e).__name__}: {str(e)[:120]}"}
+        _write_fetch_log(log)
+    return out
+
+
+# 어댑터가 주는 이름 → 렌더가 읽는 이름 (v1.11k).
+#
+# **여기가 통합 지점이다.** 수집기는 84지표를 접두사로 구분해 준다
+# (`bat_avg`=팀타율, `pit_avg`=피안타율, `def_sb`=허용도루, `run_sb`=성공도루 —
+#  접두사를 떼면 뜻이 정반대가 되는 쌍이 있어 수집기가 옳게 구분한 것이다).
+# 렌더는 카드에 찍을 몇 개만 짧은 이름으로 안다(`pipeline.TEAM_STAT_LABELS`).
+# 둘을 직접 붙이면 한쪽이 바뀔 때 조용히 블록이 사라진다 —
+# 실제로 그렇게 됐다(수집기는 `bat_avg`를 주는데 렌더는 `avg`를 찾아 ②블록이 빠졌다).
+# 그래서 변환을 **한 곳**에 두고, 이름이 안 맞으면 알림에 싣는다.
+TEAM_STAT_RENAME = {"avg": "bat_avg", "era": "pit_era", "hr": "bat_hr",
+                    "whip": "pit_whip", "ops": "bat_ops"}
+
+
+def _team_stats_for(name: str, notes: list):
+    """분석 카드 ②블록(팀 컨디션)용 팀 기록. 없으면 None — 그 블록만 빠진다."""
+    if name != "KBO":
+        return None
+    try:
+        from adapters.kbo_teamstats import KboTeamStatsAdapter
+        raw = KboTeamStatsAdapter().fetch()
+    except Exception as e:                                   # noqa: BLE001
+        notes.append(f"팀 기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:60]}")
+        return None
+    if not raw:
+        return None
+    out, missing = {}, set()
+    for code, stats in raw.items():
+        row = {}
+        for short, long in TEAM_STAT_RENAME.items():
+            if long in stats:
+                row[short] = stats[long]
+            else:
+                missing.add(long)
+        out[code] = row
+    if missing:
+        notes.append(f"팀 기록 지표 이름 불일치 — {name}: {', '.join(sorted(missing))} "
+                     f"(카드의 '팀 컨디션' 블록에서 그만큼 빠집니다)")
+    return out
+
+
+def _recent_interval_seconds(now: datetime) -> int:
+    """**다음 틱이 올 때까지의 예상 시간**(초). 기록이 모자라면 0.
+
+    위 `_measured_interval_seconds`와 목적이 다르다:
+      · 저것은 **게이트 검사용**이라 최악(최대 간격)을 본다 — 창이 좁은지 판정하려면 최악이 맞다.
+      · 이것은 **"다음 틱이 곧 오는가"를 예상**하는 값이라 대푯값(중앙값)을 본다.
+        최대값을 쓰면 시계가 촘촘해져도 영원히 "다음 틱은 멀다"고 판단해
+        `defer_for_precision`이 한 번도 작동하지 않는다.
+
+    미루기는 안전한 판단이다 — 미뤄도 유예 안이면 다음 틱에 다시 기회가 오고,
+    유예를 넘길 만큼 미루지 않는다(`DEFER_SAFETY_FACTOR`가 여유를 둔다).
+    그래서 여기서는 낙관적인 대푯값을 써도 된다.
+    """
+    p = _tick_log_path()
+    try:
+        hist = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (json.JSONDecodeError, OSError):
+        return 0
+    ts = []
+    for x in hist[-8:]:
+        try:
+            ts.append(datetime.fromisoformat(x))
+        except ValueError:
+            continue
+    ts.append(now)
+    if len(ts) < 3:
+        return 0
+    gaps = sorted((b - a).total_seconds() for a, b in zip(ts, ts[1:]) if b > a)
+    if not gaps:
+        return 0
+    return int(gaps[len(gaps) // 2])
 
 
 def _iso(dt: datetime) -> str:
@@ -421,6 +534,15 @@ def _kovo_season_code(adapter, today: datetime) -> str:
 
 # ── 수집 대상 ─────────────────────────────────────────────────
 # 리그를 늘릴 때 여기만 고친다. 실패해도 다른 리그에 영향이 없도록 각각 독립이다.
+# 기록 어댑터가 있는 리그. 지금은 KBO뿐이다 — 다른 리그는 어댑터 자체가 없다
+# (NPB는 npb.jp/bis/2026/stats/std_c.html 이 무인증으로 순위·상대전적까지 준다는 것을
+#  확인했지만 어댑터는 아직 없다. 후속 과제).
+def _record_jobs() -> dict:
+    from adapters.kbo_records import KboRecordAdapter
+    return {"KBO": lambda: KboRecordAdapter().fetch()}
+
+
+
 def _jobs() -> dict[str, tuple[League, callable]]:
     from adapters.kbo import KboAdapter
     from adapters.mlb import MlbAdapter
@@ -609,6 +731,16 @@ def _load_games(name: str) -> list:
 
 
 # ── 수집 ──────────────────────────────────────────────────────
+
+def _write_fetch_log(log: dict) -> None:
+    """수집 기록 저장. 기록 수집 제동이 이 파일을 함께 쓴다(캐시 경로에 이미 있다)."""
+    try:
+        FETCH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        FETCH_LOG.write_text(json.dumps(log, ensure_ascii=False, indent=1),
+                             encoding="utf-8")
+    except OSError:
+        pass                                # 제동 기록을 못 남겨도 발송은 계속한다
+
 
 def _fetch_log() -> dict:
     if FETCH_LOG.exists():
@@ -937,8 +1069,17 @@ def facts_for(item: QueueItem, games: list) -> list:
     return todays
 
 
-def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
-    """큐 항목 → (사진들, 캡션 파트들). 만들 수 없으면 None."""
+def render_for(item: QueueItem, games: list, *, records: dict | None = None,
+               team_stats: dict | None = None,
+               all_games: list | None = None) -> tuple[list, list[str]] | None:
+    """큐 항목 → (사진들, 캡션 파트들). 만들 수 없으면 None.
+
+    v1.11k: 콘텐츠를 3종에서 7종으로 늘리면서 인자가 늘었다.
+      · `records`    — {리그이름: RecordBook}. 순위표·부문 순위·분석 카드가 쓴다.
+      · `team_stats` — {팀코드: 지표}. 분석 카드의 '팀 컨디션' 블록. 없으면 그 블록만 빠진다.
+      · `all_games`  — **전 리그** 경기. 나이트 브리핑은 리그가 없는 통합 카드라
+                       리그별 스냅샷으로는 만들 수 없다.
+    """
     day = item.sports_day
     if not day:
         return None                         # scope는 이제 '리그:날짜'라 날짜로 못 쓴다
@@ -978,6 +1119,41 @@ def render_for(item: QueueItem, games: list) -> tuple[list, list[str]] | None:
         # 그날 편성은 5경기다. 독자는 그 수를 그날 전체로 읽는다.
         # 전체를 알면 render_start_alert가 "5경기 중 3경기 곧 시작"이라고 말한다.
         return [], [P.render_start_alert(same, _now(), all_games=scoped)]
+
+    # ── v1.11k에서 되살린 콘텐츠 4종 ────────────────────────────
+    elif item.content_type is ContentType.NIGHT_BRIEF:
+        # 전 리그 통합 1장. `games`(리그별)로는 만들 수 없다.
+        pool = all_games if all_games is not None else games
+        nights = [g for g in pool if P.night_brief_day(g) == day]
+        if not nights:
+            return None
+        html = P.render_night_brief(nights, day)
+        parts = P.caption_night_brief(nights, day, as_parts=True)
+    elif item.content_type is ContentType.STANDINGS:
+        rb = (records or {}).get(item.league.value if item.league else "")
+        if rb is None:
+            return None                     # 기록이 없다 — 빈 카드를 내보내지 않는다
+        html = P.render_standings(rb, day)
+        parts = P.caption_standings(rb, as_parts=True)
+    elif item.content_type is ContentType.LEADERBOARD:
+        rb = (records or {}).get(item.league.value if item.league else "")
+        if rb is None:
+            return None
+        # 세트는 날짜로 돌린다 — 같은 카드를 매일 내보내지 않기 위해서다.
+        set_idx = datetime.strptime(day, "%Y-%m-%d").timetuple().tm_yday
+        html = P.render_leaders(rb, day, set_idx)
+        parts = P.caption_leaders(rb, set_idx, as_parts=True)
+    elif item.content_type is ContentType.ANALYSIS:
+        rb = (records or {}).get(item.league.value if item.league else "")
+        if rb is None:
+            return None
+        target = P.pick_analysis_game(todays)
+        if target is None:
+            return None
+        html = P.render_analysis(rb, target, day, team_stats=team_stats,
+                                 history=games, now=_now())
+        parts = P.caption_analysis(rb, target, day, team_stats=team_stats,
+                                   history=games, as_parts=True)
     else:
         return None
 
@@ -1186,7 +1362,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     for h in hold:
         print(f"  🛑 [발송 보류] {h}")
 
-    sent = failed = already = quarantined = corrected = 0
+    sent = failed = already = quarantined = corrected = deferred = 0
+    # 다음 틱이 올 때까지의 예상 시간 — '정확도를 위해 미루기' 판정에 쓴다.
+    next_tick = _recent_interval_seconds(now)
+    # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
+    # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
+    records = _collect_records(now, fact_notes)
+    team_stats_by_league = {
+        name: _team_stats_for(name, fact_notes) for name in records
+    }
     # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
     fact_notes: list[str] = []
     skip_kinds: dict[str, int] = {}
@@ -1228,14 +1412,30 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                   f"— 예약 {item.scheduled_utc.astimezone(KST):%H:%M} "
                   f"· {late:.0f}분 지남 (대장에 종결로 기록)")
             continue
+        # ── 정확도를 위해 한 틱 미룬다 (v1.11k) ──────────────────
+        # 대표님 요구: "경기 시작 몇 시간 전 **규칙적으로**".
+        # 목표 시각에 더 가까운 틱이 곧 온다면 지금 보내지 않는다.
+        # 시계가 뜸하면 이 분기가 아예 안 걸려 예전처럼 일찍이라도 나간다(유실 0).
+        if defer_for_precision(item.scheduled_utc, now, item.content_type, next_tick):
+            deferred += 1
+            print(f"    ⏳ 정확도를 위해 미룸 {item.content_type.value} {item.scope} "
+                  f"— 목표 {item.scheduled_utc.astimezone(KST):%H:%M}까지 "
+                  f"{(item.scheduled_utc - now).total_seconds() / 60:.0f}분 남음 "
+                  f"(다음 틱 예상 {next_tick // 60}분)")
+            continue
         if item.league in stale_block:
             # 며칠 묵은 데이터로 '오늘 경기'를 안내하지 않는다.
             _skip("stale_data")
             print(f"    ⏸ 묵은 데이터로 보류 {item.content_type.value} {item.scope}")
             continue
         games = next((g for g in snaps.values() if g and g[0].league is item.league), [])
+        # 나이트 브리핑은 리그가 없는 통합 카드다 — 전 리그 경기를 함께 넘긴다.
+        pool = [g for gs in snaps.values() if gs for g in gs]
         try:
-            made = render_for(item, games)
+            made = render_for(item, games, records=records,
+                              team_stats=team_stats_by_league.get(
+                                  item.league.value if item.league else ""),
+                              all_games=pool)
             if made is None:
                 nothing_to_render += 1
                 continue
@@ -1314,6 +1514,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
           + (" (" + " · ".join(f"{SKIP_REASON_LABEL.get(k, k)} {v}"
                                for k, v in sorted(skip_kinds.items())) + ")"
              if skip_kinds else "")
+          + (f" · ⏳미룸 {deferred}" if deferred else "")
           + f" · 실패 {failed} · 격리(이전부터) {quarantined}"
           + (f" · ⏰ 시각 놓쳐 취소 {len(missed)}" if missed else "")
           + (f" · 지각 폐기 재확인 {dropped_before}" if dropped_before else ""))

@@ -134,8 +134,63 @@ snaps = {
 }
 items = T.build_all_queues(snaps, NOW, "-100test")
 check(f"큐 {len(items)}건 생성", len(items) > 0)
-check("멱등키 전부 유일", len({i.idem_key for i in items}) == len(items),
-      f"{len(items) - len({i.idem_key for i in items})}건 중복")
+# ── 멱등키 — 2026-09-03 갱신 (콘텐츠 3종 → 7종) ────────────────────
+#
+# **옛 기대:** "큐의 멱등키는 전부 유일".
+# **왜 못 쓰게 됐나:** 나이트 브리핑은 **전 리그 통합 1건**이라 scope가 `ALL:날짜`다.
+# `build_queue`는 리그별로 불리므로 KBO·NPB·KL1이 **일부러** 같은 키를 만들고,
+# 대장(ledger)이 키로 접어 실제 발송은 1회다. 즉 여기서의 중복은 사고가 아니라 설계다.
+#
+# **원래 이 검사가 지키려던 것:** ① 같은 카드가 두 번 나가지 않는다
+# ② 나가야 할 카드가 다른 카드에 '이미 보냄'으로 먹히지 않는다
+# (v1.11c — 리그가 없는 키 때문에 KBO만 나가고 나머지 여덟 리그가 영영 안 나가던 사고).
+#
+# 기대를 그냥 뒤집으면 그 사고가 되살아난다. 그래서 목적을 네 갈래로 나눠 계속 지킨다.
+_nb = [i for i in items if i.content_type is ContentType.NIGHT_BRIEF]
+_rest = [i for i in items if i.content_type is not ContentType.NIGHT_BRIEF]
+check("나이트 브리핑을 뺀 멱등키는 전부 유일",
+      len({i.idem_key for i in _rest}) == len(_rest),
+      f"{len(_rest) - len({i.idem_key for i in _rest})}건 중복")
+
+# 리그별 키 집합 — 통합 카드(나이트)와 리그 카드를 따로 본다.
+# (build_all_queues는 나이트 브리핑의 league를 None으로 두므로 items만으로는
+#  '어느 리그가 만든 키인지'를 알 수 없다. 리그별로 다시 만들어 비교한다.)
+_keys_nb: dict[str, set] = {}
+_keys_own: dict[str, set] = {}
+for _name, _gs in snaps.items():
+    _q1 = P.build_queue(_gs, NOW, "-100test", floor_hours=0)
+    _keys_nb[_name] = {i.idem_key for i in _q1
+                       if i.content_type is ContentType.NIGHT_BRIEF}
+    _keys_own[_name] = {i.idem_key for i in _q1
+                        if i.content_type is not ContentType.NIGHT_BRIEF}
+
+# **여기가 진짜 위험이다.** 나이트 브리핑 키가 리그마다 조금이라도 다르면
+# 대장이 못 접어서 **리그 수만큼** 같은 통합 카드가 채널에 나간다(아홉 리그면 하루 아홉 번).
+_nb_sets = list(_keys_nb.values())
+check(f"나이트 브리핑은 리그가 달라도 완전히 같은 키 "
+      f"({len(_nb)}건 → 키 {len({i.idem_key for i in _nb})}개, 다르면 리그 수만큼 발송된다)",
+      bool(_nb_sets) and all(s and s == _nb_sets[0] for s in _nb_sets),
+      str({k: sorted(v) for k, v in _keys_nb.items()})[:160])
+# 통합 카드를 뺀 나머지는 예전 기대 그대로 — 리그끼리 절대 안 겹친다.
+_clash = [(a, b, sorted(_keys_own[a] & _keys_own[b])[:2])
+          for a in _keys_own for b in _keys_own
+          if a < b and (_keys_own[a] & _keys_own[b])]
+check("나이트 브리핑을 뺀 키는 리그 간 충돌 0", not _clash, str(_clash[:2]))
+
+# 같은 리그·같은 날 안에서도 종류가 다르면 키가 달라야 한다. 안 그러면
+# 결과 카드가 나간 뒤 순위표가 '이미 보냄'으로 조용히 사라진다
+# (콘텐츠가 3종일 때는 한 리그·한 날에 종류가 겹칠 일이 거의 없어 안 보이던 위험이다).
+_by_slot: dict = {}
+for i in items:
+    _by_slot.setdefault((i.league, i.sports_day), {}) \
+            .setdefault(i.content_type, set()).add(i.idem_key)
+_ct_clash = [(str(lg), day, ca.value, cb.value)
+             for (lg, day), m in _by_slot.items()
+             for ca in m for cb in m
+             if ca.value < cb.value and (m[ca] & m[cb])]
+check("같은 리그·같은 날이어도 콘텐츠 종류가 다르면 키가 다르다",
+      not _ct_clash, str(_ct_clash[:2]))
+
 morn = [i for i in items if i.content_type is ContentType.MORNING]
 check(f"모닝 브리핑이 리그 수만큼 ({len(morn)}건)", len(morn) == 3, str(len(morn)))
 check("모닝 키에 리그가 들어있다",
@@ -543,7 +598,13 @@ check("실제 렌더도 폰트 게이트를 통과한다",
 # 조건부 import 하나 때문에 시작 알림은 **한 번도 렌더된 적이 없었다.**
 # 부품을 아무리 잘 시험해도 조립된 길을 안 걸어보면 이런 것이 남는다.
 # 그래서 여기서는 큐에 오르는 모든 종류를 render_for로 끝까지 태운다.
+#
+# **2026-09-03 — 3종에서 7종으로 넓혔다.** 콘텐츠가 늘었는데 그물이 3종에
+# 머물면, 새로 켠 4종(순위·리더보드·나이트 브리핑·분석)은 위 사고와 똑같이
+# "큐에는 오르는데 한 번도 렌더된 적이 없는" 상태로 며칠을 갈 수 있다.
+# `QUEUED_CONTENT_TYPES`를 기준으로 삼아, 콘텐츠를 또 켜면 이 검사가 **먼저** 깨진다.
 print("\n11. 발송 경로 — 큐에 오르는 모든 종류가 실제로 만들어지는가")
+from contract import QUEUED_CONTENT_TYPES                             # noqa: E402
 
 _day = "2026-08-29"
 _full = {
@@ -553,25 +614,88 @@ _full = {
             mkgame(League.KBO, "KT", "SS", day=_day, hh=23)],
     "NPB": [mkgame(League.NPB, "YOG", "HAN", day=_day, hh=23)],
 }
+# 분석 카드의 '최근 5경기' 블록은 지난 경기가 있어야 그려진다. 블록이 2개 미만이면
+# 계약이 "'분석'이라 부를 수 없다"며 막는다 — 그건 옳은 게이트이므로 표본을 준다.
+for _pd in ("2026-08-26", "2026-08-27"):
+    _full["KBO"].append(mkgame(League.KBO, "KT", "HH", day=_pd, hh=18,
+                               status=Status.FINAL, score=Score(4, 2, ScoreUnit.RUNS)))
+    _full["KBO"].append(mkgame(League.KBO, "SS", "NC", day=_pd, hh=18,
+                               status=Status.FINAL, score=Score(1, 6, ScoreUnit.RUNS)))
+
 _items = T.build_all_queues(_full, NOW, "-100test")
 _kinds = {i.content_type for i in _items}
-check(f"큐에 세 종류가 다 오른다 ({len(_items)}건)",
-      {ContentType.MORNING, ContentType.LEAGUE_RESULT,
-       ContentType.START_ALERT} <= _kinds, str([k.value for k in _kinds]))
+check(f"큐에 7종이 다 오른다 ({len(_items)}건)",
+      QUEUED_CONTENT_TYPES <= _kinds,
+      f"빠진 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _kinds))}")
+
+# ── 렌더에 먹일 기록(RecordBook) ──────────────────────────────
+# 순위·리더보드·분석은 기록이 있어야 만들어진다. 네트워크에 기대면 소스가
+# 흔들리는 날 검증이 같이 흔들리므로, **계약 게이트를 그대로 통과하는**
+# 스냅샷을 여기서 만든다(상대전적 합계 = 순위표, 부문 값 = 순위 방향).
+_RB_CODES = ["LG", "OB", "KT", "SS", "HH", "NC", "LT", "HT", "SK", "WO"]
+
+
+def _mkrecords(asof):
+    from contract import LeaderEntry, RecordBook, Standing, StreakKind, WLD
+    h2h = {}
+    for _i in range(len(_RB_CODES)):
+        for _j in range(_i + 1, len(_RB_CODES)):
+            h2h[(_RB_CODES[_i], _RB_CODES[_j])] = WLD(9, 6, 1)
+            h2h[(_RB_CODES[_j], _RB_CODES[_i])] = WLD(6, 9, 1)
+    st = []
+    for _i, _code in enumerate(_RB_CODES):
+        rows = [w for (a, _), w in h2h.items() if a == _code]
+        rec = WLD(sum(w.win for w in rows), sum(w.loss for w in rows),
+                  sum(w.draw for w in rows))
+        st.append(Standing(
+            league=League.KBO, season="2026", team_code=_code, rank=_i + 1,
+            games=rec.total, record=rec,
+            pct=f"{rec.win / (rec.win + rec.loss):.3f}",
+            games_behind=f"{_i * 3.0:.1f}", last10=WLD(6, 4, 0),
+            streak_kind=StreakKind.WIN, streak_len=2,
+            home=WLD(rec.win // 2, rec.loss // 2, rec.draw // 2),
+            away=WLD(rec.win - rec.win // 2, rec.loss - rec.loss // 2,
+                     rec.draw - rec.draw // 2)))
+    leaders = {}
+    for _cat in ("타율", "홈런", "타점", "평균자책점", "도루"):
+        _asc = _cat in C.ASCENDING_CATEGORIES
+        leaders[_cat] = [LeaderEntry(
+            category=_cat, stat_key=_cat, rank=_k + 1, player_id=f"p{_k}{_cat}",
+            name=f"선수{_k + 1}", team_code=_RB_CODES[_k],
+            value=(f"{2.00 + _k * 0.1:.3f}" if _asc else f"{0.400 - _k * 0.01:.3f}"))
+            for _k in range(5)]
+    return RecordBook(league=League.KBO, season="2026", collected_utc=asof,
+                      source_url="https://example.test/records",
+                      standings=st, h2h=h2h, leaders=leaders)
+
+
+check("시험용 기록 스냅샷이 계약 게이트를 통과한다 (그래야 렌더 실패가 진짜 결함이다)",
+      _no_raise(lambda: C.assert_recordbook(_mkrecords(NOW), now_utc=NOW)))
+
+_allg = [g for v in _full.values() for g in v]
+# 기록의 기준 시각은 경기 스냅샷과 맞춰야 한다 — 어긋나면 계약이 AsOfMismatch로
+# 막는다(순위표와 최근 경기 도트가 서로 다른 날을 말하는 카드를 만들지 않는다).
+_ASOF = max(g.start_utc for g in _allg if g.status is Status.FINAL) + timedelta(hours=1)
+_records = {"KBO": _mkrecords(_ASOF)}
+_saved_now = T._now
+T._now = lambda: _ASOF            # 렌더 안의 '지금'도 같은 기준으로 맞춘다
 
 _made, _empty, _broke = [], [], []
 for _it in _items:
-    _gs = next((g for g in _full.values() if g and g[0].league is _it.league), [])
+    # 나이트 브리핑은 리그가 없는 통합 카드다 — 리그별 스냅샷으로는 못 만든다.
+    _gs = (_allg if _it.league is None else
+           next((g for g in _full.values() if g and g[0].league is _it.league), []))
     try:
-        _r = T.render_for(_it, _gs)
+        _r = T.render_for(_it, _gs, records=_records, all_games=_allg)
         (_made if _r else _empty).append(_it.content_type.value)
     except Exception as _e:                                  # noqa: BLE001
-        _broke.append(f"{_it.content_type.value}/{_it.league.value}: "
+        _broke.append(f"{_it.content_type.value}/"
+                      f"{_it.league.value if _it.league else 'ALL'}: "
                       f"{type(_e).__name__} {_e}")
 
 check("어떤 종류도 예외로 죽지 않는다", not _broke, " | ".join(_broke[:3]))
-check("세 종류가 모두 실제로 만들어진다",
-      {"morning", "league_result", "start_alert"} <= set(_made),
+check("7종이 모두 실제로 만들어진다",
+      {c.value for c in QUEUED_CONTENT_TYPES} <= set(_made),
       f"만들어짐={sorted(set(_made))} 비어서건너뜀={sorted(set(_empty))}")
 
 # 시작 알림은 사진 없이 글만 나간다 — 그 형태까지 확인한다
@@ -580,6 +704,89 @@ _sr = T.render_for(_sa, _full[_sa.league.value])
 check("시작 알림은 사진 없이 글만", _sr is not None and _sr[0] == [] and _sr[1])
 check("시작 알림 글에 팀 이름이 들어간다",
       bool(_sr) and any("KT" in p or "SS" in p for p in _sr[1]), str(_sr[1])[:120])
+# 새 4종은 카드(사진)로 나간다 — 글만 나가면 디자인이 통째로 빠진 것이다
+for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
+            ContentType.NIGHT_BRIEF, ContentType.ANALYSIS):
+    _one = next((i for i in _items if i.content_type is _ct), None)
+    _gs = (_allg if _one is not None and _one.league is None
+           else _full.get(_one.league.value, []) if _one is not None else [])
+    _rr = None if _one is None else T.render_for(_one, _gs, records=_records,
+                                                 all_games=_allg)
+    check(f"{_ct.value} 카드가 사진 + 캡션으로 나온다",
+          bool(_rr) and len(_rr[0]) == 1 and len(_rr[0][0][1]) > 5000 and _rr[1],
+          "None" if not _rr else f"사진 {len(_rr[0])}장")
+
+T._now = _saved_now
+
+# ── 11b. 기록이 없는 리그에는 기록 콘텐츠를 올리지 않는다 ─────
+# 순위·리더보드·분석은 RecordBook이 있어야 그려진다. 기록 어댑터가 없는 리그에
+# 이것들을 큐에 올리면 render_for가 매 틱 None을 돌려주고, 로그에는
+# "만들 내용 없음"이 리그 수 × 종류 수만큼 매 틱 쌓인다 — 진짜 결함이 그 속에 묻힌다.
+print("\n11b. 기록 콘텐츠 — 기록이 없는 리그에는 올리지 않는가")
+_RECORD_ONLY = {ContentType.STANDINGS, ContentType.LEADERBOARD, ContentType.ANALYSIS}
+check("기록 소스가 있는 리그는 KBO뿐 (표가 늘면 아래 검사도 함께 넓혀야 한다)",
+      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO}),
+      str(sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)))
+
+_norec = {
+    "NPB": [mkgame(League.NPB, "YOG", "HAN", day=_day, hh=14, status=Status.FINAL,
+                   score=Score(3, 2, ScoreUnit.RUNS)),
+            mkgame(League.NPB, "HAN", "YOG", day=_day, hh=23)],
+    "KL1": [mkgame(League.KL1, "K01", "K02", day=_day, hh=19)],
+    "KBL": [mkgame(League.KBL, "SK", "LG", day=_day, hh=19)],
+}
+_nq = T.build_all_queues(_norec, NOW, "-100test")
+_leak = sorted({f"{i.league.value if i.league else 'ALL'}/{i.content_type.value}"
+                for i in _nq if i.content_type in _RECORD_ONLY})
+check("기록이 없는 리그에는 순위·리더보드·분석이 큐에 오르지 않는다", not _leak,
+      str(_leak[:4]))
+# 반대 방향도 고정한다 — 위 검사는 '아무것도 안 만들면' 저절로 통과하기 때문이다
+check("기록이 있는 리그(KBO)에는 세 가지가 실제로 오른다",
+      _RECORD_ONLY <= {i.content_type for i in _items},
+      str(sorted(c.value for c in (_RECORD_ONLY - {i.content_type for i in _items}))))
+# 기록이 없는 리그도 나이트 브리핑에는 참여한다 (통합 카드라 리그를 안 가린다)
+check("기록이 없는 리그도 나이트 브리핑은 만든다 (통합 카드)",
+      ContentType.NIGHT_BRIEF in {i.content_type for i in _nq})
+
+# ── 11c. 예약 시각 — 약속한 시각에 잡히는가 ────────────────────
+# 카드마다 '언제 나간다'가 약속돼 있다. 여기가 틀어지면 아무 오류 없이
+# 엉뚱한 시각에 나가고, 창·유예 계산이 전부 다른 이야기를 하게 된다.
+print("\n11c. 예약 시각 — 나이트 23:00 · 리더보드 12:00 · 분석 첫 경기 -3h")
+# **약속한 숫자를 여기에 직접 적는다.** 파이프라인의 상수(NIGHT_BRIEF_HOUR_KST 등)로
+# 검사하면 상수를 바꾸는 순간 검사도 같이 따라가서 아무것도 못 잡는다 —
+# 검증이 코드를 되풀이해 읽을 뿐 약속을 지키는지는 안 보게 된다.
+_NB_HOUR, _LB_HOUR, _AN_LEAD_H = 23, 12, 3
+check("파이프라인 상수가 약속과 같다 (23시 · 12시 · -3시간)",
+      (P.NIGHT_BRIEF_HOUR_KST, P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS)
+      == (_NB_HOUR, _LB_HOUR, _AN_LEAD_H),
+      f"{P.NIGHT_BRIEF_HOUR_KST}/{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
+_nb_at = [i.scheduled_utc.astimezone(KST) for i in _items
+          if i.content_type is ContentType.NIGHT_BRIEF]
+check(f"나이트 브리핑은 23:00 KST ({len(_nb_at)}건)",
+      bool(_nb_at) and all((t.hour, t.minute) == (_NB_HOUR, 0) for t in _nb_at),
+      str([f"{t:%H:%M}" for t in _nb_at[:3]]))
+_lb_at = [i.scheduled_utc.astimezone(KST) for i in _items
+          if i.content_type is ContentType.LEADERBOARD]
+check(f"리더보드는 12:00 KST ({len(_lb_at)}건)",
+      bool(_lb_at) and all((t.hour, t.minute) == (_LB_HOUR, 0) for t in _lb_at),
+      str([f"{t:%H:%M}" for t in _lb_at[:3]]))
+_an = [i for i in _items if i.content_type is ContentType.ANALYSIS]
+_an_bad = []
+for _it in _an:
+    _target = P.pick_analysis_game([g for g in _full[_it.league.value]
+                                    if g.sports_day == _it.sports_day])
+    if (_target is None
+            or _it.scheduled_utc != _target.start_utc
+            - timedelta(hours=_AN_LEAD_H)):
+        _an_bad.append(f"{_it.sports_day} {_it.scheduled_utc:%H:%M}")
+check(f"분석 카드는 그날 주목 경기 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
+      bool(_an) and not _an_bad, str(_an_bad[:3]))
+# 분석은 경기가 시작된 뒤에 나가면 '분석'이 아니라 뒷북이다 — 예약이 늘 경기 앞이다
+check("분석 카드 예약은 반드시 경기 시작 전",
+      all(i.scheduled_utc < min(g.start_utc for g in _full[i.league.value]
+                                if g.sports_day == i.sports_day
+                                and g.status is Status.SCHEDULED)
+          for i in _an))
 
 # ── 12. 카드가 하는 말과 시스템이 하는 일이 같은가 ────────────
 # 카드 아래에 "경기 시작 10분 전 알림"이 문자열로 박혀 있었다. 리드타임을
@@ -700,6 +907,21 @@ check("모닝 브리핑 창도 실측 최악 간격을 덮는다 (전 리그가 
       send_window_seconds(ContentType.MORNING,
                           T.LOOKAHEAD_SECONDS) >= _WORST_OBSERVED_TICK_SECONDS,
       f"{send_window_seconds(ContentType.MORNING, T.LOOKAHEAD_SECONDS) // 60}분")
+# 2026-09-03 — 새로 켠 4종에도 같은 잣대를 댄다.
+# 이 잣대가 없던 동안, 아직 안 켠 콘텐츠들이 240분 시계에서 25~62% 조용히
+# 사라진다는 사실이 어디에도 안 나타났다(그래서 v1.11k에서 유예·앞창을 넓혔다).
+# 켠 다음에 다시 좁아지면 로그는 평온한데 카드만 사라진다 — 여기서 못 박는다.
+for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
+            ContentType.NIGHT_BRIEF, ContentType.ANALYSIS):
+    _w = send_window_seconds(_ct, T.LOOKAHEAD_SECONDS)
+    check(f"{_ct.value} 창이 실측 최악 간격(240분)을 덮는다 ({_w // 60}분)",
+          _w >= _WORST_OBSERVED_TICK_SECONDS, f"{_w // 60}분")
+# 큐에 오르는 것 전체로도 한 번 — 종류가 또 늘면 위 목록보다 이쪽이 먼저 깨진다
+_narrow = [f"{ct.value} {send_window_seconds(ct, T.LOOKAHEAD_SECONDS) // 60}분"
+           for ct in QUEUED_CONTENT_TYPES
+           if send_window_seconds(ct, T.LOOKAHEAD_SECONDS)
+           < _WORST_OBSERVED_TICK_SECONDS]
+check("큐에 오르는 7종 전부가 실측 최악 간격을 덮는다", not _narrow, str(_narrow))
 # **결과 카드를 일찍 보내면 경기가 빠진다.** 예약 시각은 '마감'이고, 렌더는
 # "한 경기라도 끝났으면" 카드를 만든다. 앞창을 열면 5경기 중 1경기만 끝난
 # 시점에 카드가 나가고 나머지는 영영 빠진다(멱등키가 재발송을 막으므로).
@@ -747,6 +969,45 @@ check("결과 카드가 100분 시계에 걸린다", ContentType.LEAGUE_RESULT i
 check("큐에 오르는 모든 종류가 빠짐없이 걸린다",
       QUEUED_CONTENT_TYPES <= _seen,
       f"놓친 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _seen))}")
+
+# ── 14b. 정확도를 위해 한 틱 미루기 (2026-09-03 신설) ─────────
+# 새 4종을 켜면서 앞창을 크게 열었다(분석 6시간). 앞창만 넓히면 카드가
+# 목표 시각보다 몇 시간 일찍 나가므로, `defer_for_precision`이 발송 순간에
+# "목표에 더 가까운 틱이 곧 온다면 이번엔 보내지 않는다"를 판정해 정확도를 되찾는다.
+#
+# **이 규칙은 두 방향 모두 틀리면 위험하다.**
+#   · 너무 잘 미루면 → 뜸한 시계에서 영영 안 나간다(유실). 그래서 '시계를 모르면
+#     안 미룬다', '목표를 지났으면 안 미룬다'가 반드시 성립해야 한다.
+#   · 전혀 안 미루면 → 앞창을 넓힌 대가만 치르고 정확도는 못 얻는다.
+print("\n14b. 정확도 미루기 — 시계가 좋아지면 저절로 정확해지는가")
+from contract import defer_for_precision                             # noqa: E402
+
+_D_NOW = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)
+_D_AT = _D_NOW + timedelta(minutes=60)          # 목표까지 60분 남음
+check("시계가 촘촘하면 미룬다 (5분 시계 · 목표 60분 뒤)",
+      defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 5 * 60))
+check("시계가 뜸하면 안 미룬다 (240분 시계 — 미루면 그대로 유실이다)",
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 240 * 60))
+check("목표를 이미 지났으면 안 미룬다 (더 미루면 늦어질 뿐이다)",
+      not defer_for_precision(_D_NOW - timedelta(minutes=1), _D_NOW,
+                              ContentType.ANALYSIS, 5 * 60))
+check("시계를 모르면(0) 안 미룬다 — 모를 때는 보내는 쪽이 안전하다",
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 0))
+check("리더보드도 미루기 대상 (앞창이 열려 있는 콘텐츠)",
+      defer_for_precision(_D_AT, _D_NOW, ContentType.LEADERBOARD, 5 * 60))
+# 앞창이 0인 콘텐츠는 애초에 일찍 나가지 않으므로 미룰 것도 없다.
+# 여기서 미루면 유예만 깎아먹는다.
+check("앞창이 잠긴 콘텐츠(모닝·결과·순위·나이트)는 미루지 않는다",
+      not any(defer_for_precision(_D_AT, _D_NOW, ct, 5 * 60)
+              for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,
+                         ContentType.STANDINGS, ContentType.NIGHT_BRIEF)))
+# 미루기 대상은 전부 앞창이 열려 있어야 한다 — 이 관계가 깨지면
+# '일찍 나가지도 않는데 미루기까지 하는' 콘텐츠가 생겨 조용히 사라진다.
+check("미루기 대상은 전부 앞창이 열려 있다",
+      all(lookahead_for(ct, T.LOOKAHEAD_SECONDS) > 0
+          for ct in C.DEFER_FOR_PRECISION),
+      str(sorted(ct.value for ct in C.DEFER_FOR_PRECISION
+                 if lookahead_for(ct, T.LOOKAHEAD_SECONDS) == 0)))
 
 # ── 15. 결과 카드는 마지막 경기가 끝나면 곧바로 ────────────────
 # 대표님 지시: "같은 리그 마지막 경기가 종료되고 1시간 이내에 발송".

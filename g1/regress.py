@@ -11,7 +11,7 @@ import contract as C
 from contract import (ContentType, Game, GameMeta, GateError, KST, League, Score,
                       ScoreUnit, Status, TeamRef, UnknownStatus,
                       SOURCE_RESULTLESS_CATEGORIES, assert_no_stale_scheduled,
-                      assert_transition, esc, format_kickoff, idem_key,
+                      assert_transition, esc, format_kickoff, idem_key, is_late,
                       assert_league_color_contrast, assert_team_names,
                       STALE_GRACE_BY_LEAGUE, stale_grace_for,
                       parse_status, plan_send_parts, quote,
@@ -70,32 +70,126 @@ q = P.build_queue(games, now, "-100test")
 check(f"큐 {len(q)}건 생성", len(q) >= 0)
 check("큐 시각 정렬", all(q[i].scheduled_utc <= q[i+1].scheduled_utc for i in range(len(q)-1)))
 check("멱등키 유일", len({i.idem_key for i in q}) == len(q))
-lo, hi = now + timedelta(hours=6), now + timedelta(hours=30)
+hi = now + timedelta(hours=30)
 # 상한은 그대로다 — 너무 먼 미래 것을 미리 만들지 않는다.
 check("지평선 상한 +30h 준수", all(i.scheduled_utc <= hi for i in q))
-# 하한은 콘텐츠에 따라 다르다 (v1.11c).
-# 결과 카드만 과거 마감을 허용한다: 소스가 결과를 늦게 채우면 마감이 지난 뒤에야
-# 카드를 만들 수 있는데, 하한으로 막으면 **그날 결과가 통째로 사라진다.**
-# 대신 유예(6시간)를 넘은 것은 is_late()가 버리고, 이미 보낸 것은 멱등키가 막는다.
+
+# ── 하한 검사 — 2026-09-03에 '열거'에서 '성질'로 다시 썼다 ──────────
 #
-# **모닝 브리핑도 하한을 안 받는다 (v1.11d).** 전에는 `while morning < now: +1일`로
-# 항상 미래 07:30만 잡아, 07:30이 지나면 그날 모닝이 큐에서 통째로 사라졌다.
-# 시계가 뜸한 환경에서 이것이 매일 벌어졌다 — 지금은 유예(3시간) 안이면 남긴다.
+# **옛 검사(3종 시절).** `_floor_free = {LEAGUE_RESULT, MORNING}`라는 열거를 두고
+#   ① "하한(+6h)을 벗어난 항목은 결과 카드·모닝뿐"
+#   ② "시작 알림은 하한 +6h를 지킨다" — 이름과 달리 `not in _floor_free` 전부를 봤다
+# 를 확인했다. 콘텐츠가 3종 → 7종이 되면서 standings·leaderboard·night_brief·
+# analysis가 열거에 없어 둘 다 실패했다. **열거를 늘리면 8종째에 또 고쳐야 한다.**
 #
-# 이 검증은 원래 "과거 항목은 결과 카드뿐"이었다. 그 규칙은 v1.11d에서 바뀌었는데
-# 검증이 따라오지 않았고, **하필 07:30~13:30 사이에 돌린 적이 없어 계속 통과했다.**
-# 2026-09-01 09:00에 처음 걸렸다. 시각에 따라 결과가 달라지는 검증은
-# '통과'가 증거가 되지 못한다 — 기준을 시각과 무관하게 다시 적는다.
-_floor_free = {ContentType.LEAGUE_RESULT, ContentType.MORNING}
-_past = [i for i in q if i.scheduled_utc < lo]
-check("하한을 벗어난 항목은 결과 카드·모닝뿐",
-      all(i.content_type in _floor_free for i in _past),
-      str([i.content_type.value for i in _past[:3]]))
-check("지나간 항목은 각자의 유예 안에 있다",
-      all((now - i.scheduled_utc).total_seconds() <= C.GRACE_SECONDS[i.content_type]
-          for i in _past if i.scheduled_utc < now))
-check("시작 알림은 하한 +6h를 지킨다",
-      all(i.scheduled_utc >= lo for i in q if i.content_type not in _floor_free))
+# **원래 지키려던 것은 두 가지였다.**
+#   ① 지나간 항목이 큐에 남아 있어도 그건 '유예 안'이어야 한다
+#      — 아무 근거 없이 옛 항목이 쌓이면 그게 언젠가 옛 카드로 나간다.
+#   ② 시작 알림은 충분히 미래에 잡힌다
+#      — 경기가 시작된 뒤에 나가는 "곧 시작" 알림은 거짓말이다.
+# 둘 다 콘텐츠 목록이 아니라 **성질**이므로 성질로 적는다. 이렇게 두면
+# 콘텐츠가 더 늘어도 이 검증을 다시 안 고쳐도 된다.
+#
+# 그리고 이 파일 자신이 남긴 교훈("시각에 따라 결과가 달라지는 검증은 통과가
+# 증거가 못 된다")에 따라, 아래 성질은 **24시각 전부에서** 성립함을 확인했다
+# (실데이터 KBO 238경기 · 24시각 × 매시 :00/:17/:41 = 72개 시점, 2026-09-03).
+#
+# ① '유예 안'의 정의는 계약의 keep_in_queue()다 — 큐 생성부가 쓰는 바로 그 함수로 본다.
+#    (v1.11i: 큐는 유예 + 보고여유까지 남기고, 버림 판정·기록은 is_late() 한 곳에서 한다.
+#     그래서 GRACE_SECONDS로 직접 재던 옛 검사 "지나간 항목은 각자의 유예 안에 있다"도
+#     같이 다시 썼다 — 그 검사는 실측 24시각 중 **17시각에서 실패**한다(06시~자정).
+#     지금 통과하고 있던 것은 '하필 그 시각에 안 돌려서'였다.)
+_stragglers = [i for i in q if not C.keep_in_queue(i.scheduled_utc, now,
+                                                   i.content_type)]
+check("큐에 남은 항목은 전부 계약이 남기라고 한 것뿐 (keep_in_queue)",
+      not _stragglers,
+      str([f"{i.content_type.value} {i.scheduled_utc}" for i in _stragglers[:3]]))
+# ② 남기는 쪽(keep_in_queue)과 버리는 쪽(is_late)의 경계가 어긋나면 안 된다.
+#    큐가 먼저 잘라내면 is_late()는 영원히 참이 되지 않고, 사라진 발행이
+#    로그에도 알림에도 안 남는다 — v1.11i에서 실제로 38,283건 중 0건이었다.
+#    그래서 **유예를 막 넘긴 항목은 아직 큐에 남아 있어야** 한다.
+_past = [i for i in q if i.scheduled_utc < now]
+_report_gap = []
+for _ct in sorted(C.QUEUED_CONTENT_TYPES, key=lambda c: c.value):
+    _at = now - timedelta(seconds=C.GRACE_SECONDS[_ct] + 60)
+    if not (is_late(_at, now, _ct) and C.keep_in_queue(_at, now, _ct)):
+        _report_gap.append(_ct.value)
+check(f"유예를 막 넘긴 항목은 큐에 남아 is_late()가 기록한다 (지나간 항목 {len(_past)}건)",
+      not _report_gap, str(_report_gap))
+# ③ 시작 알림만 따로 — 그 시간표의 첫 경기보다 리드타임만큼 앞서 잡힌다.
+#    (심야 회피로 더 앞당겨질 수는 있어도 뒤로 밀리지는 않는다.)
+_sa = [i for i in q if i.content_type is ContentType.START_ALERT]
+_sa_late = []
+for i in _sa:
+    _first = min(g.start_utc for g in games if day_schedule_scope(g) == i.scope)
+    if i.scheduled_utc > _first - timedelta(minutes=C.START_ALERT_LEAD_MINUTES):
+        _sa_late.append(f"{i.scope} 예약 {i.scheduled_utc} · 첫 경기 {_first}")
+check(f"시작 알림({len(_sa)}건)은 첫 경기보다 리드타임만큼 앞서 잡힌다",
+      bool(_sa) and not _sa_late, str(_sa_late[:2]))
+
+# ── 예약 시각 — 새 4종이 약속한 시각에 잡히는가 (2026-09-03 신설) ──
+# 여기가 틀어지면 아무 오류 없이 엉뚱한 시각에 나가고, 창·유예 계산이
+# 전부 다른 이야기를 하게 된다.
+# **약속한 숫자를 여기에 직접 적는다.** 파이프라인 상수로 검사하면 상수를 바꾸는
+# 순간 검사도 따라가서 아무것도 못 잡는다 — 검증이 코드를 되풀이해 읽을 뿐이 된다.
+_NB_HOUR, _LB_HOUR, _AN_LEAD_H = 23, 12, 3
+check("파이프라인 상수가 약속과 같다 (23시 · 12시 · -3시간)",
+      (P.NIGHT_BRIEF_HOUR_KST, P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS)
+      == (_NB_HOUR, _LB_HOUR, _AN_LEAD_H),
+      f"{P.NIGHT_BRIEF_HOUR_KST}/{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
+_at_kst = lambda i: i.scheduled_utc.astimezone(KST)
+_nb = [i for i in q if i.content_type is ContentType.NIGHT_BRIEF]
+check(f"나이트 브리핑은 23:00 KST ({len(_nb)}건)",
+      bool(_nb) and all((_at_kst(i).hour, _at_kst(i).minute) == (_NB_HOUR, 0)
+                        for i in _nb),
+      str([f"{_at_kst(i):%H:%M}" for i in _nb[:3]]))
+_lb = [i for i in q if i.content_type is ContentType.LEADERBOARD]
+check(f"리더보드는 12:00 KST ({len(_lb)}건)",
+      bool(_lb) and all((_at_kst(i).hour, _at_kst(i).minute) == (_LB_HOUR, 0)
+                        for i in _lb),
+      str([f"{_at_kst(i):%H:%M}" for i in _lb[:3]]))
+_an = [i for i in q if i.content_type is ContentType.ANALYSIS]
+_an_bad = []
+for i in _an:
+    _t = P.pick_analysis_game([g for g in games if g.sports_day == i.sports_day])
+    if _t is None or i.scheduled_utc != _t.start_utc - timedelta(hours=_AN_LEAD_H):
+        _an_bad.append(f"{i.sports_day} {i.scheduled_utc}")
+check(f"분석 카드는 주목 경기 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
+      bool(_an) and not _an_bad, str(_an_bad[:2]))
+
+# ── 발송 창 — 새 4종이 실측 최악 시계(240분)를 견디는가 ────────────
+# 창이 시계 간격보다 좁으면 **오류 없이 조용히** 아무것도 안 나간다.
+# 실측 최악 간격은 240분(깃허브 자동 시계)이다.
+_WORST_TICK_SECONDS = 240 * 60
+_DEFAULT_LOOKAHEAD = 60 * 60                   # tick.LOOKAHEAD_SECONDS 기본값
+_narrow = [f"{ct.value} {C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) // 60}분"
+           for ct in sorted(C.QUEUED_CONTENT_TYPES, key=lambda c: c.value)
+           if C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) < _WORST_TICK_SECONDS]
+check("큐에 오르는 7종 전부가 실측 최악 간격(240분)을 견딘다", not _narrow, str(_narrow))
+check("새로 켠 4종도 예외가 아니다",
+      all(C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) >= _WORST_TICK_SECONDS
+          for ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
+                     ContentType.NIGHT_BRIEF, ContentType.ANALYSIS)))
+
+# ── 정확도 미루기 (contract.defer_for_precision) ───────────────────
+# 앞창을 넓힌 대가로 카드가 목표보다 일찍 나갈 수 있다. 그 정확도를 되찾는 규칙인데,
+# **두 방향 모두 틀리면 위험하다** — 너무 잘 미루면 뜸한 시계에서 영영 안 나가고,
+# 전혀 안 미루면 앞창을 넓힌 대가만 치른다.
+_DN = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)
+_DA = _DN + timedelta(minutes=60)
+check("시계가 촘촘하면 미룬다 (5분 시계 · 목표 60분 뒤)",
+      C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 5 * 60))
+check("시계가 뜸하면 안 미룬다 (240분 시계 — 미루면 그대로 유실이다)",
+      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 240 * 60))
+check("목표를 이미 지났으면 안 미룬다",
+      not C.defer_for_precision(_DN - timedelta(minutes=1), _DN,
+                                ContentType.ANALYSIS, 5 * 60))
+check("시계를 모르면(0) 안 미룬다 — 모를 때는 보내는 쪽이 안전하다",
+      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 0))
+check("앞창이 잠긴 콘텐츠(모닝·결과·순위·나이트)는 미루지 않는다",
+      not any(C.defer_for_precision(_DA, _DN, ct, 5 * 60)
+              for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,
+                         ContentType.STANDINGS, ContentType.NIGHT_BRIEF)))
 
 print("\n4. 카드 렌더 (기존 2종)")
 day = max(g.sports_day for g in fin)
@@ -226,10 +320,54 @@ _b = [_mkgame(League.KBL, "SK", "LG", 18)]
 _qa = P.build_queue(_a, _QNOW, "-100test", floor_hours=0)
 _qb = P.build_queue(_b, _QNOW, "-100test", floor_hours=0)
 check("두 리그 모두 큐가 생김", len(_qa) > 0 and len(_qb) > 0, f"{len(_qa)}/{len(_qb)}")
-_ka = {i.idem_key for i in _qa}
-_kb = {i.idem_key for i in _qb}
-check("리그가 다르면 멱등키가 겹치지 않는다", not (_ka & _kb),
+# ── 2026-09-03 갱신 (콘텐츠 3종 → 7종) ────────────────────────────
+# **옛 기대:** "리그가 다르면 멱등키가 하나도 안 겹친다".
+# **왜 못 쓰게 됐나:** 나이트 브리핑은 **전 리그 통합 1건**이라 scope가 `ALL:날짜`다.
+# build_queue는 리그별로 불리므로 KBO도 KBL도 **일부러** 같은 키를 만들고,
+# 대장(ledger)이 키로 접어 실제 발송은 1회다. 여기서의 겹침은 사고가 아니라 설계다.
+#
+# **원래 지키려던 것(위 사고):** 리그가 서로를 '이미 보냄'으로 덮어쓰지 않는다.
+# 기대를 그냥 뒤집으면 그 사고가 되살아나므로, 통합 카드와 리그 카드를 갈라서
+# 각각 **더 강한** 조건을 건다 — 리그 카드는 겹침 0, 통합 카드는 **완전히 동일**.
+_nb_a = {i.idem_key for i in _qa if i.content_type is ContentType.NIGHT_BRIEF}
+_nb_b = {i.idem_key for i in _qb if i.content_type is ContentType.NIGHT_BRIEF}
+_ka = {i.idem_key for i in _qa} - _nb_a
+_kb = {i.idem_key for i in _qb} - _nb_b
+check("나이트 브리핑을 뺀 멱등키는 리그가 다르면 겹치지 않는다", not (_ka & _kb),
       str(sorted(_ka & _kb)[:2]))
+# 여기가 진짜 위험이다 — 통합 카드 키가 리그마다 조금이라도 다르면
+# 대장이 못 접어서 **리그 수만큼** 같은 카드가 채널에 나간다(아홉 리그면 하루 아홉 번).
+check("나이트 브리핑은 리그가 달라도 완전히 같은 키 (다르면 리그 수만큼 발송된다)",
+      bool(_nb_a) and _nb_a == _nb_b,
+      f"KBO={sorted(_nb_a)} KBL={sorted(_nb_b)}")
+# 같은 리그·같은 날 안에서도 종류가 다르면 키가 달라야 한다. 안 그러면
+# 결과 카드가 나간 뒤 순위표가 '이미 보냄'으로 조용히 사라진다.
+_slot: dict = {}
+for i in _qa + _qb:
+    _slot.setdefault((i.league, i.sports_day), {}) \
+         .setdefault(i.content_type, set()).add(i.idem_key)
+_ct_clash = [(str(lg), d, ca.value, cb.value)
+             for (lg, d), m in _slot.items()
+             for ca in m for cb in m
+             if ca.value < cb.value and (m[ca] & m[cb])]
+check("같은 리그·같은 날이어도 콘텐츠 종류가 다르면 키가 다르다",
+      not _ct_clash, str(_ct_clash[:2]))
+# ── 기록이 없는 리그에는 기록 콘텐츠를 올리지 않는다 (2026-09-03 신설) ──
+# 순위·리더보드·분석은 RecordBook이 있어야 그려진다. 기록 어댑터가 없는 리그에
+# 올리면 render_for가 매 틱 None을 돌려주고 로그에 "만들 내용 없음"이 쌓인다 —
+# 진짜 결함이 그 소음에 묻힌다. (KBL은 기록 소스가 없다.)
+_RECORD_ONLY = {ContentType.STANDINGS, ContentType.LEADERBOARD, ContentType.ANALYSIS}
+check("기록 소스가 있는 리그는 KBO뿐 (표가 늘면 아래 검사도 함께 넓혀야 한다)",
+      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO}),
+      str(sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)))
+check("기록이 없는 리그(KBL)에는 순위·리더보드·분석이 큐에 오르지 않는다",
+      not [i for i in _qb if i.content_type in _RECORD_ONLY],
+      str(sorted({i.content_type.value for i in _qb if i.content_type in _RECORD_ONLY})))
+# 반대 방향도 고정한다 — 위 검사는 '아무것도 안 만들면' 저절로 통과하기 때문이다.
+# (실데이터 KBO 큐 q에는 세 가지가 실제로 올라와 있어야 한다.)
+check("기록이 있는 리그(KBO)에는 세 가지가 실제로 오른다",
+      _RECORD_ONLY <= {i.content_type for i in q},
+      str(sorted(c.value for c in (_RECORD_ONLY - {i.content_type for i in q}))))
 _ma = [i for i in _qa if i.content_type is ContentType.MORNING]
 _mb = [i for i in _qb if i.content_type is ContentType.MORNING]
 check("같은 날 모닝 브리핑도 리그별로 다른 키",

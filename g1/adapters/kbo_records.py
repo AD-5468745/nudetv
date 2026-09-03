@@ -123,6 +123,10 @@ def _hidden_value(html: str, name: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+# 기록 캐시 신선 창. 경기가 끝나야 바뀌는 값이라 짧게 잡을 이유가 없다.
+RECORD_CACHE_TTL_SECONDS = 30 * 60
+
+
 class KboRecordAdapter(NoticeMixin):
     league = League.KBO
 
@@ -295,6 +299,24 @@ class KboRecordAdapter(NoticeMixin):
         대조해 다르면 막는다. 안 주면 페이지가 말하는 시즌을 그대로 붙인다.
         """
         self.reset_notices()
+
+        # ── 메모리 캐시 (v1.11k) ──────────────────────────────────
+        # **시계가 5분마다 도는데 그때마다 4페이지를 긁을 이유가 없다.**
+        # 순위·부문 기록은 경기가 끝나야 바뀐다. 실측 수집 4.5초 × 하루 288회는
+        # 소스에 대한 예의가 아니고 차단을 부른다.
+        # 프로세스 안에서만 사는 캐시로 충분하다 — 틱은 한 번 실행에 여러 콘텐츠가
+        # 같은 RecordBook을 요구하고(순위표·부문 순위·분석 카드), 연속 운전이면
+        # 한 프로세스가 5.5시간 살면서 5분마다 일한다.
+        import time as _time
+        _now = _time.time()
+        _hit = getattr(self, "_rb_cache", None)
+        if _hit and (_now - _hit[0]) < RECORD_CACHE_TTL_SECONDS:
+            if season is None or str(season).strip() == _hit[1].season:
+                # 신선 창 안의 캐시는 정상 동작이다 — 알림에 싣지 않는다.
+                # (`note_cache_age`는 '묵은 데이터로 버티는 중'을 알리는 자리다.
+                #  정상 히트까지 실으면 매 틱 같은 줄이 쌓여 진짜 경고가 묻힌다.)
+                return _hit[1]
+
         html, page_season = self._rank_html()
         if season is not None and str(season).strip() != page_season:
             raise GateError(
@@ -309,4 +331,5 @@ class KboRecordAdapter(NoticeMixin):
             collected_utc=datetime.now(timezone.utc), source_url=_RANK,
             standings=standings, h2h=h2h, leaders=leaders)
         assert_recordbook(rb)                 # 교차 대조 게이트
+        self._rb_cache = (_now, rb)
         return rb
