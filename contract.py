@@ -2322,6 +2322,27 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
 # assert_team_names()로 강제한다(최소 폰트 28px에서 배운 것).
 TEAM_NAME_MAX_LEN = 8
 
+# 부문 순위 카드에서 선수 이름 옆에 붙는 팀 꼬리표의 상한.
+# 이 칸은 선수 이름과 값 사이의 좁은 자리라 본문 상한(8자)보다 짧아야 한다.
+# 한 팀이라도 넘으면 그 카드는 **전부** 팀 코드로 떨어진다(표기 혼용 금지, v1.11i).
+LEADER_TEAM_LABEL_MAX = 4
+
+
+def pct_text(pct: "str | None") -> str:
+    """승률 표기를 한 가지로 맞춘다 (v1.11m).
+
+    소스마다 다르게 준다 — KBO는 `0.616`, NPB는 `.624`. 그대로 내보내면 같은 날
+    두 카드가 같은 것을 다르게 말한다(약점 67번: 한 화면에 함께 보이는 것은
+    함께 고쳐야 한다). 국내 표기는 `0.616` 꼴이므로 그쪽으로 맞춘다.
+    **값은 바꾸지 않는다** — 앞의 0을 붙이는 표기 통일뿐이다.
+    """
+    t = (pct or "").strip()
+    if t.startswith("."):
+        return "0" + t
+    if t.startswith("-."):
+        return "-0" + t[1:]
+    return t
+
 
 CARD_PAPER = "#fffdfa"          # 카드 바탕색. v4.html의 --paper와 같아야 한다.
 CARD_MIN_CONTRAST = 3.0         # 큰 글씨(28px 이상 굵게) 기준
@@ -2651,6 +2672,52 @@ def venue_name(venue: "str | None") -> str:
         return ""
     key = "".join(venue.split()).replace("　", "")
     return VENUE_NAMES.get(key, venue)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 한글 채널에 못 읽는 이름을 내보내지 않는다 (v1.11m)
+#
+# NPB 부문 순위·주목 선수가 소스 원문 그대로 나갔다 — `平良 海馬`,
+# `マルティネス`, `辰見 鴻之介`. 한국 구독자는 읽을 수 없다.
+# 경기장에서 이미 같은 일이 있었고(`京セラD大阪` → `venue_name`으로 해결),
+# 선수명은 표가 없어 그대로 나갔다.
+#
+# **음역을 지어내지 않는다.** 한자·가나를 자동으로 한글로 옮기면 틀린 이름이
+# 만들어진다 — 틀린 이름은 못 읽는 이름보다 나쁘다(FACT_LOCK).
+# 그래서 지금은 **못 읽는 이름이 들어간 자리를 빼는 것**까지만 한다.
+# 한글 표기표가 생기면 그때 켠다.
+# ─────────────────────────────────────────────────────────────────────
+
+def is_readable_ko(text: "str | None") -> bool:
+    """한국 구독자가 읽을 수 있는 표기인가 — 한글·라틴·숫자·기호만이면 참.
+
+    한자(CJK 통합한자)·히라가나·가타카나가 하나라도 있으면 거짓이다.
+    `DeNA`·`SSG` 같은 라틴 약칭은 참(한국에서도 그대로 쓴다).
+    """
+    if not text:
+        return False
+    for ch in text:
+        o = ord(ch)
+        if (0x3040 <= o <= 0x30FF          # 히라가나·가타카나
+                or 0x4E00 <= o <= 0x9FFF   # CJK 통합한자
+                or 0x3400 <= o <= 0x4DBF   # CJK 확장 A
+                or 0xF900 <= o <= 0xFAFF): # CJK 호환한자
+            return False
+    return True
+
+
+# 그 리그의 **선수 이름**이 한글로 나오는가. 소스가 원문으로 주는 리그는 False.
+# False인 리그는 선수 이름이 들어가는 콘텐츠(부문 순위·주목 선수)를 만들지 않는다.
+# 팀 이름은 별개다 — NPB 팀명은 `TEAM_NAMES`에 한글로 있어 순위표·분석은 나간다.
+PLAYER_NAMES_LOCALIZED: "dict[League, bool]" = {
+    League.KBO: True,          # 소스가 한글로 준다
+    League.NPB: False,         # 소스가 한자·가나 원문으로 준다 (실측 2026-09-04)
+}
+
+
+def player_names_localized(league: "League") -> bool:
+    """모르는 리그는 **거짓**으로 본다 — 모르면 안 내보내는 쪽이 안전하다."""
+    return bool(PLAYER_NAMES_LOCALIZED.get(league, False))
 
 
 # ─────────────────────────────────────────────────────────────────────

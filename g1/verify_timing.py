@@ -708,6 +708,59 @@ check("무승부가 없는 리그는 두 칸", P._wld(w_nodraw, False) == "8-2")
 check("전적 표기에 무승부가 들어간다", "1" in P._wld(w_draw), P._wld(w_draw))
 
 
+# ─────────────────────────────────────────────────────────────
+# (11) 한글 채널에 못 읽는 표기를 내보내지 않는다 (v1.11m)
+# ─────────────────────────────────────────────────────────────
+# NPB 부문 순위·주목 선수가 소스 원문(`平良 海馬`·`マルティネス`)으로 나갔다.
+# 경기장에서 같은 일이 있었고(`京セラD大阪`), 선수명은 표가 없어 그대로 나갔다.
+def _raises(fn) -> bool:
+    """게이트는 '통과했다'가 아니라 '깨뜨렸더니 막았다'로만 증명된다."""
+    try:
+        fn()
+    except Exception:                                        # noqa: BLE001
+        return True
+    return False
+
+
+print("\n11. 못 읽는 표기")
+check("한자 이름을 못 읽는 것으로 판정", not C.is_readable_ko("平良 海馬"))
+check("가타카나 이름을 못 읽는 것으로 판정", not C.is_readable_ko("マルティネス"))
+check("한글 이름은 읽을 수 있다", C.is_readable_ko("곽빈"))
+check("라틴 약칭은 읽을 수 있다 (DeNA·SSG)",
+      C.is_readable_ko("DeNA") and C.is_readable_ko("SSG"))
+check("빈 값은 읽을 수 없는 것으로 본다 — 모르면 안 내보낸다",
+      not C.is_readable_ko(""))
+check("선수명 한글화 정책: KBO 켜짐 · NPB 꺼짐",
+      C.player_names_localized(League.KBO)
+      and not C.player_names_localized(League.NPB))
+check("정책표에 없는 리그는 꺼진 것으로 본다 (모르면 안 내보낸다)",
+      not C.player_names_localized(League.MLB))
+
+# ─────────────────────────────────────────────────────────────
+# (12) 승률 표기를 한 가지로 맞춘다 (v1.11m)
+# ─────────────────────────────────────────────────────────────
+# KBO는 `0.616`, NPB는 `.624`로 준다. 같은 날 두 카드가 같은 것을 다르게 말했다.
+print("\n12. 승률 표기 통일")
+check("앞의 0을 붙인다", C.pct_text(".624") == "0.624", C.pct_text(".624"))
+check("이미 붙어 있으면 그대로", C.pct_text("0.616") == "0.616")
+check("값을 바꾸지 않는다", C.pct_text("1.000") == "1.000")
+check("빈 값은 빈 값", C.pct_text("") == "" and C.pct_text(None) == "")
+
+# ─────────────────────────────────────────────────────────────
+# (13) 상대전적 막대의 팀 이름은 한 줄이어야 한다 (v1.11m)
+# ─────────────────────────────────────────────────────────────
+# 칸이 142px인데 글자가 42px이라 4자부터 접혔다 — '요미우리'·'히로시마'가
+# 실제로 두 줄로 나갔고, 접힘 게이트가 이 클래스를 안 봐서 통과했다.
+print("\n13. 상대전적 팀 이름")
+check("접힘 게이트가 bn 칸을 본다", "bn" in P.ONE_LINE_CLASSES)
+check("3자 이하는 줄이지 않는다", 'class="bn"' in P._bn("한화"))
+check("4자는 한 단계 줄인다", "b4" in P._bn("요미우리"), P._bn("요미우리"))
+check("5자는 두 단계 줄인다", "b5" in P._bn("소프트뱅크"), P._bn("소프트뱅크"))
+check("게이트가 실제로 잡는다 — 일부러 접힌 bn을 넣어본다",
+      _raises(lambda: P.assert_no_wrapped_names(
+          [{"t": "요미우리", "cls": "bn", "lines": 2, "fs": 42}])))
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

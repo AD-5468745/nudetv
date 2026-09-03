@@ -25,6 +25,8 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
                       start_alert_lead_text, venue_name,
+                      is_readable_ko, player_names_localized,
+                      LEADER_TEAM_LABEL_MAX, pct_text,
                       assert_result_deadline, kst_day_label, result_deadline,
                       SCORE_UNIT_BY_LEAGUE, ScoreUnit,
                       shift_out_of_quiet_hours,
@@ -148,7 +150,10 @@ class NameWrapped(GateError):
 # **`st`(결과 카드 상태 칸)를 넣는다 (v1.11j).** 폭이 152px로 고정인데 검사 대상이
 # 아니어서, "그라운드사정 취소"가 낱말 중간에서 "그라운드사/정 취소"로 쪼개진 채
 # 2026-08-16·08-28 KBO 카드가 그대로 나갔다(실측 높이 92px = 46px 두 줄).
-ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt", "st")
+# `bn`(상대전적 막대의 팀 이름)이 v1.11m에서 들어왔다. 그 칸은 142px인데
+# 42px 글자라 **4자부터 두 줄로 접힌다** — NPB '요미우리'·'히로시마'가 실제로
+# 접혀 나갔고, 게이트가 이 클래스를 안 봐서 통과했다(62번 약점의 재발).
+ONE_LINE_CLASSES = ("n1", "n2", "s1", "s2", "mt", "st", "bn")
 
 # **잘리면 안 되는 칸.** 이 칸들은 CSS가 줄바꿈 대신 말줄임(…)으로 처리하므로
 # 줄 수 검사에 아무것도 안 걸린다. 실측: MLB 모닝 8행 중 5행이 구장명 잘림
@@ -469,7 +474,12 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     # 모닝과 같은 꼴로 잡는다(오늘 12:00과 내일 12:00). 12:00은 자정에서 12시간
     # 떨어져 있고 유예가 6시간이라, 날짜가 넘어가기 전에 창이 닫힌다 —
     # 나이트 브리핑처럼 '어제 것'을 따로 챙길 필요가 없다.
-    if league in RECORD_SOURCE_LEAGUES:
+    # **선수 이름이 한글로 안 나오는 리그는 부문 순위를 만들지 않는다 (v1.11m).**
+    # 부문 순위는 카드 전체가 선수 이름이다. NPB는 소스가 한자·가나 원문으로 줘서
+    # `平良 海馬`·`マルティネス`가 그대로 나갔다 — 한국 구독자는 못 읽는다.
+    # 음역은 지어내지 않는다(틀린 이름이 못 읽는 이름보다 나쁘다).
+    # 한글 표기표가 생기면 `PLAYER_NAMES_LOCALIZED`만 켜면 된다.
+    if league in RECORD_SOURCE_LEAGUES and player_names_localized(league):
         _lb0 = now.astimezone(KST).replace(hour=LEADERBOARD_HOUR_KST, minute=0,
                                            second=0, microsecond=0)
         for _lb in (_lb0, _lb0 + timedelta(days=1)):
@@ -1508,6 +1518,13 @@ EXTRA_CSS = """
 .res:not(.cx) .s2{text-align:left;padding-left:20px;white-space:nowrap;}
 .res .st .dhq{display:block;font-size:28px;font-weight:800;color:var(--dim);
   line-height:1.15;}
+/* ── 상대전적 막대의 팀 이름 (v1.11m) ───────────────────────
+   칸이 142px인데 글자가 42px이라 4자부터 접힌다. 접히면 막대와 어긋나
+   행이 통째로 무너진다. 글자 수에 따라 줄인다(칸을 넓히면 막대가 좁아진다). */
+.brow .bn{white-space:nowrap;}
+.brow .bn.b4{font-size:34px;}
+.brow .bn.b5{font-size:28px;}
+.brow .bn.b6{font-size:24px;}
 .brow .bar{display:flex;}
 .brow .fill{flex:0 0 auto;border-radius:18px 0 0 18px;}
 .brow .fdraw{flex:0 0 auto;height:100%;background:#c8d2e0;}
@@ -1724,8 +1741,22 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     has_draw = any(x.record.draw for x in order)
     l10_draw = any(x.last10.draw for x in order if x.last10)
     wl = "승-패-무" if has_draw else "승-패"
+    # **소스에 없는 열은 아예 뺀다 (v1.11m).**
+    # NPB는 최근10·연속을 주지 않아 12행 전부 '—'였다. 빈 열 두 개가 나란히
+    # 있으면 정직한 게 아니라 **고장난 것처럼 보인다.** 한 행이라도 값이 있으면
+    # 열을 남기고(그 행만 '—'), 전부 없으면 열 자체를 없앤다.
+    show_l10 = any(x.last10 for x in order)
+    show_streak = any(x.streak_kind is not StreakKind.NONE and x.streak_len
+                      for x in order)
+    # 표의 마지막 열에만 오른쪽 여백 클래스를 준다 — 열이 빠지면 그 자리도 옮긴다.
+    _pr = ' class="padr"'
+    _gb_at = "" if (show_l10 or show_streak) else _pr
+    _l10_at = "" if show_streak else _pr
     head = (f'<tr><th class="pad">순위</th><th>팀</th><th>{wl}</th><th>승률</th>'
-            '<th>승차</th><th>최근10</th><th class="padr">연속</th></tr>')
+            + f'<th{_gb_at}>승차</th>'
+            + (f'<th{_l10_at}>최근10</th>' if show_l10 else "")
+            + ('<th class="padr">연속</th>' if show_streak else "")
+            + '</tr>')
     rows = []
     for s_ in order:
         cls = ' class="hl"' if highlight and s_.team_code == highlight else ""
@@ -1735,8 +1766,11 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
             f'<tr{cls}><td class="pad">{s_.rank}</td>'
             f'<td>{esc(TEAM_NAMES[s_.league].get(s_.team_code, s_.team_code))}</td>'
             f'<td>{_wld(s_.record, has_draw)}</td>'
-            f'<td>{esc(s_.pct)}</td><td>{gb}</td><td>{l10}</td>'
-            f'<td class="padr">{_streak(s_)}</td></tr>')
+            f'<td>{esc(pct_text(s_.pct))}</td>'
+            + f'<td{_gb_at}>{gb}</td>'
+            + (f'<td{_l10_at}>{l10}</td>' if show_l10 else "")
+            + (f'<td class="padr">{_streak(s_)}</td>' if show_streak else "")
+            + '</tr>')
 
     label, line = record_headline(rb)
     lgname = LEAGUE_LABEL.get(rb.league, rb.league.value)
@@ -1749,7 +1783,9 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
             f'<div class="body"><table class="stb">{head}{"".join(rows)}</table></div>'
             f'<div class="rec"><div class="l">{esc(label)}</div>'
             f'<div class="t">{line}</div></div>'
-            f'<div class="foot"><div class="tk">최근10 = {"승-패-무" if l10_draw else "승-패"} · {esc(lgname)} 공식 기록</div>'
+            + '<div class="foot"><div class="tk">'
+            + (f'최근10 = {"승-패-무" if l10_draw else "승-패"} · ' if show_l10 else "")
+            + f'{esc(lgname)} 공식 기록</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
 
@@ -1852,16 +1888,37 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
         raise GateError(f"리더보드: {rb.league.value}에 쓸 부문이 없다")
 
     boxes = []
+    # **못 읽는 이름이면 카드를 만들지 않는다 (v1.11m).**
+    # 이 카드는 전체가 선수 이름이다. 큐가 이미 막지만, 정책표가 낡거나 새 리그가
+    # 붙을 때를 위해 실제 문자열로 한 번 더 본다 — 게이트는 두 겹이어야 한다.
+    _unreadable = [e.name for c in cats for e in rb.leaders[c][:top_n]
+                   if not is_readable_ko(e.name)]
+    if _unreadable:
+        raise GateError(
+            f"부문 순위: 한국 구독자가 못 읽는 선수 이름이 {len(_unreadable)}건 "
+            f"있습니다 (예: {_unreadable[0]}). 한글 표기표가 생길 때까지 "
+            f"이 리그({rb.league.value})의 부문 순위는 만들지 않습니다.")
+
+    # **팀은 한글 표기로 통일한다 (v1.11m).**
+    # 전에는 `e.team_code`(OB·HT·WO·LT)를 그대로 찍었다. 자리는 확실하지만
+    # **일반 독자는 못 읽는다** — 같은 날 다른 카드에는 '두산·KIA·키움·롯데'로 나온다.
+    # 한 표 안에서 표기가 섞이면 읽는 사람이 그 차이를 뜻으로 읽으므로(v1.11i),
+    # **전부 한글로 바꿀 수 있을 때만** 바꾸고 아니면 전부 코드로 둔다.
+    _codes = {e.team_code for c in cats for e in rb.leaders[c][:top_n]}
+    _ko = {c0: team_name_of(rb.league, c0) for c0 in _codes}
+    # **'표기가 코드와 같다'를 '표기가 없다'로 읽으면 안 된다.**
+    # KBO의 KT·LG·NC는 표기 자체가 코드와 같은 정상적인 이름이다. 판단 기준은
+    # 표에 항목이 있는가이지, 값이 코드와 다른가가 아니다(첫 시도에서 틀렸다).
+    _known = TEAM_NAMES.get(rb.league, {})
+    _all_ko = all(c0 in _known and _ko[c0]
+                  and len(_ko[c0]) <= LEADER_TEAM_LABEL_MAX for c0 in _codes)
+    _label = (lambda c0: _ko[c0]) if _all_ko else (lambda c0: c0)
+
     for c in cats:
         rows = []
         for e in rb.leaders[c][:top_n]:
             r1 = " r1" if e.rank == 1 else ""
-            # **한 표 안에서 팀 표기를 한 가지로 통일한다 (v1.11i).**
-            # 전에는 이름 길이에 따라 한글 팀명·팀 코드·표기 없음 세 가지가
-            # 한 카드에 섞였다(실측 20행 중 세 종류). 읽는 사람은 그 차이를
-            # 뜻으로 읽는다 — 실제로는 자리 계산 결과일 뿐인데도.
-            # 자리가 확실한 팀 코드로 전 행을 맞추고, 꼬리말에 약칭임을 밝힌다.
-            tn = e.team_code
+            tn = _label(e.team_code)
             if len(e.name) > 11:
                 tn = ""              # 이름만으로 자리가 찬다. 잘린 팀명보다 없는 편이 낫다
             rows.append(
@@ -1879,7 +1936,9 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
                  # 코드 어디에도 규정 미달 포함 여부를 확인하는 로직이 없다.
                  f"{esc(lgname)} 공식 부문 순위", league=rb.league) +
             f'<div class="body"><div class="lb">{"".join(boxes)}</div></div>'
-            f'<div class="foot"><div class="tk">팀은 약칭 표기 · {esc(lgname)} 공식 기록 · '
+            f'<div class="foot"><div class="tk">'
+            + ("" if _all_ko else "팀은 약칭 표기 · ")
+            + f'{esc(lgname)} 공식 기록 · '
             f'{esc(_dt(day))} 기준</div>'
             f'<div class="lg">NUDE-TV.NET</div></div>')
     return _card(body, rb.league)
@@ -1950,12 +2009,12 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
             f'<div class="mid"><span class="ml">시즌</span>'
             f'<span class="mv">{wld.win}-{wld.loss}-{wld.draw}</span></div>'
             f'{side(sh, True)}</div>'
-            f'<div class="brow {ca}"><span class="bn">{esc(TEAM_NAMES[rb.league].get(a, a))}</span>'
+            f'<div class="brow {ca}">' + _bn(TEAM_NAMES[rb.league].get(a, a)) +
             f'<div class="bar"><div class="fill" style="width:{aw}%"></div>'
             + (f'<div class="fdraw" style="width:{dw}%"></div>' if dw else "") +
             f'</div>'
             f'<span class="pct">{wld.win}승</span></div>'
-            f'<div class="brow {ch}"><span class="bn">{esc(TEAM_NAMES[rb.league].get(h, h))}</span>'
+            f'<div class="brow {ch}">' + _bn(TEAM_NAMES[rb.league].get(h, h)) +
             f'<div class="bar"><div class="fill" style="width:{hw}%"></div>'
             + (f'<div class="fdraw" style="width:{dw}%"></div>' if dw else "") +
             f'</div>'
@@ -2192,7 +2251,7 @@ def caption_standings(rb: RecordBook, *, as_parts: bool = False):
     # 텔레그램은 가변폭 글꼴이라 `{rank:>2}`로 자리를 맞출 수 없다.
     # 정렬은 안 되고 한 자리 순위 앞에 공백만 생겨 목록이 들쭉날쭉해 보였다.
     lines = [f"{s.rank}. {esc(names.get(s.team_code, s.team_code))} "
-             f"{_wld(s.record, three)} · {esc(s.pct)}"
+             f"{_wld(s.record, three)} · {esc(pct_text(s.pct))}"
              for s in order]
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"전체 순위 {len(rb.standings)}팀</b>\n")
@@ -2261,7 +2320,7 @@ def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
     if wld is not None:
         lines.append(f"시즌 상대전적 {na} {_wld(wld, three)}")
     for s, nm in ((sa, na), (sh, nh)):
-        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {esc(s.pct)}"]
+        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {esc(pct_text(s.pct))}"]
         if s.last10:
             bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
@@ -2841,7 +2900,8 @@ def _condition_block(sa: Standing, sh: Standing, na: str, nh: str,
                     None if sa.rank == sh.rank else sa.rank < sh.rank))
     try:
         pa, ph = float(sa.pct), float(sh.pct)
-        rows.append(row(sa.pct, "승률", sh.pct, None if pa == ph else pa > ph))
+        rows.append(row(pct_text(sa.pct), "승률", pct_text(sh.pct),
+                        None if pa == ph else pa > ph))
     except ValueError:
         pass                              # 소스가 준 문자열을 재포맷하지 않는다
     for k, label, higher in TEAM_STAT_LABELS:
@@ -2859,6 +2919,13 @@ def _condition_block(sa: Standing, sh: Standing, na: str, nh: str,
     return (f'<div class="body"><div class="anh">팀 컨디션'
             f'<span>{esc(na)} · {esc(nh)}</span></div>{"".join(rows)}</div>', len(rows))
 
+
+
+def _bn(name: str) -> str:
+    """상대전적 막대의 팀 이름 칸. 글자 수에 따라 크기를 줄여 한 줄을 지킨다."""
+    n = len(name)
+    cls = "bn" if n <= 3 else f"bn b{min(n, 6)}"
+    return f'<span class="{cls}">{esc(name)}</span>'
 
 def _h2h_block(rb: RecordBook, a: str, h: str, na: str, nh: str) -> str | None:
     """④ 시즌 상대전적 — 막대. 계산 규칙은 맞대결 카드와 같다.
@@ -2881,10 +2948,10 @@ def _h2h_block(rb: RecordBook, a: str, h: str, na: str, nh: str) -> str | None:
     return (f'<div class="body"><div class="anh">시즌 상대전적'
             f'<span>{played}경기 · {_wld(wld, bool(wld.draw))}</span></div>'
             f'<div class="brow {ca}" style="padding-top:26px">'
-            f'<span class="bn">{esc(na)}</span>'
+            + _bn(na) +
             f'<div class="bar"><div class="fill" style="width:{aw}%"></div>{fd}</div>'
             f'<span class="pct">{wld.win}승</span></div>'
-            f'<div class="brow {ch}"><span class="bn">{esc(nh)}</span>'
+            f'<div class="brow {ch}">' + _bn(nh) +
             f'<div class="bar"><div class="fill" style="width:{hw}%"></div>{fd}</div>'
             f'<span class="pct">{wld.loss}승</span></div></div>')
 
@@ -2912,11 +2979,17 @@ def pick_notable(rb: RecordBook, code: str) -> tuple[str, LeaderEntry] | None:
 def _notable_block(rb: RecordBook, a: str, h: str) -> tuple[str, list[str]] | None:
     """⑤ 주목 선수 블록과, 캡션이 쓸 같은 내용의 줄."""
     boxes, lines = [], []
+    # **못 읽는 이름은 싣지 않는다 (v1.11m).** 리그 정책(소스가 한글을 주는가)과
+    # 실제 문자열을 **둘 다** 본다 — 정책표는 낡을 수 있고, 문자열은 리그를 모른다.
+    if not player_names_localized(rb.league):
+        return None
     for code in (a, h):
         got = pick_notable(rb, code)
         if not got:
             continue
         cat, e = got
+        if not is_readable_ko(e.name):
+            continue
         tn = team_name_of(rb.league, code)
         boxes.append(
             f'<div class="plx"><div class="tt">{esc(tn)}</div>'
@@ -3001,13 +3074,16 @@ def analysis_summary(rb: RecordBook, game: Game, history: list[Game] | None,
         if tie:
             s += f" (동률 {len(tie)}개: {esc(' · '.join(tie))})"
         return s + "."
-    lead_n, lead_items, other_n = ((na, up_a, len(up_h)) if len(up_a) > len(up_h)
-                                   else (nh, up_h, len(up_a)))
+    lead_n, lead_items, other_n, other_name = (
+        (na, up_a, len(up_h), nh) if len(up_a) > len(up_h)
+        else (nh, up_h, len(up_a), na))
     # 조사를 문자열에 박으면 받침 있는 팀명이 전부 비문이 된다(실측 사고).
     s = (f"비교 {total}개 항목 중 <b>{esc(lead_n)}</b>{josa(lead_n, '이', '가')} "
          f"{len(lead_items)}개에서 앞섭니다 — {esc(' · '.join(lead_items))}")
     if other_n:
-        s += f" (상대 우위 {other_n}개)"
+        # **'상대'는 두 가지로 읽힌다** — 상대 팀인지 상대전적인지.
+        # 같은 카드에 '시즌 상대전적' 블록이 있어 더 헷갈린다. 팀 이름을 적는다.
+        s += f" ({esc(other_name)} {other_n}개)"
     if tie:
         s += f" (동률 {len(tie)}개)"
     return s + "."
@@ -3105,7 +3181,7 @@ def caption_analysis(rb: RecordBook, game: Game, day: str, *,
 
     lines: list[str] = []
     for s, nm in ((sa, na), (sh, nh)):
-        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {s.pct}"]
+        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {pct_text(s.pct)}"]
         if s.last10:
             bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
