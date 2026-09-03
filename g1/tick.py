@@ -81,6 +81,15 @@ RECORD_FETCH_EVERY_SECONDS = 30 * 60
 # 걸리지 않는다. 그대로 두면 5분마다 하루 288번을 두드려 차단을 부른다.
 # 15분이면 5분 시계에서 세 틱에 한 번 — 회복은 충분히 빠르고 소스에는 예의가 된다.
 RETRY_AFTER_FAIL_SECONDS = 15 * 60
+# **레이트리밋은 다른 실패와 백오프가 달라야 한다 (v1.11k).**
+# 실측: LCK·국제대회가 Leaguepedia 레이트리밋에 걸린 채 **104시간(4.3일)** 동안
+# 회복되지 못했고, 그 때문에 커버리지가 계속 빨간불이라 워크플로가
+# 04:58부터 모든 실행을 실패로 끝냈다 — 진짜 새 사고가 그 소음에 묻힌다.
+#
+# 원인은 우리가 계속 두드린 것이다. 15분 백오프면 하루 96번이고,
+# 연속 운전(5분 틱)에서도 15분마다 시도한다. 시간당 쿼터를 쓰는 상대에게
+# 그건 회복할 틈을 주지 않는 것이다. **막힌 상대는 오래 쉬게 둔다.**
+RETRY_AFTER_RATELIMIT_SECONDS = 6 * 3600
 
 # 큐에서 이만큼 앞선 것까지 이번 틱에 처리한다.
 # **틱 간격과 맞춰야 한다.** 짧으면 다음 틱까지 못 기다리는 항목이 통째로 누락되고,
@@ -868,7 +877,11 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
         failed_at = rec.get("failed_at")
         if not force and failed_at:
             since_fail = (now - datetime.fromisoformat(failed_at)).total_seconds()
-            if since_fail < RETRY_AFTER_FAIL_SECONDS:
+            # 레이트리밋은 훨씬 오래 쉰다 — 계속 두드리면 쿼터가 회복되지 않는다.
+            _need = (RETRY_AFTER_RATELIMIT_SECONDS
+                     if "ratelimited" in str(rec.get("error", "")).lower()
+                     else RETRY_AFTER_FAIL_SECONDS)
+            if since_fail < _need:
                 counts[name] = len(prev)
                 continue
         t0 = _time.monotonic()

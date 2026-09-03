@@ -396,8 +396,18 @@ check("다른 리그는 정상 수집된다", counts.get("GOOD") == 1)
 counts2, errors2, soft2 = T.collect(NOW + timedelta(minutes=5))
 check("막힌 소스는 15분 안에 다시 두드리지 않는다", not soft2 and not errors2,
       f"soft={soft2} errors={errors2}")
+# v1.11k: **레이트리밋은 백오프가 다르다.** 실측에서 LCK가 104시간(4.3일)
+# 동안 리밋에서 못 벗어났고, 원인은 15분마다 계속 두드린 것이었다.
+# 시간당 쿼터를 쓰는 상대에게 그건 회복할 틈을 주지 않는다.
+# 지켜야 할 것은 "15분"이라는 숫자가 아니라 **막힌 상대를 쉬게 둔다**이다.
 counts3, errors3, soft3 = T.collect(NOW + timedelta(minutes=16))
-check("15분이 지나면 다시 시도한다", any("LCK" in s for s in soft3), str(soft3))
+check("레이트리밋은 16분 뒤에도 다시 두드리지 않는다", not soft3 and not errors3,
+      f"soft={soft3} errors={errors3}")
+counts4, errors4, soft4 = T.collect(NOW + timedelta(hours=7))
+check("레이트리밋도 충분히 쉬면 다시 시도한다", any("LCK" in s for s in soft4), str(soft4))
+check("레이트리밋 백오프가 일반 실패보다 길다",
+      T.RETRY_AFTER_RATELIMIT_SECONDS > T.RETRY_AFTER_FAIL_SECONDS,
+      f"{T.RETRY_AFTER_RATELIMIT_SECONDS} vs {T.RETRY_AFTER_FAIL_SECONDS}")
 T._jobs = _orig
 
 # ── 8. 커버리지 감시 ──────────────────────────────────────────
