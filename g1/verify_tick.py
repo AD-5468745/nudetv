@@ -1031,6 +1031,29 @@ check("연속 운전 종료 직후 구간에서는 미루지 않는다 (Codex �
       "예상 5분·최악 5시간 — 마감(유예 3h) 안에 못 들어온다")
 check("같은 상황에서 최악이 작으면 미룬다",
       defer_for_precision(_D_FAR, _D_NOW, ContentType.ANALYSIS, 5 * 60, 20 * 60))
+
+# ── 미루기의 "다음 틱 보장"은 통계가 아니라 사실이어야 한다 ──────────
+# Codex 검수 2026-09-04: "최근 관측 최대값은 미래 공백의 상한이 아니다."
+# 그래서 연속 운전이 알려주는 결정론적 값만 쓴다.
+_env_bak = {k: os.environ.get(k) for k in ("TICK_LOOPS_LEFT", "TICK_LOOP_INTERVAL_SECONDS")}
+for _k in _env_bak:
+    os.environ.pop(_k, None)
+check("단발 실행에서는 미루지 않는다 (다음 틱 보장 없음)",
+      T._next_tick_estimate(NOW) == (0, 0), str(T._next_tick_estimate(NOW)))
+os.environ["TICK_LOOPS_LEFT"] = "0"
+check("연속 운전 마지막 회차에서는 미루지 않는다",
+      T._next_tick_estimate(NOW) == (0, 0), str(T._next_tick_estimate(NOW)))
+os.environ["TICK_LOOPS_LEFT"] = "59"
+os.environ["TICK_LOOP_INTERVAL_SECONDS"] = "300"
+_nt, _wt = T._next_tick_estimate(NOW)
+check("연속 운전 중에는 결정론적 값을 쓴다", _nt == 300 and _wt >= 300, f"{_nt},{_wt}")
+check("최악 가정이 예상보다 넉넉하다", _wt > _nt, f"{_nt},{_wt}")
+os.environ["TICK_LOOPS_LEFT"] = "abc"
+check("값이 이상하면 미루지 않는다", T._next_tick_estimate(NOW) == (0, 0))
+for _k, _v in _env_bak.items():
+    os.environ.pop(_k, None)
+    if _v is not None:
+        os.environ[_k] = _v
 # 미루기 대상은 전부 앞창이 열려 있어야 한다 — 이 관계가 깨지면
 # '일찍 나가지도 않는데 미루기까지 하는' 콘텐츠가 생겨 조용히 사라진다.
 check("미루기 대상은 전부 앞창이 열려 있다",

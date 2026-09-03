@@ -223,11 +223,25 @@ def _collect_records(now: datetime, notes: list) -> dict:
         # 제동에 걸린 틱은 그 리그의 기록이 없어 순위표·리더보드·분석이 안 만들어진다.
         # 그래도 괜찮다 — 그 카드들의 유예는 3~6시간이라 30분 제동으로도
         # 6~12번의 기회가 남는다. 한 번만 성공하면 그날 것이 나간다.
-        last = (log.get(key) or {}).get("at")
+        rec = log.get(key) or {}
+        last = rec.get("at")
         if last:
             try:
                 if (now - datetime.fromisoformat(last)).total_seconds() < \
                         RECORD_FETCH_EVERY_SECONDS:
+                    continue
+            except ValueError:
+                pass
+        # **실패한 소스를 5분마다 다시 때리지 않는다 (Codex 검수 2026-09-04).**
+        # 위 제동은 '성공 기록' 기준이라, 한 번도 성공 못한 소스에는 안 걸린다.
+        # NPB는 한 수집이 18페이지라 그대로 두면 하루 288번 × 18페이지를 두드려
+        # 차단을 부른다(첫 실행에서 Leaguepedia가 정확히 이렇게 막혔다).
+        # 경기 수집이 쓰는 것과 같은 백오프를 건다.
+        failed_at = rec.get("failed_at")
+        if failed_at:
+            try:
+                if (now - datetime.fromisoformat(failed_at)).total_seconds() < \
+                        RETRY_AFTER_FAIL_SECONDS:
                     continue
             except ValueError:
                 pass
@@ -238,7 +252,7 @@ def _collect_records(now: datetime, notes: list) -> dict:
             # 그쪽이 자기 자료구조를 가장 잘 안다.
             rb = make()
             out[name] = rb
-            log[key] = {"at": _iso(now)}
+            log[key] = {"at": _iso(now)}      # 성공 — failed_at을 지운다
         except Exception as e:                               # noqa: BLE001
             notes.append(f"기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:70]}")
             log[key] = {"at": log.get(key, {}).get("at"), "failed_at": _iso(now),
@@ -285,6 +299,34 @@ def _team_stats_for(name: str, notes: list):
         notes.append(f"팀 기록 지표 이름 불일치 — {name}: {', '.join(sorted(missing))} "
                      f"(카드의 '팀 컨디션' 블록에서 그만큼 빠집니다)")
     return out
+
+
+def _next_tick_estimate(now: datetime) -> tuple[int, int]:
+    """(다음 틱 예상, 최악 가정) — '정확도를 위해 미루기'가 쓰는 두 값.
+
+    **관측 통계로는 "다음 틱이 온다"를 보장할 수 없다** (Codex 검수 2026-09-04).
+    최근 12회의 최대 간격은 미래 공백의 상한이 아니다. 크론 지연·러너 배정·장애가
+    한 번도 관측되지 않은 길이로 늘면, 미룬 발행이 유예를 넘겨 사라진다.
+
+    그런데 **연속 운전 중에는 추측할 필요가 없다.** 워크플로가 같은 프로세스의
+    for 루프로 5분마다 부르므로, 남은 횟수(`TICK_LOOPS_LEFT`)가 0보다 크면
+    다음 틱은 5분 뒤에 **반드시** 온다. 이건 통계가 아니라 사실이다.
+
+    그래서 순서를 이렇게 둔다:
+      · 남은 루프가 있다  → 결정론적 값(루프 간격). 미루기가 안전하게 작동한다.
+      · 마지막 회차이거나 단발 실행 → **미루지 않는다**(0을 돌려준다).
+        다음이 언제 올지 모르는데 미루는 것은 발행을 거는 도박이다.
+    """
+    left_raw = os.environ.get("TICK_LOOPS_LEFT", "").strip()
+    if left_raw.isdigit() and int(left_raw) > 0:
+        try:
+            iv = max(60, int(os.environ.get("TICK_LOOP_INTERVAL_SECONDS", "300")))
+        except ValueError:
+            iv = 300
+        # 최악도 같은 값이다 — 루프는 sleep 뒤 곧바로 다음 회차를 돈다.
+        # 처리 시간이 얹힐 수 있으므로 최악에만 여유를 준다.
+        return iv, int(iv * 2)
+    return 0, 0
 
 
 def _recent_interval_seconds(now: datetime) -> int:
@@ -1387,9 +1429,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
 
     sent = failed = already = quarantined = corrected = deferred = 0
     # 다음 틱이 올 때까지의 예상 시간 — '정확도를 위해 미루기' 판정에 쓴다.
-    next_tick = _recent_interval_seconds(now)
-    # 미루기의 안전 기준 — 최악의 간격으로 다음 틱이 와도 마감 전인가.
-    worst_tick = _measured_interval_seconds(now)
+    next_tick, worst_tick = _next_tick_estimate(now)
     # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
     # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
     records = _collect_records(now, fact_notes)
