@@ -724,15 +724,21 @@ T._now = _saved_now
 # "만들 내용 없음"이 리그 수 × 종류 수만큼 매 틱 쌓인다 — 진짜 결함이 그 속에 묻힌다.
 print("\n11b. 기록 콘텐츠 — 기록이 없는 리그에는 올리지 않는가")
 _RECORD_ONLY = {ContentType.STANDINGS, ContentType.LEADERBOARD, ContentType.ANALYSIS}
-check("기록 소스가 있는 리그는 KBO뿐 (표가 늘면 아래 검사도 함께 넓혀야 한다)",
-      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO}),
+# v1.11k: NPB 기록 어댑터(npb_records)를 추가해 표가 둘로 늘었다.
+# **이 검사는 값을 못 박는 것이 목적이 아니라, 표가 늘 때 아래 검사도 함께
+# 넓히도록 강제하는 것이 목적이다.** 실제로 NPB를 넣자 이 검사가 먼저 걸렸다.
+check("기록 소스 표가 실제 어댑터와 일치한다",
+      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO, League.NPB}),
       str(sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)))
+check("기록 소스에 실제 어댑터가 있다",
+      set(T._record_jobs()) == {l.value for l in P.RECORD_SOURCE_LEAGUES},
+      f"어댑터 {sorted(T._record_jobs())} vs 표 "
+      f"{sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)}")
 
 _norec = {
-    "NPB": [mkgame(League.NPB, "YOG", "HAN", day=_day, hh=14, status=Status.FINAL,
-                   score=Score(3, 2, ScoreUnit.RUNS)),
-            mkgame(League.NPB, "HAN", "YOG", day=_day, hh=23)],
-    "KL1": [mkgame(League.KL1, "K01", "K02", day=_day, hh=19)],
+    "KL1": [mkgame(League.KL1, "K01", "K02", day=_day, hh=19),
+            mkgame(League.KL1, "K03", "K04", day=_day, hh=14, status=Status.FINAL,
+                   score=Score(2, 1, ScoreUnit.GOALS))],
     "KBL": [mkgame(League.KBL, "SK", "LG", day=_day, hh=19)],
 }
 _nq = T.build_all_queues(_norec, NOW, "-100test")

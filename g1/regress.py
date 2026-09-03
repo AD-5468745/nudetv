@@ -358,7 +358,7 @@ check("같은 리그·같은 날이어도 콘텐츠 종류가 다르면 키가 �
 # 진짜 결함이 그 소음에 묻힌다. (KBL은 기록 소스가 없다.)
 _RECORD_ONLY = {ContentType.STANDINGS, ContentType.LEADERBOARD, ContentType.ANALYSIS}
 check("기록 소스가 있는 리그는 KBO뿐 (표가 늘면 아래 검사도 함께 넓혀야 한다)",
-      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO}),
+      P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO, League.NPB}),
       str(sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)))
 check("기록이 없는 리그(KBL)에는 순위·리더보드·분석이 큐에 오르지 않는다",
       not [i for i in _qb if i.content_type in _RECORD_ONLY],

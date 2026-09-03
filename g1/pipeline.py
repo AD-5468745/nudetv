@@ -265,7 +265,12 @@ CSS = pathlib.Path(__file__).resolve().parents[1] / "cards" / "v4.html"
 #
 # 지금 기록 어댑터가 있는 리그는 KBO 하나다(g1/adapters/kbo_records.py).
 # 리그를 늘리면 여기에 추가한다 — 이 표가 곧 "기록 카드를 낼 수 있는 리그" 목록이다.
-RECORD_SOURCE_LEAGUES = frozenset({League.KBO})
+# 기록 어댑터가 있는 리그. 여기 없는 리그는 순위표·리더보드·분석 카드를
+# 큐에 올리지 않는다 — 올려 두고 렌더에서 실패하면 매 틱 로그만 쌓인다.
+# NPB 추가(v1.11k): npb.jp가 무인증 정적 HTML로 순위·상대전적·8부문을 준다.
+# 두 리그(센트럴·퍼시픽)를 (승−패) 기준으로 합쳐 12팀 하나로 만든다 —
+# 승률순으로 합치면 소화 경기 수가 벌어질 때 게임차가 역전해 게이트에 걸린다.
+RECORD_SOURCE_LEAGUES = frozenset({League.KBO, League.NPB})
 
 # 순위표는 결과 카드 **직후**다. 같은 틱에 둘 다 처리되면 페이서가 순서를 정하는데,
 # 순위표(PACER_PRIORITY 6)와 결과 카드(6)가 같은 값이라 예약 시각이 순서를 정한다.

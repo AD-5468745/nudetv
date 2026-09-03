@@ -72,6 +72,9 @@ LEDGER_MARK = ROOT / "ledger_mark.json"
 # 일정은 자주 안 바뀌므로 30분이면 충분하다. 단 경기 중에는 결과가 바뀌므로 짧게 본다.
 FETCH_EVERY_SECONDS = 30 * 60
 FETCH_EVERY_LIVE_SECONDS = 10 * 60      # 그 리그에 오늘 경기가 있으면
+# 기록(순위·부문)은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
+# NPB는 한 수집이 18페이지·22.9초라 제동이 없으면 하루 288회를 긁는다.
+RECORD_FETCH_EVERY_SECONDS = 30 * 60
 
 # **막힌 소스는 이만큼 쉬었다 다시 두드린다.**
 # 위의 30분 제동은 '성공 기록'을 기준으로 하므로, 한 번도 성공 못한 소스에는
@@ -210,6 +213,24 @@ def _collect_records(now: datetime, notes: list) -> dict:
     log = _fetch_log()
     for name, make in _record_jobs().items():
         key = f"record:{name}"
+        # ── 수집 제동 (v1.11k) ────────────────────────────────
+        # **어댑터의 메모리 캐시는 틱 사이에 살아남지 못한다.**
+        # 연속 운전은 `python g1/tick.py`를 5분마다 **새 프로세스로** 부른다
+        # (워크플로의 for 루프). 그래서 인스턴스·모듈 캐시는 매번 비어 있고,
+        # 제동이 없으면 NPB는 한 수집이 18페이지·22.9초라 하루 288회를 긁는다.
+        # 소스에 대한 예의가 아니고 차단을 부른다.
+        #
+        # 제동에 걸린 틱은 그 리그의 기록이 없어 순위표·리더보드·분석이 안 만들어진다.
+        # 그래도 괜찮다 — 그 카드들의 유예는 3~6시간이라 30분 제동으로도
+        # 6~12번의 기회가 남는다. 한 번만 성공하면 그날 것이 나간다.
+        last = (log.get(key) or {}).get("at")
+        if last:
+            try:
+                if (now - datetime.fromisoformat(last)).total_seconds() < \
+                        RECORD_FETCH_EVERY_SECONDS:
+                    continue
+            except ValueError:
+                pass
         try:
             # **보관은 어댑터 캐시에 맡긴다.** 여기서 RecordBook을 직접 직렬화하려다
             # 중첩 dataclass(record·last10)와 tuple 키(h2h)에서 깨졌다. 어댑터가
@@ -539,7 +560,9 @@ def _kovo_season_code(adapter, today: datetime) -> str:
 #  확인했지만 어댑터는 아직 없다. 후속 과제).
 def _record_jobs() -> dict:
     from adapters.kbo_records import KboRecordAdapter
-    return {"KBO": lambda: KboRecordAdapter().fetch()}
+    from adapters.npb_records import NpbRecordAdapter
+    return {"KBO": lambda: KboRecordAdapter().fetch(),
+            "NPB": lambda: NpbRecordAdapter().fetch()}
 
 
 
