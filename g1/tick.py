@@ -1162,7 +1162,14 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     if not day:
         return None                         # scope는 이제 '리그:날짜'라 날짜로 못 쓴다
     todays = [g for g in games if g.sports_day == day]
-    if not todays:
+    # **나이트 브리핑은 이 문지기를 지나지 못한다 (v1.11m에서 고침).**
+    # 그것만 리그가 없는 통합 카드다(`item.league is None`). 부르는 쪽은
+    # `item.league`로 리그 스냅샷을 고르므로 games가 항상 비고, 여기서
+    # 무조건 None으로 돌아섰다 — **되살렸다던 4종 중 하나가 처음부터
+    # 한 장도 못 만들고 있었다.** 게다가 날짜 기준도 다르다: 이 카드는
+    # 한국 날짜(night_brief_day)로 묶고 g.sports_day는 리그 현지 날짜다.
+    # 아래 전용 분기가 all_games로 알아서 고른다.
+    if not todays and item.content_type is not ContentType.NIGHT_BRIEF:
         return None
 
     out = ROOT / "render"
@@ -1245,29 +1252,48 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
 # 드라이런에서 실제로 그려볼 카드 수. 리그마다 색·아이콘·팀 표기가 달라
 # 한 장만 보면 나머지가 깨진 걸 못 잡는다(전 리그 카드가 KBO 색이던 사고가 그랬다).
 # 그렇다고 전부 그리면 틱이 길어진다 — 리그별로 한 장씩, 최대 이만큼.
-DRYRUN_RENDER_MAX = 6
+# 리그 9개 × 콘텐츠 7종이라 6이면 앞쪽 두 리그에서 끊긴다.
+# 새로 켠 4종이 한 번도 안 그려지던 이유의 절반이다 (v1.11m).
+DRYRUN_RENDER_MAX = 28
 
 
-def _render_samples(items: list, snaps: dict) -> list[str]:
-    """큐에서 리그별로 한 건씩 골라 실제로 그려본다. 실패 사유들을 돌려준다."""
+def _render_samples(items: list, snaps: dict, *, records: dict | None = None,
+                    team_stats_by_league: dict | None = None) -> list[str]:
+    """큐에서 **리그 × 콘텐츠 종류**마다 한 건씩 골라 실제로 그려본다.
+
+    **전에는 리그당 한 건만 그렸다 (v1.11m에서 고침).**
+    `key = (it.league, it.content_type)`를 만들어 놓고 `if it.league in seen`으로
+    검사했다 — 만든 key는 한 번도 쓰이지 않았다(정적 검사가 '쓰지 않는 지역변수'로
+    지적하고 있었다). 큐는 예약 시각순이라 리그마다 가장 이른 항목 하나만 뽑혔고,
+    그 결과 **새로 켠 4종(순위표·리더보드·나이트 브리핑·분석)은 단 한 번도
+    그려지지 않았다.** 렌더가 깨져 있어도 드라이런은 초록불이었다는 뜻이다.
+
+    기록이 필요한 카드(순위표·리더보드·분석)는 records 없이 그리면 만들 내용이
+    없다고 나온다 — 그래서 드라이런도 기록을 함께 넘긴다.
+    """
     out_dir = ROOT / "render"
     seen: set = set()
     picked = []
     for it in items:
         key = (it.league, it.content_type)
-        if it.league in seen:
+        if key in seen:
             continue
-        seen.add(it.league)
+        seen.add(key)
         picked.append(it)
         if len(picked) >= DRYRUN_RENDER_MAX:
             break
 
+    pool = [g for gs in snaps.values() if gs for g in gs]
     fails = []
     for it in picked:
         games = next((g for g in snaps.values() if g and g[0].league is it.league), [])
         tag = f"{(it.league.value if it.league else 'none')}-{it.content_type.value}"
         try:
-            made = render_for(it, games)
+            made = render_for(
+                it, games, records=records,
+                team_stats=(team_stats_by_league or {}).get(
+                    it.league.value if it.league else ""),
+                all_games=pool)
             if made is None:
                 print(f"    · {tag}: 만들 내용이 없음 (정상일 수 있음)")
                 continue
@@ -1381,6 +1407,25 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         print(f"  [커버리지] 리그 {cov.checked}개 이상 없음")
 
     items = build_all_queues(snaps, now, channel)
+
+    # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
+    #
+    # **선언이 사용보다 먼저다 (v1.11m).** fix30에서 아래 기록 수집을 이 줄
+    # **아래에** 끼워 넣어, 실발송 경로가 매 틱 UnboundLocalError로 죽었다.
+    # 예외가 알림 코드보다 앞에서 터지므로 채널도 알림도 통째로 조용했다.
+    # 드라이런은 그 줄에 닿기 전에 return 하므로 검증 823건이 전부 통과했다.
+    fact_notes: list[str] = []
+    # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
+    # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
+    #
+    # **드라이런보다 앞에 둔다 (v1.11m).** 순위표·리더보드·분석 카드는 기록이
+    # 없으면 '만들 내용 없음'으로 조용히 빠진다. 드라이런이 기록 없이 그리면
+    # 그 세 종류는 영원히 시험되지 않는다 — 실제로 그랬다.
+    records = _collect_records(now, fact_notes)
+    team_stats_by_league = {
+        name: _team_stats_for(name, fact_notes) for name in records
+    }
+
     # 앞창은 콘텐츠마다 다르다 — 시작 알림은 일찍 보내도 되고(문구가 실시간 계산),
     # 모닝 브리핑은 일찍 보내면 안 된다(대신 유예를 넓혀 늦게 보낸다).
     due = [i for i in items
@@ -1404,7 +1449,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         # 처음 시험된다 — 그때 잘못되면 되돌릴 수 없다. 특히 폰트는 서버마다 다른데,
         # 없으면 크로미움이 조용히 두부(□□□)로 그린다. 숫자 검증은 그걸 못 잡는다.
         # 여기서 그린 그림은 아티팩트로 올라가 사람이 눈으로 확인한다.
-        render_errors = _render_samples(items, snaps)
+        render_errors = _render_samples(
+            items, snaps, records=records,
+            team_stats_by_league=team_stats_by_league)
         if render_errors:
             for r in render_errors:
                 print(f"    ❌ {r}")
@@ -1443,21 +1490,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     sent = failed = already = quarantined = corrected = deferred = 0
     # 다음 틱이 올 때까지의 예상 시간 — '정확도를 위해 미루기' 판정에 쓴다.
     next_tick, worst_tick = _next_tick_estimate(now)
-    # 정정·점수 대조 알림은 '수집 실패'가 아니다 — 따로 모아 따로 싣는다.
-    #
-    # **선언이 사용보다 먼저다 (v1.11m).** fix30에서 아래 기록 수집을 이 줄
-    # **위에** 끼워 넣어, 실발송 경로가 매 틱 UnboundLocalError로 죽었다.
-    # 예외가 알림 코드보다 앞에서 터지므로 채널도 알림도 통째로 조용했다.
-    # 드라이런은 이 줄에 닿기 전에 return 하므로 검증 823건이 전부 통과했다.
-    fact_notes: list[str] = []
-    # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
-    # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
-    records = _collect_records(now, fact_notes)
-    team_stats_by_league = {
-        name: _team_stats_for(name, fact_notes) for name in records
-    }
     skip_kinds: dict[str, int] = {}
     nothing_to_render = 0
+    # **어떤 종류가 못 만들었는지까지 센다 (v1.11m).**
+    # 전에는 합계만 셌고 알림에도 안 실렸다. 그래서 '나이트 브리핑이
+    # 구조적으로 한 장도 못 만드는 상태'가 로그의 숫자 하나로만 남고
+    # 채널도 알림도 조용했다. 종류별로 세면 그 침묵이 문장이 된다.
+    empty_kinds: dict[str, int] = {}
     missed: list[str] = []
     dropped_before = 0
 
@@ -1522,6 +1561,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                               all_games=pool)
             if made is None:
                 nothing_to_render += 1
+                empty_kinds[item.content_type.value] = \
+                    empty_kinds.get(item.content_type.value, 0) + 1
                 continue
             photos, parts = made
             payload = (Payload.from_parts(photos, parts) if photos
@@ -1657,6 +1698,16 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             continue                       # 정상 동작이다
         _lbl = SKIP_REASON_LABEL.get(code, _SKIP_LABEL_LOCAL.get(code, code))
         lines.append(f"발송 건너뜀 [{_lbl}] {n}건")
+    # **한 종류가 통째로 못 만들어졌으면 알린다 (v1.11m).**
+    # 처리 대상이었는데 그 종류가 한 건도 못 만들어졌다면 데이터가 없는 것이
+    # 아니라 코드가 막힌 것일 수 있다 — 나이트 브리핑이 정확히 그랬다.
+    # (그 종류의 처리 대상이 애초에 없었으면 여기 오지 않는다.)
+    for _ct, _n in sorted(empty_kinds.items()):
+        _due_n = sum(1 for i in due if i.content_type.value == _ct)
+        if _due_n and _n >= _due_n:
+            lines.append(f"⚠️ [{_ct}] 처리 대상 {_due_n}건이 전부 "
+                         f"'만들 내용 없음'이었습니다 — 데이터가 없는 것인지 "
+                         f"렌더가 막힌 것인지 확인이 필요합니다.")
     if missed:
         # 지각으로 버린 것은 '아무 일도 없었다'가 아니다. 채널이 조용한 이유다.
         # 시계가 뜸해지면 여기가 먼저 알려준다.

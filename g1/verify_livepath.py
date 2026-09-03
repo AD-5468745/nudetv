@@ -270,6 +270,34 @@ if hasattr(T, "_crash_alert"):
 T.collect, T.all_games, T._collect_records = _orig_collect, _orig_all, _orig_rec
 T.render_for = _orig_render
 
+# ─────────────────────────────────────────────────────────────
+# ④ 큐에 오르는 종류는 전부 '만들 수 있는' 종류여야 한다
+# ─────────────────────────────────────────────────────────────
+# 종류를 늘리면서 render_for에 분기를 안 넣으면, 그 종류는 큐에 오르고
+# 처리 대상이 되고도 조용히 `else: return None`로 떨어진다. 로그에는
+# '만들 내용 없음' 숫자 하나만 늘 뿐이라 몇 주도 모를 수 있다.
+_src = pathlib.Path(T.__file__).read_text(encoding="utf-8")
+_body = _src.split("def render_for(", 1)[1].split("\ndef ", 1)[0]
+_missing = [ct.value for ct in C.QUEUED_CONTENT_TYPES
+            if f"ContentType.{ct.name}" not in _body]
+check("큐에 오르는 콘텐츠는 전부 render_for에 분기가 있다",
+      not _missing, " · ".join(_missing))
+
+# **나이트 브리핑은 리그가 없는 유일한 카드다** — 부르는 쪽이 item.league로
+# 고른 리그 스냅샷은 항상 비어 있다. 그 상태로도 만들어져야 한다.
+# (v1.11m 이전에는 문지기에 걸려 한 장도 못 만들었다.)
+_nb_day = datetime.now(timezone.utc).astimezone(C.KST).strftime("%Y-%m-%d")
+_nb_games = [mkgame(League.KBO, "LG", "OB", _nb_day, 18, Status.FINAL,
+                    Score(5, 3, ScoreUnit.RUNS))]
+_nb_item = next((i for i in T.build_all_queues({"KBO": _nb_games},
+                                               datetime.now(timezone.utc), "chTEST")
+                 if i.content_type is ContentType.NIGHT_BRIEF), None)
+check("나이트 브리핑이 큐에 오른다", _nb_item is not None)
+if _nb_item is not None:
+    check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
+          T.render_for(_nb_item, [], all_games=_nb_games) is not None,
+          "None이 돌아왔다 — 리그 문지기에 걸린다")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
