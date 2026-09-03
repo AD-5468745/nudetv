@@ -26,7 +26,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import contract as C
-from contract import (ContentType, GameMeta, Game, GateError, KST, League, Score,
+from contract import (GRACE_SECONDS, ContentType, GameMeta, Game, GateError, KST, League, Score,
                       ScoreUnit, SendState, Status, TeamRef, is_late)
 import pipeline as P
 
@@ -985,22 +985,46 @@ from contract import defer_for_precision                             # noqa: E40
 _D_NOW = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)
 _D_AT = _D_NOW + timedelta(minutes=60)          # 목표까지 60분 남음
 check("시계가 촘촘하면 미룬다 (5분 시계 · 목표 60분 뒤)",
-      defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 5 * 60))
+      defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 5 * 60, 10 * 60))
 check("시계가 뜸하면 안 미룬다 (240분 시계 — 미루면 그대로 유실이다)",
-      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 240 * 60))
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 240 * 60, 240 * 60))
 check("목표를 이미 지났으면 안 미룬다 (더 미루면 늦어질 뿐이다)",
       not defer_for_precision(_D_NOW - timedelta(minutes=1), _D_NOW,
-                              ContentType.ANALYSIS, 5 * 60))
+                              ContentType.ANALYSIS, 5 * 60, 10 * 60))
 check("시계를 모르면(0) 안 미룬다 — 모를 때는 보내는 쪽이 안전하다",
-      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 0))
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 0, 0))
 check("리더보드도 미루기 대상 (앞창이 열려 있는 콘텐츠)",
-      defer_for_precision(_D_AT, _D_NOW, ContentType.LEADERBOARD, 5 * 60))
+      defer_for_precision(_D_AT, _D_NOW, ContentType.LEADERBOARD, 5 * 60, 10 * 60))
 # 앞창이 0인 콘텐츠는 애초에 일찍 나가지 않으므로 미룰 것도 없다.
 # 여기서 미루면 유예만 깎아먹는다.
 check("앞창이 잠긴 콘텐츠(모닝·결과·순위·나이트)는 미루지 않는다",
-      not any(defer_for_precision(_D_AT, _D_NOW, ct, 5 * 60)
+      not any(defer_for_precision(_D_AT, _D_NOW, ct, 5 * 60, 10 * 60)
               for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,
                          ContentType.STANDINGS, ContentType.NIGHT_BRIEF)))
+
+# ── Codex 검수(2026-09-04)가 잡은 결함 — 미루기가 마감을 봐야 한다 ────────
+# 처음 구현은 "다음 틱이 곧 온다"는 예상만 보고 미뤘다. 그런데 연속 운전이 끝나는
+# 순간이나 러너 배정이 밀리는 순간에 미루면, 다음 틱이 유예를 넘겨 도착해
+# **원래 보낼 수 있던 발행이 사라진다.** 정확도를 얻으려다 발행을 잃는 것은
+# 우리가 고치려던 바로 그 병이다. 그래서 "최악의 간격으로 와도 마감 전"일 때만 미룬다.
+check("최악 간격이 마감을 넘기면 미루지 않는다 (Codex 검수)",
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS,
+                              5 * 60, 10 * 3600),
+      "예상은 5분이어도 최악이 10시간이면 미루면 안 된다")
+check("최악 간격을 모르면 미루지 않는다",
+      not defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 5 * 60, 0))
+check("최악 간격이 넉넉하면 미룬다",
+      defer_for_precision(_D_AT, _D_NOW, ContentType.ANALYSIS, 5 * 60, 10 * 60))
+# **연속 운전이 끝나는 순간**이 가장 위험하다 — Codex가 지목한 구간이다.
+# 그동안 5분 간격만 봐 왔으니 예상(중앙값)은 5분인데, 실제로는 크론이 다시 걸릴 때까지
+# 몇 시간이 빈다. 최악 간격에 그 공백이 한 번이라도 잡혀 있으면 미루지 않아야 한다.
+_D_FAR = _D_NOW + timedelta(minutes=200)      # 목표가 멀다 = 미룰 값어치는 있다
+check("연속 운전 종료 직후 구간에서는 미루지 않는다 (Codex 검수)",
+      not defer_for_precision(_D_FAR, _D_NOW, ContentType.ANALYSIS,
+                              5 * 60, 5 * 3600),
+      "예상 5분·최악 5시간 — 마감(유예 3h) 안에 못 들어온다")
+check("같은 상황에서 최악이 작으면 미룬다",
+      defer_for_precision(_D_FAR, _D_NOW, ContentType.ANALYSIS, 5 * 60, 20 * 60))
 # 미루기 대상은 전부 앞창이 열려 있어야 한다 — 이 관계가 깨지면
 # '일찍 나가지도 않는데 미루기까지 하는' 콘텐츠가 생겨 조용히 사라진다.
 check("미루기 대상은 전부 앞창이 열려 있다",

@@ -178,14 +178,14 @@ check("새로 켠 4종도 예외가 아니다",
 _DN = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)
 _DA = _DN + timedelta(minutes=60)
 check("시계가 촘촘하면 미룬다 (5분 시계 · 목표 60분 뒤)",
-      C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 5 * 60))
+      C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 5 * 60, 10 * 60))
 check("시계가 뜸하면 안 미룬다 (240분 시계 — 미루면 그대로 유실이다)",
-      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 240 * 60))
+      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 240 * 60, 240 * 60))
 check("목표를 이미 지났으면 안 미룬다",
       not C.defer_for_precision(_DN - timedelta(minutes=1), _DN,
-                                ContentType.ANALYSIS, 5 * 60))
+                                ContentType.ANALYSIS, 5 * 60, 10 * 60))
 check("시계를 모르면(0) 안 미룬다 — 모를 때는 보내는 쪽이 안전하다",
-      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 0))
+      not C.defer_for_precision(_DA, _DN, ContentType.ANALYSIS, 0, 0))
 check("앞창이 잠긴 콘텐츠(모닝·결과·순위·나이트)는 미루지 않는다",
       not any(C.defer_for_precision(_DA, _DN, ct, 5 * 60)
               for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,

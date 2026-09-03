@@ -2149,6 +2149,8 @@ class SendRecord:
 #   · 240분 시계 → 앞창 265분이 여유의 상한이라 한 번도 안 미룸 = 지금과 동일(유실 0)
 # 설정을 바꿔 켜는 스위치가 아니라, 시계 상태에 스스로 맞춘다.
 DEFER_SAFETY_FACTOR = 2.0
+# 최악 간격에 곱하는 여유. 관측 최대값도 진짜 최대라는 보장이 없다.
+DEFER_DEADLINE_MARGIN = 1.5
 
 # 미루기를 적용할 콘텐츠 — '일찍 보내도 되지만 목표 시각이 있는' 것만.
 # 앞창이 0인 콘텐츠(모닝·결과·순위)는 애초에 일찍 나가지 않으므로 대상이 아니다.
@@ -2161,20 +2163,39 @@ DEFER_FOR_PRECISION: frozenset = frozenset({
 
 
 def defer_for_precision(scheduled_utc: datetime, now_utc: datetime,
-                        content_type: ContentType, next_tick_seconds: int) -> bool:
+                        content_type: ContentType, next_tick_seconds: int,
+                        worst_tick_seconds: int = 0) -> bool:
     """목표 시각에 더 가까운 틱이 곧 오면 이번 틱에는 보내지 않는다.
 
-    `next_tick_seconds`는 **다음 틱이 올 때까지의 예상 시간**(실측 기반).
-    0이면 시계를 모른다는 뜻이므로 미루지 않는다 — 모를 때는 보내는 쪽이 안전하다.
+    `next_tick_seconds`  — 다음 틱까지의 **예상**(최근 간격 중앙값).
+    `worst_tick_seconds` — 관측된 **최악** 간격. 미룰지 결정하는 안전 기준.
+
+    **미루기는 "다음 틱이 온다"에 거는 내기다. 그 내기에 지면 발행이 사라진다.**
+    (Codex 검수 2026-09-04에서 잡힌 결함) 처음에는 예상 간격만 보고 미뤘는데,
+    5.5시간 연속 운전이 끝나는 순간이나 러너 배정이 밀리는 순간에 미루면
+    다음 틱이 유예를 넘겨 도착해 **원래 보낼 수 있던 것이 유실된다.**
+
+    그래서 두 조건을 **모두** 만족할 때만 미룬다:
+      ① 목표까지 남은 시간이 예상 간격의 배수보다 크다 (미룰 값어치가 있다)
+      ② **최악의 간격으로 다음 틱이 와도 유예(마감) 안에 도착한다** (내기에 져도 안 잃는다)
+    ②가 없으면 정확도를 얻으려다 발행을 잃는다 — 우리가 고치려던 바로 그 병이다.
+    최악 간격을 모르면(0) 미루지 않는다. 모를 때는 보내는 쪽이 언제나 안전하다.
     """
     if content_type not in DEFER_FOR_PRECISION:
         return False
-    if next_tick_seconds <= 0:
+    if next_tick_seconds <= 0 or worst_tick_seconds <= 0:
         return False
     ahead = (scheduled_utc - now_utc).total_seconds()
     if ahead <= 0:
         return False                      # 목표를 이미 지났다 — 더 미루면 늦어질 뿐이다
-    return ahead > next_tick_seconds * DEFER_SAFETY_FACTOR
+    if ahead <= next_tick_seconds * DEFER_SAFETY_FACTOR:
+        return False                      # ① 미룰 값어치가 없다
+    # ② 최악의 간격으로 와도 마감 전에 도착하는가.
+    deadline = scheduled_utc + timedelta(seconds=GRACE_SECONDS[content_type])
+    return now_utc + timedelta(seconds=worst_tick_seconds * DEFER_DEADLINE_MARGIN) < deadline
+
+
+
 
 
 def is_late(scheduled_utc: datetime, now_utc: datetime, content_type: ContentType) -> bool:

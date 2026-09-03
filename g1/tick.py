@@ -1365,6 +1365,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     sent = failed = already = quarantined = corrected = deferred = 0
     # 다음 틱이 올 때까지의 예상 시간 — '정확도를 위해 미루기' 판정에 쓴다.
     next_tick = _recent_interval_seconds(now)
+    # 미루기의 안전 기준 — 최악의 간격으로 다음 틱이 와도 마감 전인가.
+    worst_tick = _measured_interval_seconds(now)
     # 기록(순위·부문·상대전적)과 팀 기록. 어댑터가 캐시를 갖고 있어 반복 호출이 싸다.
     # 실패해도 발송을 막지 않는다 — 그 기록을 쓰는 콘텐츠만 큐에서 빠진다.
     records = _collect_records(now, fact_notes)
@@ -1416,7 +1418,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         # 대표님 요구: "경기 시작 몇 시간 전 **규칙적으로**".
         # 목표 시각에 더 가까운 틱이 곧 온다면 지금 보내지 않는다.
         # 시계가 뜸하면 이 분기가 아예 안 걸려 예전처럼 일찍이라도 나간다(유실 0).
-        if defer_for_precision(item.scheduled_utc, now, item.content_type, next_tick):
+        if defer_for_precision(item.scheduled_utc, now, item.content_type,
+                               next_tick, worst_tick):
             deferred += 1
             print(f"    ⏳ 정확도를 위해 미룸 {item.content_type.value} {item.scope} "
                   f"— 목표 {item.scheduled_utc.astimezone(KST):%H:%M}까지 "
