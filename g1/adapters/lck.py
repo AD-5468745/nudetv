@@ -287,7 +287,7 @@ class LckAdapter(NoticeMixin):
             name = str(r.get("Name") or "").strip()
             if _is_excluded_tournament(name):
                 # 지역 선발전은 롤드컵 본선이 아니다(위 주석 참조).
-                self.note("우리 대회가 아니라 제외(지역 선발전)",
+                self.note_info("우리 대회가 아니라 제외(지역 선발전)",
                           f"{name} — {r.get('MatchId')}")
                 continue
             g = self._parse(r)

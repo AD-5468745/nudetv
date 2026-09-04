@@ -250,7 +250,7 @@ class FootballDataAdapter(NoticeMixin):
             cached = {str(t["id"]): (t.get("area") or {}).get("name") for t in teams}
             _cache_write(name, cached)
         else:
-            self.note_text("팀 목록 캐시 사용", f"{name} (최대 {TEAMS_CACHE_SECONDS // 86400}일)")
+            self.note_text_info("팀 목록 캐시 사용", f"{name} (최대 {TEAMS_CACHE_SECONDS // 86400}일)")
         self._team_area = {int(k): v for k, v in cached.items() if v}
         return self._team_area
 

@@ -93,7 +93,7 @@ class KLeagueAdapter(NoticeMixin):
                 # 12월 한 달 내내 K리그 수집을 통째로 막는다.
                 rid, rseq = r.get("leagueId"), r.get("meetSeq")
                 if int(rid or 0) != int(self.league_id) or int(rseq or 0) != REGULAR_MEET_SEQ:
-                    self.note(
+                    self.note_info(
                         "K리그1 정규리그가 아니어서 제외",
                         f"{r.get('meetName')} (leagueId={rid} meetSeq={rseq}) "
                         f"{r.get('gameDate')} {r.get('homeTeamName')}-{r.get('awayTeamName')}")

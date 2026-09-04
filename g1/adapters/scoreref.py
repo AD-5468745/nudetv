@@ -835,7 +835,8 @@ class ScoreReference(NoticeMixin):
                     v.unverifiable.append(Unverifiable(
                         g.game_id, league, day, "이 리그는 대조 소스가 없다"))
                 v.sources[tag] = "대조 소스 없음"
-                self.note("대조 소스가 없는 리그", tag, count=len(ours))
+                # V리그·KBL은 대조 소스가 없다 — 구조적이라 사람이 할 일이 없다.
+                self.note_info("대조 소스가 없는 리그", tag, count=len(ours))
                 continue
             if self._monotonic() - started > deadline_seconds:
                 for g in ours:
@@ -876,7 +877,7 @@ class ScoreReference(NoticeMixin):
         if v.unverifiable:
             self.note("대조 불가", v.unverifiable[0].reason,
                       count=len(v.unverifiable))
-        self.note_text("대조 요약",
+        self.note_text_info("대조 요약",
                        f"{v.compared}건 대조 · {v.agreed}건 일치 · "
                        f"점수 대조 {v.score_compared}건({v.score_agreed}건 일치) · "
                        f"차단 {len(v.blocking)} · 알림 {len(v.warnings)} · "
@@ -960,7 +961,8 @@ class ScoreReference(NoticeMixin):
                     f"홈 {r.home_code} / 원정 {r.away_code}")
                 return
             their_home, their_away = r.away_score, r.home_score
-            self.note("중립 구장 리그의 표시 순서가 반대 — 점수를 맞춰 읽음",
+            # LoL은 홈이 없어 표시 순서가 소스마다 다르다 — 맞춰 읽으면 끝이다.
+            self.note_info("중립 구장 리그의 표시 순서가 반대 — 점수를 맞춰 읽음",
                       f"{g.league.value} {g.game_id}")
 
         # 우리가 종결하지 않은 경기(취소·연기·중단)는 대조 대상이 아니다.

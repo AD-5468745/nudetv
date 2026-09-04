@@ -114,7 +114,7 @@ class KblAdapter(NoticeMixin):
             # 구분 신호는 `seasonGrade`(1=KBL · 2=D리그)와 `seasonName1`이다.
             if int(r.get("seasonGrade") or 1) != 1:
                 self.skipped_categories += 1
-                self.note("D리그(2군)라 제외",
+                self.note_info("D리그(2군)라 제외",
                           f"{r.get('gameDate')} {r.get('seasonName1')} "
                           f"{r.get('tnameA')}-{r.get('tnameH')}")
                 continue
@@ -129,7 +129,7 @@ class KblAdapter(NoticeMixin):
             # 수집 창이 21일이라 그 경기 하나가 3주간 KBL을 침묵시킨다.
             if cat not in KBL_PUBLISH_CATEGORIES:
                 self.skipped_categories += 1
-                self.note("외국 구단·가상팀이 나오는 구간이라 제외(EASL·올스타)",
+                self.note_info("외국 구단·가상팀이 나오는 구간이라 제외(EASL·올스타)",
                           f"{r.get('gameDate')} {cat} "
                           f"{r.get('tnameA')}-{r.get('tnameH')}")
                 continue

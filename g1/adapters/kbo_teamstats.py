@@ -264,7 +264,7 @@ class KboTeamStatsAdapter(NoticeMixin):
                     f"(선택 가능 {years[0]}~{years[-1]})")
             if page_series != _SERIES_REGULAR:
                 # 3월에 기본값이 시범경기로 서 있으면 시범경기 팀타율이 정규시즌 자리에 실린다.
-                self.note_text("표 구분 보정",
+                self.note_text_info("표 구분 보정",
                                f"기본값이 ddlSeries={page_series!r}였습니다 — 정규시즌으로 다시 요청")
             html = self._post(url, html, {
                 "__EVENTTARGET": _DDL_SEASON, "__EVENTARGUMENT": "",

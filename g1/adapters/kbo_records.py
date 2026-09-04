@@ -160,7 +160,7 @@ class KboRecordAdapter(NoticeMixin):
         if series and series != _SERIES_REGULAR:
             # 기본값이 시범경기로 바뀐 상태. 조용히 그 표를 쓰면 3월에
             # '시범경기 순위'가 정규시즌 순위 자리에 실린다.
-            self.note_text("순위 표 구분 보정",
+            self.note_text_info("순위 표 구분 보정",
                            f"기본값이 ddlSeries={series}였습니다 — 정규시즌으로 다시 요청")
             html = self._post(_RANK, html, {
                 "__EVENTTARGET": _CTL + "ddlSeries", "__EVENTARGUMENT": "",

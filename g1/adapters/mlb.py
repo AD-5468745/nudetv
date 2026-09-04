@@ -192,7 +192,7 @@ class MlbAdapter(NoticeMixin):
             keep, drop = ((g, cur) if self._played_rank(g) > self._played_rank(cur)
                           else (cur, g))
             by_pk[pk] = keep
-            self.note(
+            self.note_info(
                 "같은 경기가 두 행으로 와서 하나로 합침(연기·서스펜디드)",
                 f"gamePk={pk} 남김={keep.get('gameDate', '')[:10]}"
                 f"/{(keep.get('status') or {}).get('detailedState')} "

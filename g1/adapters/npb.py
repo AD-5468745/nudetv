@@ -630,7 +630,7 @@ class NpbAdapter(NoticeMixin):
 
         # ── 1차가 아직 결과를 안 준 경기 ──
         if r.status is RefStatus.OTHER:
-            self.note("네이버가 취소·중단으로 표기 — 보강 안 함",
+            self.note_info("네이버가 취소·중단으로 표기 — 보강 안 함",
                       f"{tag} {r.raw_status}")
             return 0, 0
         if r.status is RefStatus.UNKNOWN:
@@ -657,7 +657,10 @@ class NpbAdapter(NoticeMixin):
             if not b.get("final"):
                 # 속보가 아직 종료로 안 바뀌었다. **네이버가 빠른 만큼 정상적인 상태다.**
                 # 이 알림이 곧 '두 소스의 시차'를 재는 자다 — 운영이 그 숫자를 본다.
-                self.note("네이버는 종료·npb.jp 속보는 아직 — 다음 틱에 다시 본다",
+                # **정상이다** — 주석에도 그렇게 써 놓고 경고로 올리고 있었다.
+                # 네이버가 빠른 것뿐이고 다음 틱에 풀린다. 사람이 할 일이 없다.
+                # 영영 안 풀리는 경우는 커버리지가 "결과가 안 들어온 지난 경기"로 잡는다.
+                self.note_info("네이버는 종료·npb.jp 속보는 아직 — 다음 틱에 다시 본다",
                           f"{tag} {src_note} / 속보 {b.get('info', '')[:24]}")
                 return 0, 0
             if b["home"] != g.home.team_code or b["away"] != g.away.team_code:
@@ -693,7 +696,7 @@ class NpbAdapter(NoticeMixin):
             g.status, g.score, g.source_key = prev   # 계약을 못 지키는 값은 안 싣는다
             self.note("보강 값이 계약 검증에 걸려 되돌림", f"{tag} {str(e)[:80]}")
             return 0, 0
-        self.note("결과 보강(1차 npb.jp 일정이 아직 미게시)", f"{tag} {src_note}")
+        self.note_info("결과 보강(1차 npb.jp 일정이 아직 미게시)", f"{tag} {src_note}")
         return 1, 0
 
     def _month(self, season: int, mm: str, now: datetime) -> list[Game]:

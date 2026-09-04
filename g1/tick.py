@@ -503,7 +503,19 @@ def _adapter_health(name: str) -> tuple[list[str], float]:
         elif isinstance(v, str) and v.strip():
             notes.append(f"{label} {v[:80]}")
 
-    # ① 통일된 이름을 먼저 본다(있으면 이것만 쓴다)
+    # ① 통일된 이름을 먼저 본다.
+    #
+    # **거른 결과가 비었다고 거르기 전 것으로 되돌아가면 안 된다 (fix44).**
+    # 전에는 `if notes: break` 였다. 그래서 어댑터의 알림이 **전부 정상 상태
+    # (note_info)** 여서 `alert_report()`가 빈 dict를 주면, 아무것도 못 얻은 줄 알고
+    # 다음 이름으로 넘어가 결국 `skipped_report()`(정보 포함)를 읽었다.
+    # 조용해야 할 때가 오히려 제일 시끄러웠다 — 실제로 대표님 채널에
+    # "KBO: 시리즈별 수집 정규시즌 238 · 와일드카드 0 …"이 그대로 올라왔다.
+    # (`note_text_info`로 내려둔 바로 그 줄이다.)
+    #
+    # 그래서 **이름이 있으면 그 값이 답이다** — 비어 있어도 그것이 답이다.
+    # 조용한 것과 못 읽은 것을 구별한다.
+    _read = False
     for attr in _HEALTH_UNIFIED:
         v = getattr(ad, attr, None)
         if v is None:
@@ -511,12 +523,12 @@ def _adapter_health(name: str) -> tuple[list[str], float]:
         try:
             v = v() if callable(v) else v
         except Exception:                                    # noqa: BLE001
-            continue
+            continue                       # 못 읽었다 — 다음 이름을 본다
+        _read = True                       # 읽었다 — 비어 있어도 이것이 답이다
         _add("", v) if isinstance(v, dict) else _add(attr, v)
-        if notes:
-            break
-    # ② 아직 통일 전이면 지금 있는 이름들을 그대로 읽는다
-    if not notes:
+        break
+    # ② 통일된 이름을 **하나도 못 읽었을 때만** 옛 이름들로 떨어진다
+    if not _read:
         for attr in _HEALTH_LEGACY:
             _add(attr, getattr(ad, attr, None))
 
@@ -573,11 +585,17 @@ def _kovo_fetch(adapter, today: datetime) -> list:
         # **마지막 대회의 것만 남아** 앞 대회에서 걸러낸 것이 운영에 안 보인다.
         rep = getattr(adapter, "skipped_report", None)
         if callable(rep):
+            _isinfo = getattr(adapter, "is_info", None)
             for k, v in (rep() or {}).items():
-                merged[f"{code}:{k}"] = v
+                # **등급까지 같이 옮긴다 (fix44).** 전에는 값만 옮기고 전부
+                # `note_text`(경고)로 다시 달았다. 대회 코드를 앞에 붙이는 바람에
+                # 라벨도 달라져(`023:선택한 시즌`) 정보 판정이 통하지 않았다 —
+                # 정상 상태가 대회 수만큼 경고로 되살아나는 길이었다.
+                merged[f"{code}:{k}"] = (str(v), bool(callable(_isinfo) and _isinfo(k)))
     if merged and hasattr(adapter, "note_text"):
-        for k, v in merged.items():
-            adapter.note_text(k, str(v))
+        for k, (v, is_info) in merged.items():
+            (adapter.note_text_info if is_info and hasattr(adapter, "note_text_info")
+             else adapter.note_text)(k, v)
     return games
 
 
