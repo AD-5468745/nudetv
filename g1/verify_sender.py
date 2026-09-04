@@ -17,6 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from contract import (ContentType, GateError, KST, League, LEASE_SECONDS,
                       QueueItem, SendState, idem_key)
 from sender import (ALERT_REPEAT_SECONDS, DISPATCH_MARK, SEND_MAX_RETRIES,
+                    _fp_norm,
                     AmbiguousSend, Ledger, Pacer, PartialSend, Payload, Secret, Sender,
                     TelegramError, load_token, new_webhook_secret, redact,
                     verify_webhook, webhook_setup_payload)
@@ -539,6 +540,40 @@ _txt = _alog.read_text(encoding="utf-8")
 check("기록에 알림 본문이 남지 않는다 (지문과 시각뿐)",
       "LCK" not in _txt and "점검" not in _txt, _txt[:80])
 check("기본 유예가 6시간", ALERT_REPEAT_SECONDS == 6 * 3600, str(ALERT_REPEAT_SECONDS))
+
+# ── 경과 시간이 늘어나도 같은 말이면 되풀이하지 않는다 (fix45) ──
+#
+# 대표님 채널에 실제로 온 알림이다 — 상태는 하나도 안 바뀌었는데
+# 본문의 시간만 늘어나서 6시간 유예가 한 번도 안 걸렸다:
+#   21:29  LCK: 캐시로 버팀(묵은 데이터) 2.0시간 전 스냅샷
+#   21:40  LCK: 캐시로 버팀(묵은 데이터) 2.2시간 전 스냅샷
+_ct = Fake()
+_AT3 = _pl.Path(_tf.mkdtemp(prefix="alertnum-"))
+_cs = Sender(_ct, Ledger(_AT3 / "ledger.jsonl"), "-100test",
+             alert_chat_id="777", worker_id="w1")
+
+
+def _cn() -> int:
+    return sum(1 for c in _ct.calls if c[0] == "sendMessage")
+
+
+_LCK = "LCK: 캐시로 버팀(묵은 데이터) {}시간 전 스냅샷"
+check("리밋에 걸린 첫 순간은 알린다",
+      _cs.alert("시계 점검 필요", [_LCK.format("2.0")]) and _cn() == 1)
+check("경과 시간만 늘어난 같은 상태는 되풀이하지 않는다",
+      not any(_cs.alert("시계 점검 필요", [_LCK.format(v)])
+              for v in ("2.2", "2.4", "3.0", "9.9")) and _cn() == 1,
+      f"{_cn()}통")
+check("자릿수가 바뀔 만큼 나빠지면 바로 알린다 (조용해지는 게 아니다)",
+      _cs.alert("시계 점검 필요", [_LCK.format("30.1")]) and _cn() == 2)
+check("다른 문제가 생기면 유예와 무관하게 나간다",
+      _cs.alert("시계 점검 필요", ["NPB: 결과 보강 실패"]) and _cn() == 3)
+check("건수도 자릿수가 바뀌면 다시 알린다 (3건 → 300건)",
+      _cs.alert("시계 점검 필요", ["KBO: 미등록 값이라 건너뜀 3건"])
+      and _cs.alert("시계 점검 필요", ["KBO: 미등록 값이라 건너뜀 300건"])
+      and _cn() == 5)
+check("지문 정규화가 낱말까지 뭉개지는 않는다",
+      _fp_norm("LCK 실패 3건") != _fp_norm("NPB 실패 3건"))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

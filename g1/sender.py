@@ -20,6 +20,7 @@ import json
 import os
 import pathlib
 import random
+import re
 import sys
 import threading
 import time
@@ -83,6 +84,29 @@ DISPATCH_MARK = "dispatching"
 # 6시간이면 하루 네 번. 문제가 살아 있다는 것을 알기에 충분하고,
 # 무시하게 될 만큼 잦지는 않다. 내용이 달라지면 유예와 무관하게 바로 나간다.
 ALERT_REPEAT_SECONDS = int(os.environ.get("ALERT_REPEAT_SECONDS", str(6 * 3600)))
+
+
+# **되풀이 방지의 지문에 '계속 변하는 수'가 들어가면 방지가 통째로 풀린다 (fix45).**
+#
+# LCK가 Leaguepedia 리밋에 걸려 캐시로 버티는 동안 알림 본문이
+# "2.0시간 전 스냅샷" → "2.2시간 전 스냅샷" → "2.4시간 …"으로 매 틱 달라졌다.
+# 상태는 하나도 안 바뀌었는데 **경과 시간이 본문에 들어 있다는 이유만으로**
+# 지문이 매번 새것이 되어 6시간 유예가 한 번도 걸리지 않았다.
+# 정정 지문에 시각이 섞이면 매 틱 정정이 나가던 것과 같은 병이다(약점 69번).
+#
+# 그래서 지문은 **수를 자릿수로 뭉개서** 만든다. 같은 상태가 이어지는 동안은
+# 같은 지문이고, **자릿수가 바뀔 만큼 나빠지면**(3건 → 300건, 9시간 → 30시간)
+# 다른 지문이라 유예와 무관하게 바로 나간다 — 조용해지는 것이 아니라
+# '같은 말을 반복하지 않는' 것이다. 본문은 그대로 실제 값을 보여준다.
+_FP_NUM = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _fp_norm(text: str) -> str:
+    """알림 지문용 정규화 — 수는 자릿수만 남긴다."""
+    def _bucket(m: "re.Match") -> str:
+        whole = m.group(0).split(".")[0].replace(",", "")
+        return f"<{len(whole) or 1}>"
+    return _FP_NUM.sub(_bucket, text)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1159,7 +1183,8 @@ class Sender:
             return False
         body = f"⚠️ <b>{esc(title)}</b>\n" + quote([esc(x) for x in lines])
         gap = ALERT_REPEAT_SECONDS if repeat_after is None else repeat_after
-        fp = _hashlib.sha256("\n".join([title] + list(lines)).encode()).hexdigest()[:16]
+        fp = _hashlib.sha256(
+            _fp_norm("\n".join([title] + list(lines))).encode()).hexdigest()[:16]
         if gap > 0 and not self._alert_is_new(fp, gap):
             return False                      # 방금 같은 말을 했다
         try:
