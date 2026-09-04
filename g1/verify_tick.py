@@ -819,27 +819,26 @@ from contract import start_alert_at, start_alert_notice, venue_name   # noqa: E4
 _gs = [mkgame(League.NPB, "YOG", "HAN", day="2026-08-29", hh=18)]
 _now = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
 _txt = start_alert_notice(_gs, _now)
-check(f"꼬리말이 '몇 시간 전'이 아니라 시각을 적는다 ({_txt})",
-      ":" in _txt and "전 알림" not in _txt, _txt)
-check("그 시각이 큐의 예약 시각과 같다",
-      start_alert_at(_gs).astimezone(KST).strftime("%H:%M") in _txt,
-      f"{start_alert_at(_gs).astimezone(KST)} vs {_txt}")
+# **시각조차 약속하지 않는다 (v1.11p).** 예약 시각을 적었더니 그것도 거짓이었다 —
+# 실제 발송은 앞창 2.5시간·유예 1시간 55분 안 어디서든 일어난다.
+check(f"꼬리말이 시각도 '몇 시간 전'도 약속하지 않는다 ({_txt})",
+      ":" not in _txt and "전 알림" not in _txt and "시간 전" not in _txt, _txt)
+check("그래도 무엇을 하는지는 말한다", "시간표" in _txt, _txt)
+check("보낼 것이 없으면 아무 약속도 하지 않는다", start_alert_notice([], _now) == "")
 
-# 심야 회피가 걸리는 날에도 카드와 큐가 같은 시각을 말해야 한다.
-# (MLB 새벽 경기: 리드타임 그대로면 새벽 1시 발송이라 전날 22:00으로 앞당긴다)
+# 예약 계산 자체는 큐와 공유한다 — 카드가 시각을 안 적을 뿐, 계산은 한 곳이다.
 _night = [mkgame(League.MLB, "NYY", "BOS", day="2026-08-29", hh=3)]
 _nat = start_alert_at(_night)
-check("심야 회피가 걸려도 카드가 실제 예약 시각을 적는다",
-      _nat.astimezone(KST).strftime("%H:%M") in start_alert_notice(_night, _now),
-      f"{_nat.astimezone(KST)} / {start_alert_notice(_night, _now)}")
-check("심야 회피가 실제로 걸렸다 (이 시험이 무의미해지지 않게)",
+check("심야 회피가 실제로 걸렸다 (계산이 살아 있다)",
       _nat.astimezone(KST).hour == C.START_ALERT_EVENING_HOUR,
       str(_nat.astimezone(KST)))
 
 _mhtml = P.render_morning(_gs, "2026-08-29", now=_now)
-check("모닝 카드가 그 시각을 적는다", _txt in _mhtml, _txt)
+check("모닝 카드가 그 문구를 적는다", _txt in _mhtml, _txt)
 check("옛 문구('N시간 전 알림')가 카드에 남아 있지 않다",
       "전 알림" not in _mhtml)
+check("예약 시각도 카드에 적지 않는다 (지킬 수 없는 정밀도)",
+      start_alert_at(_gs).astimezone(KST).strftime("%H:%M") not in _mhtml)
 check("없는 기능을 안내하지 않는다 (예측 투표)", "예측 투표" not in _mhtml)
 
 # 경기장 이름 — 일본어가 그대로 나가면 한국 시청자는 못 읽는다

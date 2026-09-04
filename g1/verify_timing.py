@@ -508,7 +508,13 @@ mor = _re2.sub("<[^>]+>", " ", P.render_morning(mixed2, "2026-08-05",
 cap_m = P.caption_morning(mixed2, "2026-08-05",
                           now=datetime(2026, 8, 5, 7, 30, tzinfo=KST))
 check("카드 헤드라인은 열리는 경기 수", "1경기" in mor, mor[:0])
-check("캡션도 같은 수를 말한다", "편성 1경기" in cap_m, cap_m.splitlines()[0])
+# **낱말까지 같아야 한다 (v1.11p).** 카드는 v1.11j에서 '열림'(열리는 수)과
+# '총 N경기'(총계)로 낱말을 갈랐는데 캡션만 '편성'을 계속 써서,
+# 한 줄 안에 "편성 1경기 (총 3경기)"가 됐다 — 같은 낱말이 두 수를 가리켰다.
+check("캡션도 같은 수를 말한다", "1경기 열림" in cap_m, cap_m.splitlines()[0])
+check("캡션이 '편성'으로 열리는 수를 가리키지 않는다",
+      "편성 1경기" not in cap_m, cap_m.splitlines()[0])
+check("캡션이 총계를 함께 밝힌다", "총 3경기" in cap_m, cap_m.splitlines()[0])
 check("캡션이 취소 수를 병기한다", "2경기 취소" in cap_m.splitlines()[0],
       cap_m.splitlines()[0])
 
@@ -821,6 +827,11 @@ check("아직 안 끝난 날은 순위표가 일찍 열리지 않는다",
 # "2시간 전"이라 적었다. MLB 실측 — 첫 경기 03:10, 실제 예약 전날 22:00.
 print("\n15. 시작 알림 — 카드와 큐가 같은 시각을 말하는가")
 
+# **꼬리말은 시각을 약속하지 않는다 (v1.11p).** 두 번 틀렸다:
+#   ① "2시간 전 알림" — 심야 회피가 걸리면 5시간 10분 전이었다
+#   ② "알림 16:30" — 그건 예약 시각이고, 앞창 2.5시간·유예 1시간 55분 안
+#      어디서든 나간다(14:00~18:25). 문형만 바꿔서는 안 낫는 병이었다.
+# 이제 지킬 수 있는 것만 말한다. 예약 계산(start_alert_at)은 큐와 공유한다.
 def _sa_case(name, gs, now):
     at = C.start_alert_at(gs)
     q = [i for i in P.build_queue(gs, now, "chtest", floor_hours=0)
@@ -829,9 +840,10 @@ def _sa_case(name, gs, now):
     if q:
         check(f"{name}: 카드 계산 = 큐 예약", at == q[0].scheduled_utc,
               f"{at} vs {q[0].scheduled_utc}")
-        check(f"{name}: 꼬리말에 그 시각이 있다",
-              at.astimezone(KST).strftime("%H:%M") in C.start_alert_notice(gs, now),
-              C.start_alert_notice(gs, now))
+    _note = C.start_alert_notice(gs, now)
+    check(f"{name}: 꼬리말이 시각을 약속하지 않는다",
+          ":" not in _note and "시간 전" not in _note, _note)
+    check(f"{name}: 그래도 무엇을 하는지는 말한다", "시간표" in _note, _note)
 
 _n = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
 _sa_case("낮 경기", [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")], _n)
@@ -849,8 +861,9 @@ check("첫 경기가 취소된 날도 카드와 큐가 같은 시각",
       == [i for i in P.build_queue(_cx, _n, "chtest", floor_hours=0)
           if i.content_type is ContentType.START_ALERT][0].scheduled_utc)
 _mhtml = P.render_morning(_cx, "2026-09-04", now=_n)
-check("그 날 모닝 카드도 같은 시각을 적는다",
-      C.start_alert_at(_cx).astimezone(KST).strftime("%H:%M") in _mhtml)
+check("그 날 모닝 카드 꼬리말도 시각을 약속하지 않는다",
+      C.start_alert_at(_cx).astimezone(KST).strftime("%H:%M") not in _mhtml
+      and "시간표" in _mhtml)
 
 # ─────────────────────────────────────────────────────────────
 # (16) 시간표 목록 — 한국시각이 주, 현지시각을 매 줄에 (v1.11n)

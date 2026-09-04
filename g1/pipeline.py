@@ -1294,9 +1294,10 @@ def render_result(games: list[Game], day: str,
     # 재편성을 안내하는 콘텐츠도 큐도 발송 경로도 없다 —
     # "예측 투표는 경기 3시간 전"과 같은 계열의 거짓말이다.
     # 대신 점수의 **단위**를 밝힌다: LCK 0:3이 맵 스코어라는 표시가 없었다.
-    tk = f"{lgname} 공식 결과"
-    _unit = SCORE_UNIT_BY_LEAGUE.get(lg)
-    _unit_ko = {ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어"}.get(_unit)
+    # **'공식'은 공식 소스에서 온 것에만 (v1.11p).** LCK·LoL 국제대회는
+    # 라이엇 공식 API 키를 못 구해 Leaguepedia(팬 위키)를 쓴다 — 공식이 아니다.
+    tk = f"{lgname} " + ("공식 결과" if _is_official(lg) else "경기 결과(Leaguepedia)")
+    _unit_ko = SCORE_UNIT_FOOTNOTE.get(SCORE_UNIT_BY_LEAGUE.get(lg))
     if _unit_ko:
         tk += f" · {_unit_ko}"
     _dtk, _dtl = kst_day_label(games, day)
@@ -1490,7 +1491,14 @@ def render_start_alert(gs: list[Game], now: datetime | None = None,
 
     emoji = LEAGUE_EMOJI.get(lg, "🏟")
     label = LEAGUE_LABEL.get(lg, lg.value)
-    _total = len(all_games) if all_games else 0
+    # **분모에 취소·연기를 넣지 않는다 (v1.11p).** `all_games`는 그 리그 그날
+    # **전 상태** 경기라, 취소가 2건이면 3경기 예정인 날이 "5경기 중 3경기"가 됐다.
+    # 게다가 이 메시지는 취소를 한 글자도 말하지 않아, 같은 채널의 모닝 카드
+    # ("총 5경기 중 2경기 취소")와 그날 편성을 다르게 말했다.
+    # 분모는 '열릴 예정이던 경기', 그리고 취소가 있으면 따로 밝힌다.
+    _off_n = sum(1 for g in (all_games or [])
+                 if g.status in (Status.CANCELED, Status.POSTPONED))
+    _total = (len(all_games) - _off_n) if all_games else 0
     # **'곧'과 '9시간 뒤'가 한 메시지 안에서 부딪치면 안 된다 (v1.11j).**
     # 심야 회피(quiet hours)로 22:00에 밀려 나가는 MLB 알림이 실측(I1)에서
     # "⚾ 내일 아침 MLB 12경기 곧 시작 … 첫 경기 화 07:05 시작 (9시간 5분 뒤)"였다.
@@ -1499,6 +1507,8 @@ def render_start_alert(gs: list[Game], now: datetime | None = None,
     _verb = "곧 시작" if mins <= START_ALERT_SOON_MAX_MINUTES else "시간표"
     _count = (f"{_total}경기 중 {len(gs)}경기 {_verb}" if _total > len(gs)
               else f"{len(gs)}경기 {_verb}")
+    if _off_n:
+        _count += f" · {_off_n}경기 취소·연기"
     head = f"{emoji} <b>{head_when} {esc(label)} {_count}</b>\n"
     # 경기가 많으면(MLB 15경기) 접고펼치기로 채널 스크롤을 아낀다
     return head + quote(lines, expandable=len(lines) > QUOTE_EXPANDABLE_THRESHOLD_LINES) + tail
@@ -2183,7 +2193,10 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
         # 캡션은 "(3경기 취소)"뿐이라 그날 몇 경기가 잡혀 있었는지 캡션만 읽어서는
         # 알 수 없었다. 카드와 같은 낱말('총 N경기')로 같은 사실을 적는다.
         _paren = (f" (총 {len(games)}경기 · {_off})" if _off else "")
-        head = _pre + f"편성 {len(_play)}경기" + _paren + "</b>\n"
+        # **카드와 같은 낱말을 쓴다 (v1.11p).** 카드는 v1.11j에서 낱말을 갈랐다 —
+        # '열림'=열리는 수, '편성/총 N경기'=총계. 캡션만 안 따라와서
+        # 한 줄 안에 "편성 3경기 (총 5경기 · 2경기 취소)"가 됐다(3이자 5).
+        head = _pre + f"{len(_play)}경기 열림" + _paren + "</b>\n"
     # 열리는 경기가 0이면 시작 알림도 없다 — 카드 푸터와 같은 규칙(v1.11j).
     tail = start_alert_notice(games, now) if _play else ""   # 집합은 카드와 같게
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
@@ -2444,6 +2457,46 @@ def _night_allocate(groups: list[tuple[League, list[Game]]],
     return take
 
 
+
+# ── 출처가 '공식'인 리그인가 (v1.11p) ────────────────────────
+# LCK·LoL 국제대회는 라이엇 공식 API 키를 구하지 못해 Leaguepedia(팬 위키)를 쓴다.
+# 팬 위키를 '공식'이라 부르면 카드가 출처를 속이는 것이다.
+# 나머지 리그는 각 연맹의 공식 API·공식 페이지에서 온다.
+UNOFFICIAL_SOURCE_LEAGUES: frozenset = frozenset({League.LCK, League.INTL_LOL})
+
+# 점수 단위를 사람 말로. **한 곳에만 둔다** — 결과 카드와 나이트 브리핑이
+# 같은 표를 써야 같은 숫자를 같은 낱말로 설명한다.
+# **전 단위를 채운다 (v1.11p).** 맵·세트만 있었더니 `_unit_note`가 야구 득점과
+# LoL 맵이 섞인 카드를 '단위 하나'로 보고 아무 말도 안 했다.
+SCORE_UNIT_LABEL: dict = {
+    ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어",
+    ScoreUnit.RUNS: "득점", ScoreUnit.POINTS: "득점", ScoreUnit.GOALS: "득점",
+}
+# 결과 카드 푸터는 '맵·세트'만 밝힌다 — 야구·축구에 "· 득점"은 군더더기다.
+SCORE_UNIT_FOOTNOTE: dict = {ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어"}
+
+# '합계 점수'로 비교해도 뜻이 통하는 단위. 세트·맵은 3점 만점이라 비교 대상이 아니다.
+_POINTLIKE_UNITS: frozenset = frozenset({ScoreUnit.RUNS, ScoreUnit.POINTS, ScoreUnit.GOALS})
+
+
+def _is_official(league: League) -> bool:
+    return league not in UNOFFICIAL_SOURCE_LEAGUES
+
+
+def source_note(league: League) -> str:
+    """카드 꼬리말에 쓸 출처 표기. 공식이 아니면 그렇게 적는다."""
+    return "공식 기록" if _is_official(league) else "커뮤니티 기록(Leaguepedia)"
+
+
+def _unit_note(leagues: list) -> str:
+    """여러 리그가 섞인 카드의 점수 단위 안내. 전부 같은 단위면 빈 문자열."""
+    units = {SCORE_UNIT_BY_LEAGUE.get(lg) for lg in leagues}
+    units.discard(None)
+    names = sorted({SCORE_UNIT_LABEL[u] for u in units if u in SCORE_UNIT_LABEL})
+    if len(names) <= 1:
+        return ""
+    return " · " + "·".join(names) + " 혼재"
+
 def _night_played(g: Game) -> bool:
     """'실제로 치러진 경기'인가 — 결과가 났거나 지금 진행 중인 것."""
     return (g.status is Status.FINAL and bool(g.score)) or g.status is Status.LIVE
@@ -2552,11 +2605,15 @@ def _night_headline(c: dict) -> tuple[str, str]:
         if c[key]:
             bits.append(f"{len(c[key])}경기 {word}")
     if c["fin"]:
-        h1 = f'오늘 <em>{len(c["fin"])}경기</em> 종료'
+        # **'오늘'이라 쓰지 않는다 (v1.11p).** 유예가 6시간이라 23:00 카드가
+        # 익일 05:00까지 나갈 수 있다. 그때 '오늘'은 어제를 가리킨다 —
+        # 바로 아래 푸터가 "9.4 기준"이라 스스로 반박한다.
+        # 날짜는 헤더가 이미 말한다(카드 우상단 "9.4 금").
+        h1 = f'<em>{len(c["fin"])}경기</em> 종료'
     elif c["cx"] or c["po"]:
-        h1 = f'오늘 <em>{len(c["cx"]) + len(c["po"])}경기</em> 취소·연기'
+        h1 = f'<em>{len(c["cx"]) + len(c["po"])}경기</em> 취소·연기'
     else:
-        h1 = '오늘 <em>결과 없음</em>'
+        h1 = '<em>결과 없음</em>'
     return h1, " · ".join(bits)
 
 
@@ -2569,15 +2626,31 @@ def _night_record_line(c: dict) -> tuple[str, str] | None:
     fin = c["fin"]
     if not fin:
         return None
-    top = max(fin, key=lambda g: (g.score.away + g.score.home, g.game_id))
-    total = top.score.away + top.score.home
+    # **리그를 섞어 점수를 비교하면 안 된다 (v1.11p).**
+    # 점수 단위가 리그마다 다르다 — 농구(합계 150~200)가 야구(5~15)를 **항상** 이기고,
+    # 배구 세트·LoL 맵은 애초에 '득점'이 아니다. 리그가 섞인 날 이 패널은
+    # 매번 농구 경기를 뽑아 "오늘 최다 득점"이라 불렀다.
+    # 같은 단위(RUNS·POINTS·GOALS)끼리만 비교하고, 그 리그가 하나일 때만 말한다.
+    _cmp = [g for g in fin
+            if SCORE_UNIT_BY_LEAGUE.get(g.league) in _POINTLIKE_UNITS]
+    _lgs = {g.league for g in _cmp}
+    if len(_lgs) != 1:
+        return None                       # 섞였으면 비교하지 않는다
+    fin = _cmp
+    _tot = lambda g: g.score.away + g.score.home
+    _best = max(_tot(g) for g in fin)
+    _tied = [g for g in fin if _tot(g) == _best]
+    if len(_tied) != 1:
+        return None                       # 동률이면 '가장 많았다'고 단정하지 않는다
+    top = _tied[0]
+    total = _best
     if total < 10:
         return None                       # '최다 득점'이라 부를 만한 경기가 아니다
     na, nh = esc(team_name(top.away)), esc(team_name(top.home))
     lgname = esc(LEAGUE_LABEL.get(top.league, top.league.value))
-    return ("오늘 최다 득점",
-            f"{lgname} <b>{na} {top.score.away}:{top.score.home} {nh}</b> "
-            f"— 오늘 열린 경기 중 두 팀 합계가 가장 많았습니다 ({total})")
+    return (f"{lgname} 최다 득점",
+            f"<b>{na} {top.score.away}:{top.score.home} {nh}</b> "
+            f"— 이날 열린 {lgname} 경기 중 두 팀 합계가 가장 많았습니다 ({total})")
 
 
 def render_night_brief(games: list[Game], day: str) -> str:
@@ -2600,6 +2673,7 @@ def render_night_brief(games: list[Game], day: str) -> str:
     groups = _night_groups(games)
     c = _night_counts(games)
     rec = _night_record_line(c)
+    shown_rows: dict[League, int] = {}   # 리그별로 **실제 그린 행 수** (v1.11p)
     quota = _night_allocate(groups, NIGHT_REC_PX if rec else 0)
 
     # **상태 칸 유무는 카드 전체에서 한 번만 정한다.** 판마다 따로 정했더니
@@ -2623,7 +2697,10 @@ def render_night_brief(games: list[Game], day: str) -> str:
         # 그래서 고르는 것은 우선순위로, **보이는 순서는 시간순으로** 한다 —
         # 캡션도 시간순이라 사진과 글이 같은 순서로 같은 날을 말한다(v1.11i).
         take = _night_take(gs, n)
+        if not take:
+            continue          # 실을 결과가 없는 리그는 판도 그리지 않는다 (v1.11p)
         shown += len(take)
+        shown_rows[lg] = len(take)
         rows = [_night_row(g)[0] for g in take]
         more = f'<span class="n">외 {len(gs) - len(take)}경기</span>' if len(gs) > len(take) else ""
         pill_lg, pill_ink = LEAGUE_COLORS[lg]
@@ -2634,8 +2711,17 @@ def render_night_brief(games: list[Game], day: str) -> str:
         blocks.append(f'<div class="body nb{"" if card_need_st else " nost"}">'
                       f'{head}{"".join(rows)}</div>')
 
-    rest = len(games) - shown
-    shown_lgs = sum(1 for lg, _ in groups if quota.get(lg))
+    # **캡션에 실제로 들어가는 것만 '아래 글에'라고 말한다 (v1.11p).**
+    # 전에는 `len(games) - shown`이라 **예정 경기까지** 세었다. 그런데 캡션은
+    # 예정을 통째로 빼고 싣는다(`listed`) — 카드가 "나머지 12경기는 아래 글에"라
+    # 약속했는데 글에는 0줄이었다. MLB는 한국시각 밤~새벽에 열리므로 **매일** 났다.
+    _listed_n = sum(1 for g in games if g.status is not Status.SCHEDULED)
+    rest = max(0, _listed_n - shown)
+    # **행이 하나도 안 실린 리그는 세지 않는다 (v1.11p).**
+    # quota는 '자리를 배정받았나'인데, `_night_take`는 전 경기가 예정인 리그에
+    # 늘 빈 목록을 돌려준다. 그래서 결과 0줄인 리그 판이 그려지고 푸터가 그것을
+    # 세어 "3개 리그 공식 결과"라 우겼다(같은 병을 반대 방향으로 다시 앓았다).
+    shown_lgs = sum(1 for lg, _ in groups if shown_rows.get(lg))
     h1, sub = _night_headline(c)
     if rest:
         sub = (sub + " · " if sub else "") + f"나머지 {rest}경기는 아래 글에"
@@ -2656,10 +2742,20 @@ def render_night_brief(games: list[Game], day: str) -> str:
     # **푸터는 카드에 실제로 실린 것만 센다.** 첫 렌더에서 MLB만 실린 카드가
     # "5개 리그 공식 결과"라 말했다 — 전 리그 통합 카드가 한 리그만 보여 주면서
     # 다섯이라 우긴 것이다. 그날 열린 리그 수는 캡션이 전부 적는다.
-    _lgtxt = (f"{shown_lgs}개 리그" if shown_lgs == len(groups)
-              else f"{len(groups)}개 리그 중 {shown_lgs}개")
+    # 결과가 한 줄도 없는 리그는 카드에 없는 것과 같다 — 분모에서도 뺀다 (v1.11p).
+    _drawn = [lg for lg, _ in groups if shown_rows.get(lg)]
+    _lgtxt = (f"{len(_drawn)}개 리그" if len(_drawn) == len(groups)
+              else f"{len(groups)}개 리그 중 {len(_drawn)}개")
+    # **'공식'은 공식 소스에서 온 것에만 쓴다 (v1.11p).**
+    # LCK·LoL 국제대회는 라이엇 공식 API 키를 못 구해 Leaguepedia(팬 위키)를 쓴다.
+    # 한 장에 섞이는 카드라 하나라도 섞이면 '공식'이라 말할 수 없다.
+    _off = "공식 결과" if all(_is_official(lg) for lg in _drawn) else "경기 결과"
+    # **여러 단위가 한 장에 섞이는 유일한 카드다 (v1.11p).**
+    # 결과 카드는 "· 맵 스코어"를 붙이는데(v1.11h) 여기만 빠져 있었다 —
+    # "한화생명 2:0 T1"이 맵인지 세트인지 점수인지 카드가 말하지 않았다.
+    _units = _unit_note(_drawn)
     body += ('<div class="foot"><div class="tk">'
-             f'{_lgtxt} 공식 결과 · 한국시각 {esc(dt)} 기준</div>'
+             f'{_lgtxt} {_off}{esc(_units)} · 한국시각 {esc(dt)} 기준</div>'
              '<div class="lg">NUDE-TV.NET</div></div>')
     return _card_raw(body, lg_c, ink_c)
 
@@ -2702,12 +2798,25 @@ def caption_night_brief(games: list[Game], day: str, *, as_parts: bool = False):
                 lines.append(f"  {a} vs {h}{dh} · 결과 미확정")
     d = datetime.strptime(day, "%Y-%m-%d")
     _, sub = _night_headline(c)
+    # **'0경기 종료'는 말이 안 된다 (v1.11p).** 카드는 세 갈래로 나눠 말하는데
+    # (종료 / 취소·연기 / 결과 없음) 캡션만 `N경기 종료` 한 형태로 고정이라,
+    # 전 경기가 취소된 날 "0경기 종료 (2경기 취소)"가 됐다.
+    # 결과 카드가 같은 이유로 이미 고쳐진 자리다 — 그 고침이 여기 안 왔었다.
+    if c["fin"]:
+        _lead = f"{len(c['fin'])}경기 종료"
+    elif c["cx"] or c["po"]:
+        _lead = f"{len(c['cx']) + len(c['po'])}경기 취소·연기"
+    else:
+        _lead = "결과 없음"
     head = (f"🌙 <b>나이트 브리핑 · {d.month}월 {d.day}일 전 리그 결과 "
-            f"{len(c['fin'])}경기 종료"
+            f"{_lead}"
             + (f" ({sub})" if sub else "") + "</b>\n")
-    tail = f"한국시각 {d.month}.{d.day} 기준 · 공식 결과"
+    # 출처는 리그마다 다르다 — LCK 계열은 팬 위키다(v1.11p).
+    _all_off = all(_is_official(lg) for lg, _ in _night_groups(listed)) if listed else True
+    tail = f"한국시각 {d.month}.{d.day} 기준 · " + ("공식 결과" if _all_off else "경기 결과")
     # 뺀 경기를 숨기지는 않는다 — 수만 밝힌다.
-    if c["wait"]:
+    # **머리말이 이미 말했으면 되풀이하지 않는다 (v1.11p).**
+    if c["wait"] and "예정" not in (sub or ""):
         tail = f"이후 {len(c['wait'])}경기 예정 · " + tail
     return (_clip_parts(head, lines, tail, unit="줄") if as_parts
             else _clip(head, lines, tail, unit="줄"))
@@ -2865,10 +2974,12 @@ def _form_block(rb: RecordBook, game: Game, history: list[Game],
                 n: int = 5) -> tuple[str, int] | None:
     """③ 최근 n경기 폼. (HTML, 행 수). 두 팀 다 표본이 없으면 만들지 않는다."""
     rows = []
+    _shown = []       # 팀별 실제 표본 수 — 제목이 이걸 따라간다 (v1.11p)
     for code in (game.away.team_code, game.home.team_code):
         gs = recent_form(history, code, game.start_utc, n)
         if not gs:
             continue
+        _shown.append(len(gs))
         dots = "".join(
             f'<div class="d d{ {"W": "w", "L": "l", "D": "d"}[_team_result(g, code)] }">'
             f'{ {"W": "승", "L": "패", "D": "무"}[_team_result(g, code)] }</div>'
@@ -2888,7 +2999,12 @@ def _form_block(rb: RecordBook, game: Game, history: list[Game],
             f'{esc(team_name(opp))}전 {mine}-{yours} {word}</div></div>')
     if not rows:
         return None
-    return (f'<div class="body"><div class="anh">최근 {n}경기'
+    # **제목이 실제 도트 수와 같아야 한다 (v1.11p).** 전에는 인자 n(=5) 고정이라
+    # 표본이 3경기뿐인 팀에도 "최근 5경기"라 적었고, 두 팀 표본이 다르면
+    # 한 제목이 두 수를 가리켰다. 캡션은 실제 수를 말해 사진과 글이 갈렸다.
+    _n = max(_shown) if _shown else n
+    _title = f"최근 {_n}경기" if len(set(_shown)) <= 1 else f"최근 최대 {_n}경기"
+    return (f'<div class="body"><div class="anh">{_title}'
             f'<span>왼쪽이 오래된 경기</span></div>{"".join(rows)}</div>', len(rows))
 
 
@@ -3242,6 +3358,6 @@ def caption_analysis(rb: RecordBook, game: Game, day: str, *,
     # 아무 말도 없으면 "왜 선발이 없지?"가 남는다. 없는 것을 지어내지 않았다는
     # 사실 자체가 읽는 사람에게 필요한 정보다.
     tail = (re.sub(r"<[^>]+>", "", analysis_summary(rb, game, history, team_stats))
-            + "\n<i>선발 예고는 공식 소스에 없어 싣지 않습니다</i>")
+            + "\n<i>선발 예고는 싣지 않습니다</i>")
     return (_clip_parts(head, lines, tail, unit="줄") if as_parts
             else _clip(head, lines, tail, unit="줄"))

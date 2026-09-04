@@ -764,18 +764,21 @@ def start_alert_at(games: "list[Game]") -> "Optional[datetime]":
 
 
 def start_alert_notice(games: "list[Game]", now_utc: "Optional[datetime]" = None) -> str:
-    """카드·글 꼬리말: 시작 알림이 **언제 나가는지**를 시각으로 적는다.
+    """카드·글 꼬리말: 시작 알림을 **한 번 더 보낸다는 사실만** 적는다.
 
-    '몇 시간 전'은 리그·날짜마다 달라 못 지키는 약속이 된다. 시각은 언제나 참이다.
-    발송 시점과 날짜가 다르면 요일을 붙인다(`format_kickoff`와 같은 규칙).
+    **시각도 약속하지 않는다 (v1.11p).** 두 번 틀렸다:
+      ① "경기 시작 2시간 전 알림" — 심야 회피가 걸리면 5시간 10분 전이었다.
+      ② "경기 시작 알림 16:30" — 그건 **예약 시각**이고, 실제 발송은 앞창 2.5시간·
+         유예 1시간 55분 안 어디서든 일어난다(14:00~18:25). 시각을 적으면 또 거짓이다.
+
+    문형만 바꿔서는 이 병이 안 낫는다. **약속의 정밀도를 우리가 지킬 수 있는
+    수준까지 낮추는 것**이 답이다. 시각이 필요하면 앞창을 좁혀야 하는데,
+    앞창은 시계가 뜸한 날의 유실을 막는 장치라 좁힐 수 없다.
+    (`games`는 그날 대상 경기. 비면 알릴 것이 없다는 뜻으로 빈 문자열.)
     """
-    at = start_alert_at(games)
-    if at is None:
+    if not games or start_alert_at(games) is None:
         return ""
-    now = now_utc or datetime.now(timezone.utc)
-    k, n = at.astimezone(KST), now.astimezone(KST)
-    when = f"{_WD[k.weekday()]} {k:%H:%M}" if k.date() != n.date() else f"{k:%H:%M}"
-    return f"경기 시작 알림 {when}"
+    return "경기 시작 전 시간표를 한 번 더 보내드립니다"
 
 LEASE_SECONDS: dict[ContentType, int] = {ct: max(60, g // 3) for ct, g in GRACE_SECONDS.items()}
 
