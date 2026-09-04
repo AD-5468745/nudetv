@@ -424,3 +424,100 @@ async def audit(page, html: str) -> list[str]:
     await page.set_content(html)
     await page.wait_for_timeout(180)
     return await page.evaluate(_MEASURE_JS)
+
+
+# ══════════════════════════════════════════════════════════════
+# 카드와 함께 나가는 텍스트
+# ══════════════════════════════════════════════════════════════
+#
+# **옛 캡션은 카드를 통째로 다시 썼다.** 대표님이 그걸 보고 지적하셨다 —
+# "굳이 텍스트를 넣지 않아도 되는 카드들도 있는 것 같아."
+# 실측하니 더 심했다: 모닝·결과·순위표는 **100% 중복**이었고, 순위표 텍스트는
+# 카드보다 정보가 **적었다**(최근10·연속이 빠져 있었다).
+#
+# 원래 지시는 "카드에 다 안 들어가는 내용은 상위만 카드에, 전체는 텍스트로"였다.
+# 그 전제 — *카드에 다 안 들어간다* — 가 v5에서 사라졌다. 리그별로 쪼개서
+# 그날 전부를 한 장에 담기 때문이다.
+#
+# **그래서 규칙은 하나다: 카드에 다 들어갔으면 본문 텍스트를 안 붙인다.**
+#
+# 다만 **머리줄 한 줄은 반드시 남긴다.** 텔레그램 푸시 알림에는 카드가 안 보이고
+# 캡션 글자만 뜬다 — 캡션이 비면 구독자 폰에 "사진"이라고만 온다.
+# 그 한 줄은 카드와 같은 말을 하지만 중복이 아니다. **매체가 다르다** —
+# 알림은 글자만 보이고, 카드는 열어야 보인다.
+CAPTION_MAX = 1024
+FOLLOW_MAX = 4096
+
+KIND_EMOJI = {"morning": "📋", "start": "⏰", "result": "✅", "standings": "📊",
+              "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
+
+
+def caption(*, kind: str, league: Optional[League], head: Headline,
+            date_label: str = "", extra_lines: Optional[list[str]] = None,
+            extra_title: str = "") -> list[str]:
+    """`[0]`은 사진에 붙는 캡션, `[1:]`은 이어 보내는 텍스트.
+
+    `extra_lines`는 **카드에 없는 것만** 넣는다. 카드에 있는 것을 여기 또 쓰면
+    같은 내용이 한 화면에 두 번 나온다 — 그게 고치려던 문제다.
+    """
+    emoji = KIND_EMOJI.get(kind, "")
+    lg = LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그"
+    label = KIND_META[kind][0]
+    lead = head.text.replace("\n", " ").strip()
+    parts = [f"{emoji} <b>{esc(lg)} {esc(label)}</b>"]
+    if date_label:
+        parts.append(f" · {esc(date_label)}")
+    head_line = "".join(parts) + f"\n{esc(lead)}"
+    if head.sub:
+        head_line += f" — {esc(head.sub)}"
+
+    if not extra_lines:
+        return [head_line[:CAPTION_MAX]]
+
+    # 카드에 없는 것이 있을 때만 인용블록을 붙인다(부문 순위의 '그 밖의 부문' 등).
+    title = f"\n\n<b>{esc(extra_title)}</b>" if extra_title else ""
+    quoted = ("<blockquote expandable>"
+              + "\n".join(esc(x) for x in extra_lines) + "</blockquote>")
+    whole = head_line + title + "\n" + quoted
+    if len(whole) <= CAPTION_MAX:
+        return [whole]
+
+    # 넘치면 뒤로 넘긴다. **자르지 않는다** — 자르면 '전체'라는 약속이 거짓이 된다.
+    keep = len(extra_lines)
+    while keep > 1:
+        cand = (head_line + title + "\n<blockquote expandable>"
+                + "\n".join(esc(x) for x in extra_lines[:keep]) + "</blockquote>"
+                + f"\n<i>나머지 {len(extra_lines) - keep}줄은 다음 메시지에 이어집니다</i>")
+        if len(cand) <= CAPTION_MAX:
+            break
+        keep -= 1
+    out = [(head_line + title + "\n<blockquote expandable>"
+            + "\n".join(esc(x) for x in extra_lines[:keep]) + "</blockquote>"
+            + f"\n<i>나머지 {len(extra_lines) - keep}줄은 다음 메시지에 이어집니다</i>")]
+    rest = extra_lines[keep:]
+    while rest:
+        k = len(rest)
+        while k > 1:
+            cand = ("<b>(이어서)</b>\n<blockquote expandable>"
+                    + "\n".join(esc(x) for x in rest[:k]) + "</blockquote>")
+            if len(cand) <= FOLLOW_MAX:
+                break
+            k -= 1
+        out.append("<b>(이어서)</b>\n<blockquote expandable>"
+                   + "\n".join(esc(x) for x in rest[:k]) + "</blockquote>")
+        rest = rest[k:]
+    return out
+
+
+def leaders_extra(leaders: dict, league: League, shown: list[str]) -> list[str]:
+    """부문 순위 카드에 **안 실린** 부문의 1위만. 카드에 있는 부문은 뺀다."""
+    out = []
+    for cat, entries in leaders.items():
+        if cat in shown or not entries:
+            continue
+        top = [e for e in entries if e.rank == 1]
+        if len(top) != 1:          # 공동 1위는 '1위'라 단정하지 않는다
+            continue
+        e = top[0]
+        out.append(f"{cat} — {e.name} ({_nm(league, e.team_code)}) {e.value}")
+    return out
