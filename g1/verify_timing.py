@@ -812,6 +812,83 @@ check("아직 안 끝난 날은 순위표가 일찍 열리지 않는다",
       "경기가 남았는데 순위표가 처리 대상이 됐다")
 
 
+# ─────────────────────────────────────────────────────────────
+# (15) 시작 알림 — 카드가 말하는 시각 = 큐가 예약한 시각 (v1.11n)
+# ─────────────────────────────────────────────────────────────
+# 대표님 지적 2026-09-04: "한참 전에 다음날 경기시간을 보내주는데
+# 텍스트에는 2시간 전 알림이라고 적혀 있어."
+# 원인: 큐는 심야 회피까지 계산해 예약하는데, 카드는 설정값(120분)만 보고
+# "2시간 전"이라 적었다. MLB 실측 — 첫 경기 03:10, 실제 예약 전날 22:00.
+print("\n15. 시작 알림 — 카드와 큐가 같은 시각을 말하는가")
+
+def _sa_case(name, gs, now):
+    at = C.start_alert_at(gs)
+    q = [i for i in P.build_queue(gs, now, "chtest", floor_hours=0)
+         if i.content_type is ContentType.START_ALERT]
+    check(f"{name}: 큐에 오른다", len(q) == 1, f"{len(q)}건")
+    if q:
+        check(f"{name}: 카드 계산 = 큐 예약", at == q[0].scheduled_utc,
+              f"{at} vs {q[0].scheduled_utc}")
+        check(f"{name}: 꼬리말에 그 시각이 있다",
+              at.astimezone(KST).strftime("%H:%M") in C.start_alert_notice(gs, now),
+              C.start_alert_notice(gs, now))
+
+_n = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
+_sa_case("낮 경기", [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")], _n)
+_sa_case("심야 회피", [mk(League.MLB, "2026-09-04", 14, 10, tz="America/New_York",
+                        h="CLE", a="DET")], _n)
+
+# **첫 경기가 취소돼도 카드와 큐가 갈리지 않는다.**
+# 큐는 예약 시각이 흔들리지 않도록 그날 전 경기 기준으로 잡는다(약점 64번).
+# 카드가 '열리는 경기'만 보면 첫 경기 취소일에 둘이 어긋난다.
+_cx = [mk(League.KBO, "2026-09-04", 17, 0, tz="Asia/Seoul", h="SS", a="KT",
+          status=Status.CANCELED),
+       mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")]
+check("첫 경기가 취소된 날도 카드와 큐가 같은 시각",
+      C.start_alert_at(_cx)
+      == [i for i in P.build_queue(_cx, _n, "chtest", floor_hours=0)
+          if i.content_type is ContentType.START_ALERT][0].scheduled_utc)
+_mhtml = P.render_morning(_cx, "2026-09-04", now=_n)
+check("그 날 모닝 카드도 같은 시각을 적는다",
+      C.start_alert_at(_cx).astimezone(KST).strftime("%H:%M") in _mhtml)
+
+# ─────────────────────────────────────────────────────────────
+# (16) 시간표 목록 — 한국시각이 주, 현지시각을 매 줄에 (v1.11n)
+# ─────────────────────────────────────────────────────────────
+# 대표님 지시: "경기 시작시간은 한국시간을 메인으로, 작게 현지시각도."
+# 전에는 목록이 KST뿐이고 현지는 맨 아래 첫 경기에만 붙었다 —
+# MLB 16경기 중 15경기는 현지 몇 시인지 알 수 없었다.
+print("\n16. 시간표 목록의 현지시각 병기")
+# **표본이 실제로 갈리는 조합이어야 한다.** 처음엔 동부 19:10 · 중부 19:10을 썼는데
+# 그건 현지시각이 같아(둘 다 19:10) 한 그룹에 들어오지도 않았다 —
+# 변이시험에서 '뭉개기' 변이를 못 잡아 표본이 잘못된 것을 알았다.
+# 같은 한국시각(09:10)에 동부 20:10과 중부 19:10이 함께 열리는 조합을 쓴다.
+_mlb = [mk(League.MLB, "2026-09-04", 20, 10, tz="America/New_York", h="NYM", a="SF"),
+        mk(League.MLB, "2026-09-04", 19, 10, tz="America/Chicago", h="HOU", a="ARI")]
+_kk = {C.format_kickoff(g)[0] for g in _mlb}
+_locs = {C.format_kickoff(g)[1] for g in _mlb}
+check("표본이 유효하다 — 한국시각은 같고 현지시각은 다르다",
+      len(_kk) == 1 and len(_locs) == 2, f"KST {_kk} · 현지 {_locs}")
+_txt = P.render_start_alert(_mlb, _n, all_games=_mlb)
+check("현지시각이 목록에 들어간다", "현지" in _txt, _txt[:160])
+# `.index()`는 없으면 예외를 던져 **검사 전체를 죽인다**(결과 줄조차 안 찍힌다).
+# 게이트가 예외로 죽으면 통과도 실패도 아니다 — 안전한 비교로 쓴다.
+check("한국시각이 먼저 나온다 (현지가 앞서지 않는다)",
+      "현지" in _txt and _txt.find("◆") < _txt.find("현지"),
+      _txt[:160])
+# 같은 한국시각이라도 구장 시간대가 다르면 현지시각이 다르다 —
+# 그룹 헤더에 한 번만 쓰면 한쪽이 틀린다. 두 값이 다 나와야 한다.
+check("시간대가 섞인 그룹은 현지시각을 각각 적는다 (한 값으로 뭉개지 않는다)",
+      all(l and l in _txt for l in _locs), f"{_locs} / {_txt[:300]}")
+# 국내 리그·NPB는 KST와 오프셋이 같아 병기하면 같은 숫자가 두 번 나온다
+_kbo = [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")]
+check("시차가 없는 리그는 병기하지 않는다",
+      "현지" not in P.render_start_alert(_kbo, _n, all_games=_kbo))
+# 꼬리말이 같은 말을 두 번 하지 않는다
+check("꼬리말은 현지시각을 되풀이하지 않는다",
+      "시작 (" in _txt and "현지" not in _txt.split("시작 (")[-1], _txt[-140:])
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

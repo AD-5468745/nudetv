@@ -745,20 +745,37 @@ GRACE_SECONDS[ContentType.START_ALERT] = max(
     480, (START_ALERT_LEAD_MINUTES - 5) * 60)
 
 
-def start_alert_lead_text() -> str:
-    """카드·글에 적을 '몇 시간(분) 전 알림' 문구. **반드시 이걸 쓴다.**
+def start_alert_at(games: "list[Game]") -> "Optional[datetime]":
+    """그 묶음의 시작 알림이 **실제로 예약되는 시각**.
 
-    전에는 카드 아래에 "경기 시작 10분 전 알림"이 문자열로 박혀 있었다.
-    리드타임을 2시간으로 바꾼 뒤에도 카드는 계속 10분이라고 말했다 —
-    시스템이 하는 일과 카드가 하는 말이 어긋났고, 숫자 검증은 그걸 못 잡는다.
-    (최소 폰트를 상수로만 두었다가 하루 만에 어긴 것과 같은 계열이다.)
+    **큐와 카드가 같은 식을 쓰게 하려고 함수로 뺐다 (v1.11n).**
+    전에는 큐가 여기서 계산하고 카드는 `START_ALERT_LEAD_MINUTES`만 보고
+    "경기 시작 2시간 전 알림"이라고 적었다. 그런데 심야 회피가 걸리면
+    실제 발송은 2시간 전이 아니다 — 실측 MLB 2026-09-04: 첫 경기 03:10인데
+    알림 예약은 전날 22:00, **5시간 10분 전**이었다. 카드가 거짓말을 했다.
+    (대표님 지적 2026-09-04: "한참 전에 다음날 경기시간을 보내주는데
+     텍스트에는 2시간 전 알림이라고 적혀 있어")
     """
-    m = START_ALERT_LEAD_MINUTES
-    if m % 60 == 0:
-        return f"경기 시작 {m // 60}시간 전 알림"
-    if m > 60:
-        return f"경기 시작 {m // 60}시간 {m % 60}분 전 알림"
-    return f"경기 시작 {m}분 전 알림"
+    if not games:
+        return None
+    return shift_out_of_quiet_hours(
+        min(g.start_utc for g in games)
+        - timedelta(minutes=START_ALERT_LEAD_MINUTES))
+
+
+def start_alert_notice(games: "list[Game]", now_utc: "Optional[datetime]" = None) -> str:
+    """카드·글 꼬리말: 시작 알림이 **언제 나가는지**를 시각으로 적는다.
+
+    '몇 시간 전'은 리그·날짜마다 달라 못 지키는 약속이 된다. 시각은 언제나 참이다.
+    발송 시점과 날짜가 다르면 요일을 붙인다(`format_kickoff`와 같은 규칙).
+    """
+    at = start_alert_at(games)
+    if at is None:
+        return ""
+    now = now_utc or datetime.now(timezone.utc)
+    k, n = at.astimezone(KST), now.astimezone(KST)
+    when = f"{_WD[k.weekday()]} {k:%H:%M}" if k.date() != n.date() else f"{k:%H:%M}"
+    return f"경기 시작 알림 {when}"
 
 LEASE_SECONDS: dict[ContentType, int] = {ct: max(60, g // 3) for ct, g in GRACE_SECONDS.items()}
 

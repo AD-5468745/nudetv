@@ -24,7 +24,7 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
-                      start_alert_lead_text, venue_name,
+                      start_alert_at, start_alert_notice, venue_name,
                       is_readable_ko, player_names_localized,
                       LEADER_TEAM_LABEL_MAX, pct_text,
                       assert_result_deadline, kst_day_label, result_deadline,
@@ -389,9 +389,10 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         gs = [g for g in gs_all if g.status is Status.SCHEDULED]
         if not gs:
             continue                      # 전부 시작했거나 취소됐다 — 알릴 것이 없다
-        at = shift_out_of_quiet_hours(
-            min(x.start_utc for x in gs_all)
-            - timedelta(minutes=START_ALERT_LEAD_MINUTES))
+        # **카드 꼬리말과 같은 함수를 쓴다 (v1.11n).** 전에는 큐가 여기서 계산하고
+        # 카드는 설정값만 보고 "2시간 전"이라 적어, 심야 회피가 걸린 날 카드가
+        # 거짓말을 했다(MLB: 실제 5시간 10분 전).
+        at = start_alert_at(gs_all)
         # 지나간 예약도 큐에 남긴다. 유예(리드-5분)는 큐에 있는 항목에만 걸리므로,
         # 여기서 잘라내면 유예가 한 번도 쓰이지 않는다 — 실측 창이 235분이 아니라
         # 125분이었던 이유다. 너무 늦은 것은 is_late()가 버린다.
@@ -917,7 +918,11 @@ def render_morning(games: list[Game], day: str,
     # 실측(D1a, KBO 2026-08-28 전 경기 취소): 헤드라인 "오늘 KBO 경기 없음"인데
     # 푸터·캡션 꼬리말은 "경기 시작 2시간 전 알림"이었다. 시작할 경기가 없으니
     # 그 알림은 만들어지지도 않는다 — 카드가 지키지 못할 약속을 한 것이다.
-    _foot = start_alert_lead_text() if playable else ""
+    # **큐와 같은 집합을 넘긴다 (v1.11n).** 큐는 그날 **전 경기**의 첫 시각으로
+    # 알림을 예약한다(취소가 나도 예약 시각이 흔들리지 않게 — 약점 64번).
+    # 카드가 '열리는 경기'만 넘기면 첫 경기가 취소된 날 카드와 실제가 어긋난다.
+    # 알림 자체를 낼지 말지는 그대로 playable로 판단한다.
+    _foot = start_alert_notice(games, now) if playable else ""
     body = (_hdr(*LEAGUE_COLORS[lg], _pill(lg, games),
                  morning_label(now or datetime.now(timezone.utc)),
                  _dtk, h1, sub, league=lg, dt_local=_dtl) +
@@ -1438,14 +1443,29 @@ def render_start_alert(gs: list[Game], now: datetime | None = None,
         _k, _ = format_kickoff(g, with_weekday=_wd)
         by_time[_k].append(g)
 
+    # **한국시각이 주(主), 현지시각은 보조로 매 줄에 붙인다 (v1.11n — 대표님 지시).**
+    #
+    # 전에는 목록이 KST뿐이고 현지시각은 **맨 아래 첫 경기 하나**에만 붙었다.
+    # MLB 16경기 시간표에서 나머지 15경기는 현지 몇 시인지 알 수 없었다.
+    #
+    # **그룹 헤더에 한 번만 쓰면 틀린다.** 같은 한국시각에 열려도 구장 시간대가
+    # 다르면 현지시각이 다르다 — 한국 09:10은 미 동부 20:10이고 중부 19:10이다.
+    # 그래서 그룹 안 현지 표기가 **하나뿐일 때만** 헤더에 모으고,
+    # 섞여 있으면 경기 줄마다 붙인다. 짧게 쓰되 틀리지는 않는다.
     lines: list[str] = []
     for t, group in by_time.items():
-        lines.append(f"◆ {esc(t)}")
+        locs = {format_kickoff(g, with_weekday=_wd)[1] for g in group}
+        one = locs.pop() if len(locs) == 1 else None
+        lines.append(f"◆ {esc(t)}" + (f"  <i>현지 {esc(one)}</i>" if one else ""))
         for g in group:
             row = (f"  {esc(team_name(g.away))} vs "
                    f"{esc(team_name(g.home))}{esc(_dh(g))}")
             if g.venue:
                 row += f" · {esc(venue_name(g.venue))}"
+            if one is None:
+                _l = format_kickoff(g, with_weekday=_wd)[1]
+                if _l:
+                    row += f" <i>현지 {esc(_l)}</i>"
             lines.append(row)
 
     mins = int((first - now).total_seconds() // 60)
@@ -1461,9 +1481,10 @@ def render_start_alert(gs: list[Game], now: datetime | None = None,
     # **주 표기(KST)에도 요일을 붙인다 (v1.11i).** 전에는 꼬리말만 `%H:%M`을
     # 직접 찍어 "첫 경기 03:10 시작 · 현지 금 14:10"이 됐다 —
     # 요일이 붙은 현지 시각만 보이고 정작 우리 시각은 어느 날인지 알 수 없었다.
-    kst_first, loc = format_kickoff(ordered[0], with_weekday=_wd)
-    tail = (f"\n첫 경기 {esc(kst_first)} 시작 ({esc(when)})"
-            + (f" · 현지 {esc(loc)}" if loc else ""))
+    # 현지시각은 이제 목록의 모든 줄에 있다 — 꼬리말에서 또 말하면 같은 말이
+    # 한 메시지에 두 번 나온다. 여기서는 '얼마나 남았나'만 말한다.
+    kst_first, _ = format_kickoff(ordered[0], with_weekday=_wd)
+    tail = f"\n첫 경기 {esc(kst_first)} 시작 ({esc(when)})"
 
     head_when = day_word_span(ordered, now)
 
@@ -2164,7 +2185,7 @@ def caption_morning(games: list[Game], day: str, *, as_parts: bool = False,
         _paren = (f" (총 {len(games)}경기 · {_off})" if _off else "")
         head = _pre + f"편성 {len(_play)}경기" + _paren + "</b>\n"
     # 열리는 경기가 0이면 시작 알림도 없다 — 카드 푸터와 같은 규칙(v1.11j).
-    tail = start_alert_lead_text() if _play else ""
+    tail = start_alert_notice(games, now) if _play else ""   # 집합은 카드와 같게
     return _clip_parts(head, lines, tail) if as_parts else _clip(head, lines, tail)
 
 

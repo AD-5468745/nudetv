@@ -810,17 +810,36 @@ check("분석 카드 예약은 반드시 경기 시작 전",
 # 하고 있었고, 숫자 검증 347건이 전부 통과했다.** 눈으로 카드를 보고서야 알았다.
 # 안 쓰는 기능("예측 투표는 경기 3시간 전")도 안내하고 있었다.
 print("\n12. 카드 문구 — 시스템이 하는 일과 같은 말을 하는가")
-from contract import start_alert_lead_text, venue_name                # noqa: E402
+from contract import start_alert_at, start_alert_notice, venue_name   # noqa: E402
 
-_txt = start_alert_lead_text()
-check(f"리드타임 문구가 설정을 따라간다 ({_txt})",
-      str(C.START_ALERT_LEAD_MINUTES // 60) in _txt
-      or str(C.START_ALERT_LEAD_MINUTES) in _txt, _txt)
+# **'몇 시간 전'은 못 지키는 약속이라 시각으로 바꿨다 (v1.11n).**
+# 심야 회피가 걸리면 실제 발송은 리드타임 그대로가 아니다 —
+# 실측 MLB 2026-09-04: 첫 경기 03:10인데 알림 예약은 전날 22:00(5시간 10분 전).
+# 그런데 카드는 "경기 시작 2시간 전 알림"이라고 적고 있었다(대표님 지적).
+_gs = [mkgame(League.NPB, "YOG", "HAN", day="2026-08-29", hh=18)]
+_now = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
+_txt = start_alert_notice(_gs, _now)
+check(f"꼬리말이 '몇 시간 전'이 아니라 시각을 적는다 ({_txt})",
+      ":" in _txt and "전 알림" not in _txt, _txt)
+check("그 시각이 큐의 예약 시각과 같다",
+      start_alert_at(_gs).astimezone(KST).strftime("%H:%M") in _txt,
+      f"{start_alert_at(_gs).astimezone(KST)} vs {_txt}")
 
-_mhtml = P.render_morning(
-    [mkgame(League.NPB, "YOG", "HAN", day="2026-08-29", hh=18)], "2026-08-29")
-check("모닝 카드가 실제 리드타임을 적는다", _txt in _mhtml, _txt)
-check("옛 문구('10분 전')가 카드에 남아 있지 않다", "10분 전 알림" not in _mhtml)
+# 심야 회피가 걸리는 날에도 카드와 큐가 같은 시각을 말해야 한다.
+# (MLB 새벽 경기: 리드타임 그대로면 새벽 1시 발송이라 전날 22:00으로 앞당긴다)
+_night = [mkgame(League.MLB, "NYY", "BOS", day="2026-08-29", hh=3)]
+_nat = start_alert_at(_night)
+check("심야 회피가 걸려도 카드가 실제 예약 시각을 적는다",
+      _nat.astimezone(KST).strftime("%H:%M") in start_alert_notice(_night, _now),
+      f"{_nat.astimezone(KST)} / {start_alert_notice(_night, _now)}")
+check("심야 회피가 실제로 걸렸다 (이 시험이 무의미해지지 않게)",
+      _nat.astimezone(KST).hour == C.START_ALERT_EVENING_HOUR,
+      str(_nat.astimezone(KST)))
+
+_mhtml = P.render_morning(_gs, "2026-08-29", now=_now)
+check("모닝 카드가 그 시각을 적는다", _txt in _mhtml, _txt)
+check("옛 문구('N시간 전 알림')가 카드에 남아 있지 않다",
+      "전 알림" not in _mhtml)
 check("없는 기능을 안내하지 않는다 (예측 투표)", "예측 투표" not in _mhtml)
 
 # 경기장 이름 — 일본어가 그대로 나가면 한국 시청자는 못 읽는다
