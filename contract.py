@@ -97,6 +97,63 @@ GENDER_BY_LEAGUE: dict[League, str] = {
 }
 
 
+# ── 카드 테마 (v1.12 · 대표님 결정 2026-09-04) ────────────────
+#
+# **"전체 리그 중 반반 나눠서 하자."**
+# 해외·e스포츠에는 중계 그래픽 문법(다크), 국내 전통 스포츠에는 신문·매거진
+# 문법(아이보리)을 붙인다. 무작위로 나눈 것이 아니라 **국내/해외**라는 이유가 있어
+# 구독자가 봐도 선이 읽힌다.
+#
+# ⚠️ **테마가 갈리는 것은 리그까지다.** 콘텐츠 종류의 골격(머리-목록-꼬리)과
+# 정보 위계는 두 테마가 똑같이 쓴다. 그래야 "이게 결과인지 순위표인지"가
+# 리그와 무관하게 한눈에 갈린다 — 대표님이 지적한 '콘텐츠 구분이 안 됨'이
+# 테마를 나누다가 되살아나면 안 된다.
+#
+# 나이트 브리핑은 전 리그 통합이라 어느 쪽에도 안 속한다 → `NIGHT_THEME`.
+CARD_THEME_DARK = "dark"
+CARD_THEME_PAPER = "paper"
+CARD_THEME_BY_LEAGUE: dict[League, str] = {
+    # 해외·e스포츠
+    League.MLB: CARD_THEME_DARK,
+    League.NPB: CARD_THEME_DARK,
+    League.LCK: CARD_THEME_DARK,
+    League.INTL_LOL: CARD_THEME_DARK,
+    # 국내 전통 스포츠
+    League.KBO: CARD_THEME_PAPER,
+    League.KL1: CARD_THEME_PAPER,
+    League.KBL: CARD_THEME_PAPER,
+    League.VLEAGUE_M: CARD_THEME_PAPER,
+    League.VLEAGUE_W: CARD_THEME_PAPER,
+    # 유럽 축구 — 키가 들어오면 해외로 간다
+    League.EPL: CARD_THEME_DARK, League.LALIGA: CARD_THEME_DARK,
+    League.SERIEA: CARD_THEME_DARK, League.BUNDESLIGA: CARD_THEME_DARK,
+    League.LIGUE1: CARD_THEME_DARK, League.UCL: CARD_THEME_DARK,
+}
+NIGHT_THEME = CARD_THEME_DARK
+
+
+def card_theme(league: Optional[League]) -> str:
+    """리그의 카드 테마. 리그가 없는 통합 카드(나이트)는 `NIGHT_THEME`.
+
+    **모르는 리그를 조용히 한쪽으로 떨구지 않는다** — 새 리그를 붙이고 표에
+    안 넣으면 그 리그만 다른 얼굴로 나가는데, 아무도 못 알아챈다.
+    """
+    if league is None:
+        return NIGHT_THEME
+    theme = CARD_THEME_BY_LEAGUE.get(league)
+    if theme is None:
+        raise GateError(
+            f"{league.value}: 카드 테마가 정해지지 않았습니다 — "
+            f"CARD_THEME_BY_LEAGUE에 넣어야 합니다")
+    return theme
+
+
+assert set(CARD_THEME_BY_LEAGUE) >= {
+    League.KBO, League.MLB, League.NPB, League.KBL, League.KL1,
+    League.VLEAGUE_M, League.VLEAGUE_W, League.LCK, League.INTL_LOL}, (
+    "지금 발행하는 리그 중 카드 테마가 빠진 것이 있습니다")
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 상태 머신
 # ─────────────────────────────────────────────────────────────────────

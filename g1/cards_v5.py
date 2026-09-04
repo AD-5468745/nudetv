@@ -1,0 +1,426 @@
+"""카드 v5 — 처음부터 다시 짠 렌더 (대표님 지시 2026-09-04).
+
+**왜 다시 짰나.** 대표님이 채널을 보고 넷을 지적했다:
+  ① 정보가 다 안 들어감  ② 디자인이 촌스러움  ③ 리그마다 따로 논다
+  ④ **어떤 컨텐츠인지 구분이 안 됨**  ⑤ **각 컨텐츠의 정확도가 완전히 떨어짐**
+
+④와 ⑤는 같은 뿌리에서 나왔다 — **옛 카드는 전부 '표'였다.** 표는 값을 나열할 뿐
+무슨 일이 있었는지 말하지 않는다. 그래서 7종이 다 같아 보이고(④), 숫자만 있고
+뜻이 없어 얕게 느껴진다(⑤). 디자인만 바꾸면 ⑤는 안 고쳐진다.
+
+**v5의 규칙 넷:**
+ 1. **골격은 콘텐츠 종류가 정하고, 종목은 행의 표기만 정한다.**
+    결과 카드는 KBO든 MLB든 같은 모양이고, KBO 결과와 KBO 순위표는 완전히 다르다.
+    (테마는 리그로 갈리지만 골격은 안 갈린다 — 갈리면 ④가 되살아난다.)
+ 2. **그날 그 리그 전부가 한 장에.** "나머지는 아래 글에"가 사라진다.
+    리그별로 쪼개므로 국내 리그는 5경기 이하다. MLB만 16경기인데, 카드가
+    길어지는 것을 허용한다 — 그게 ①에 대한 정직한 답이다.
+ 3. **헤드라인은 `headline.py`가 규칙으로 만든다.** 이 파일은 그리기만 한다.
+ 4. **없는 데이터는 칸도 만들지 않는다.** 날씨·선발투수 자리를 비워 두면
+    독자에게는 '망가진 표'로 읽힌다(약점 94).
+
+**폰트.** Pretendard → Noto Sans KR → sans-serif 순으로 떨어진다. 서버에 Pretendard가
+없으면 Noto로 그려지고, 그것도 없으면 두부가 되는데 **그건 게이트가 막는다**
+(`assert_korean_font` — 브라우저 안에서 한글 '가'의 폭을 재서 두부와 비교한다).
+"""
+from __future__ import annotations
+
+import html as _html
+from datetime import datetime
+from typing import Optional
+
+from contract import (KST, League, SCORE_UNIT_BY_LEAGUE, ScoreUnit, Status,
+                      StreakKind, TEAM_NAMES, card_theme, venue_name)
+
+from headline import Headline
+
+# 카드 폭. 텔레그램은 세로로 긴 사진도 잘 보여준다(비율 20:1까지) —
+# 높이는 내용에 맞춰 늘어나게 두고, 폭만 고정한다.
+CARD_W = 1080
+
+LEAGUE_LABEL = {
+    League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
+    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1", League.LCK: "LCK",
+    League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
+}
+
+# 콘텐츠 종류마다 **고유한 아이콘 + 라벨**. 색이 아니라 이 둘이 종류를 가른다 —
+# 색은 테마(리그)가 이미 쓰고 있어서 종류까지 색으로 나누면 둘이 충돌한다.
+KIND_META = {
+    "morning":  ("모닝 브리핑", "M4 17h16M6.5 17a5.5 5.5 0 0 1 11 0M12 4.5v2"
+                              "M5 8l1.4 1.4M19 8l-1.4 1.4M2.5 13h2M19.5 13h2"),
+    "start":    ("시작 알림", "M12 5v8l5 3"),
+    "result":   ("경기 결과", "M4 12.5l5 5L20 6.5"),
+    "standings": ("팀 순위", "M3 20h5v-6H3zM9.5 20h5V4h-5zM16 20h5v-9h-5z"),
+    "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
+    "analysis": ("경기 분석", "M12 4v16M5 8h14M7.5 8l-3 6h6zM16.5 8l-3 6h6z"),
+    "night":    ("나이트 브리핑", "M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"),
+}
+
+# ── 테마 ──────────────────────────────────────────────────────
+#
+# **두 테마가 같은 이름의 색을 갖는다.** 그래야 골격 코드가 테마를 모르고도
+# 그릴 수 있다 — 테마마다 따로 짜면 한쪽만 고치는 사고가 난다(약점 45·110).
+THEMES = {
+    "dark": {
+        "bg": "#0C1016", "ink": "#EEF2F6", "dim": "#7C8798", "faint": "#4E5866",
+        "line": "#161C25", "rule": "#1B222D", "accent": "#35E0A1",
+        "up": "#35E0A1", "down": "#FF6B6B", "wm": "#39424F",
+        "chip_bg": "#35E0A1", "chip_ink": "#0C1016", "radius": "6px",
+        "rail": True,
+    },
+    "paper": {
+        "bg": "#FCFBF8", "ink": "#101418", "dim": "#6E6A62", "faint": "#9A968D",
+        "line": "#EAE7E0", "rule": "#101418", "accent": "#0B7A4B",
+        "up": "#0B7A4B", "down": "#B3261E", "wm": "#C2BDB2",
+        "chip_bg": "#101418", "chip_ink": "#FCFBF8", "radius": "2px",
+        "rail": False,
+    },
+}
+
+
+def esc(s) -> str:
+    return _html.escape(str(s), quote=True)
+
+
+def _nm(league: Optional[League], team) -> str:
+    code = getattr(team, "team_code", team)
+    return TEAM_NAMES.get(league, {}).get(code, code) if league else code
+
+
+def _kst(dt: datetime) -> str:
+    return dt.astimezone(KST).strftime("%H:%M")
+
+
+def _unit_note(league: League) -> str:
+    return {ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어",
+            ScoreUnit.GOALS: "득점", ScoreUnit.POINTS: "득점"}.get(
+        SCORE_UNIT_BY_LEAGUE.get(league), "득점")
+
+
+# ══════════════════════════════════════════════════════════════
+# 공통 골격 — 모든 카드가 이 함수를 지난다
+# ══════════════════════════════════════════════════════════════
+
+def shell(*, kind: str, league: Optional[League], date_label: str,
+          head: Headline, body: str, foot_left: str,
+          theme: Optional[str] = None, group_label: str = "") -> str:
+    """머리(라벨·헤드라인) — 본문 — 꼬리. **일곱 종류가 전부 이 골격을 쓴다.**
+
+    바뀌는 것은 `kind`(아이콘·라벨)와 `body`(본문 골격)뿐이다.
+    """
+    if kind not in KIND_META:
+        raise ValueError(f"모르는 카드 종류: {kind}")
+    th = THEMES[theme or card_theme(league)]
+    label, icon = KIND_META[kind]
+    lg = group_label or (LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그")
+    sub = (f'<div class="sub">{esc(head.sub)}</div>' if head.sub else "")
+    rail = '<div class="rail"></div>' if th["rail"] else ""
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{width:{CARD_W}px;background:{th['bg']};
+  font-family:Pretendard,'Noto Sans KR','Apple SD Gothic Neo',sans-serif;
+  color:{th['ink']};-webkit-font-smoothing:antialiased}}
+.card{{width:{CARD_W}px;border-radius:{th['radius']};overflow:hidden;position:relative}}
+.num{{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}}
+.top{{padding:52px 56px 0;position:relative}}
+.rail{{position:absolute;left:0;top:52px;bottom:0;width:6px;background:{th['accent']}}}
+.lab{{display:flex;align-items:center;gap:16px;font-size:22px;font-weight:800;
+  letter-spacing:.16em;color:{th['accent']}}}
+.lab svg{{width:30px;height:30px;flex:none}}
+.lab .lg{{color:{th['faint']};letter-spacing:.10em}}
+.lab .dt{{margin-left:auto;color:{th['faint']};letter-spacing:.06em;font-weight:700}}
+.lead{{font-size:62px;font-weight:800;letter-spacing:-.035em;line-height:1.14;
+  margin-top:26px;color:{th['ink']}}}
+.sub{{font-size:27px;color:{th['dim']};margin-top:16px;font-weight:500;
+  letter-spacing:-.01em;line-height:1.4}}
+.rule{{height:{'2px' if not th['rail'] else '1px'};background:{th['rule']};margin-top:36px}}
+.body{{padding:8px 56px 0}}
+.foot{{padding:30px 56px 44px;display:flex;justify-content:space-between;
+  align-items:center;font-size:21px;color:{th['faint']};font-weight:600;
+  letter-spacing:.03em}}
+.wm{{color:{th['wm']};font-weight:800;letter-spacing:.14em;font-size:20px}}
+/* ── 본문 부품 (일곱 종류가 나눠 쓴다) ── */
+.li{{display:grid;align-items:baseline;gap:14px;padding:19px 0;
+  border-bottom:1px solid {th['line']}}}
+.li:last-child{{border-bottom:none}}
+.t1{{font-size:31px;font-weight:800;letter-spacing:-.03em;color:{th['ink']}}}
+.t2{{font-size:31px;font-weight:600;color:{th['ink']}}}
+.t2.dim{{color:{th['dim']};font-weight:500}}
+.t3{{font-size:23px;color:{th['faint']};font-weight:600}}
+.sc{{font-size:44px;font-weight:800;letter-spacing:-.03em;text-align:center;
+  color:{th['ink']}}}
+.sc i{{font-style:normal;color:{th['faint']};padding:0 12px;font-weight:500}}
+.off{{font-size:21px;font-weight:800;letter-spacing:.10em;color:{th['dim']};
+  text-align:center;display:block}}
+.cd{{display:flex;align-items:baseline;gap:16px;margin-top:24px}}
+.cd b{{font-size:96px;font-weight:800;letter-spacing:-.05em;line-height:.95;
+  color:{th['accent']}}}
+.cd span{{font-size:33px;font-weight:700;color:{th['dim']}}}
+.up{{color:{th['up']};font-weight:800}}
+.dn{{color:{th['down']};font-weight:800}}
+.rk{{font-size:24px;font-weight:800;color:{th['faint']}}}
+.rk.lead-rank{{color:{th['accent']}}}
+.quad{{display:grid;grid-template-columns:1fr 1fr;gap:6px 52px}}
+.qb{{padding-bottom:20px}}
+.qb h4{{font-size:21px;font-weight:800;letter-spacing:.14em;color:{th['accent']};
+  padding-bottom:14px;border-bottom:1px solid {th['rule']};margin-bottom:6px}}
+.qr{{display:flex;align-items:baseline;gap:14px;padding:12px 0;font-size:27px}}
+.qr i{{font-style:normal;font-size:20px;font-weight:800;color:{th['faint']};width:20px}}
+.qr b{{font-weight:600;flex:1;color:{th['ink']}}}
+.qr small{{color:{th['faint']};font-size:20px;font-weight:600}}
+.qr span{{font-weight:800;color:{th['ink']}}}
+.qr.first b{{font-weight:800}}
+.qr.first span{{color:{th['accent']}}}
+.duo{{display:grid;grid-template-columns:1fr auto 1fr;padding:14px 0 32px;
+  border-bottom:1px solid {th['rule']};margin-bottom:12px;align-items:end}}
+.duo .n{{font-size:48px;font-weight:800;letter-spacing:-.03em;color:{th['ink']}}}
+.duo .n.r{{text-align:right}}
+.duo .p{{font-size:21px;color:{th['faint']};font-weight:700;letter-spacing:.08em;
+  margin-top:10px}}
+.duo .p.r{{text-align:right}}
+.duo .x{{font-size:21px;font-weight:800;color:{th['faint']};letter-spacing:.14em;
+  padding:0 28px 12px}}
+.cmp{{display:grid;grid-template-columns:1fr 210px 1fr;align-items:center;
+  padding:18px 0;border-bottom:1px solid {th['line']}}}
+.cmp:last-of-type{{border-bottom:none}}
+.cmp .v{{font-size:30px;font-weight:600;color:{th['dim']}}}
+.cmp .v.r{{text-align:right}}
+.cmp .v.on{{color:{th['accent']};font-weight:800}}
+.cmp .k{{text-align:center;font-size:20px;font-weight:700;letter-spacing:.09em;
+  color:{th['faint']}}}
+.bar{{margin-top:28px;border:1px solid {th['rule']};border-radius:4px;
+  padding:26px 32px;display:flex;justify-content:space-between;align-items:center}}
+.bar .k{{font-size:20px;font-weight:800;letter-spacing:.14em;color:{th['faint']}}}
+.bar .v{{font-size:31px;font-weight:800;color:{th['ink']}}}
+.ix{{display:flex;align-items:center;gap:22px;padding:22px 0;
+  border-bottom:1px solid {th['line']}}}
+.ix:last-child{{border-bottom:none}}
+.ix .bg{{font-size:20px;font-weight:800;letter-spacing:.10em;color:{th['chip_ink']};
+  background:{th['chip_bg']};padding:9px 16px;border-radius:{th['radius']};
+  min-width:130px;text-align:center}}
+.ix .cn{{font-size:27px;font-weight:700;white-space:nowrap;color:{th['ink']}}}
+.ix .cn em{{font-style:normal;color:{th['faint']};font-weight:600;font-size:24px}}
+.ix .pk{{margin-left:auto;font-size:24px;color:{th['dim']};font-weight:600;
+  text-align:right}}
+.ix .pk b{{color:{th['ink']};font-weight:800}}
+</style></head><body><div class="card">
+  <div class="top">{rail}
+    <div class="lab"><svg viewBox="0 0 24 24" fill="none" stroke="{th['accent']}"
+      stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="{icon}"/></svg>
+      {esc(label)}<span class="lg">{esc(lg)}</span><span class="dt">{esc(date_label)}</span></div>
+    <div class="lead">{esc(head.text)}</div>{sub}
+    <div class="rule"></div>
+  </div>
+  <div class="body num">{body}</div>
+  <div class="foot"><span>{esc(foot_left)}</span><span class="wm">NUDE-TV.NET</span></div>
+</div></body></html>"""
+
+
+# ══════════════════════════════════════════════════════════════
+# 본문 — 종류마다 골격이 다르다
+# ══════════════════════════════════════════════════════════════
+
+def body_schedule(games: list, league: League, *, with_venue: bool = True) -> str:
+    """모닝·시작 알림이 함께 쓴다 — 시각 + 대진 + 장소."""
+    out = []
+    for g in sorted(games, key=lambda x: x.start_utc):
+        cancel = g.status in (Status.CANCELED, Status.POSTPONED)
+        # **원문 그대로 내보내지 않는다.** `Progressive Field`·`京セラD大阪`가
+        # 그대로 나가면 못 읽는다(약점 32). 표에 없는 곳은 원문을 유지한다 —
+        # 지어낸 음역보다 낫다.
+        venue = (venue_name(g.venue) or "") if (with_venue and g.venue) else ""
+        tail = (f'<span class="t3">{esc(venue)}</span>' if venue else "<span></span>")
+        cls = "t2 dim" if cancel else "t2"
+        mark = " · 취소" if cancel else ""
+        out.append(
+            f'<div class="li" style="grid-template-columns:150px 1fr auto">'
+            f'<span class="t1">{esc(_kst(g.start_utc))}</span>'
+            f'<span class="{cls}">{esc(_nm(league, g.away))} vs '
+            f'{esc(_nm(league, g.home))}{mark}</span>{tail}</div>')
+    return "".join(out)
+
+
+def body_scoreboard(games: list, league: League) -> str:
+    """결과 — 이긴 쪽이 굵다. **취소는 점수 자리에 사유를 쓴다**(숨기지 않는다)."""
+    out = []
+    for g in sorted(games, key=lambda x: x.start_utc):
+        if g.status in (Status.CANCELED, Status.POSTPONED):
+            why = (g.meta.cancel_reason if g.meta else "") or "취소"
+            mid = f'<span class="off">{esc(why)}</span>'
+            lc = rc = "t2 dim"
+        elif g.score:
+            hs, as_ = g.score.home, g.score.away
+            mid = f'<span class="sc">{as_} <i>:</i> {hs}</span>'
+            lc = "t2" if as_ > hs else "t2 dim"
+            rc = "t2" if hs > as_ else "t2 dim"
+        else:
+            mid = '<span class="off">진행 중</span>'
+            lc = rc = "t2"
+        out.append(
+            f'<div class="li" style="grid-template-columns:1fr 300px 1fr">'
+            f'<span class="{lc}" style="text-align:right">{esc(_nm(league, g.away))}</span>'
+            f'{mid}<span class="{rc}">{esc(_nm(league, g.home))}</span></div>')
+    return "".join(out)
+
+
+def body_standings(rows: list, league: League) -> str:
+    """순위표 — **최근10 열은 값이 하나도 없으면 통째로 뺀다**(약점 94)."""
+    has10 = any(s.last10 and s.last10.total for s in rows)
+    # **팀명 칸에 최소 폭을 보장한다.** 처음에는 `1fr`로 뒀는데, 고정폭 열들이
+    # 968px(본문 폭)을 거의 다 먹어 팀명에 16px만 남았다 — '삼성'이 세로로
+    # 두 줄로 쪼개진 채 게이트를 통과했다. `minmax()`로 바닥을 깐다.
+    cols = ("56px minmax(150px,1fr) 190px 110px 100px"
+            + (" 140px" if has10 else "") + " 110px")
+    out = [f'<div class="li" style="grid-template-columns:{cols}">'
+           f'<span class="t3">#</span><span class="t3">팀</span>'
+           f'<span class="t3" style="text-align:right">승-패-무</span>'
+           f'<span class="t3" style="text-align:right">승률</span>'
+           f'<span class="t3" style="text-align:right">승차</span>'
+           + ('<span class="t3" style="text-align:right">최근10</span>' if has10 else "")
+           + '<span class="t3" style="text-align:right">연속</span></div>']
+    for s in sorted(rows, key=lambda x: x.rank):
+        gb = "—" if s.games_behind in ("0", "0.0", "") else s.games_behind
+        st = ""
+        if s.streak_kind in (StreakKind.WIN, StreakKind.LOSS) and s.streak_len:
+            word = "승" if s.streak_kind is StreakKind.WIN else "패"
+            cls = "up" if s.streak_kind is StreakKind.WIN else "dn"
+            st = f'<span class="{cls}">{s.streak_len}{word}</span>'
+        l10 = ""
+        if has10:
+            v = (f"{s.last10.win}-{s.last10.loss}"
+                 + (f"-{s.last10.draw}" if s.last10 and s.last10.draw else "")
+                 ) if s.last10 and s.last10.total else "—"
+            l10 = f'<span class="t2" style="text-align:right;font-size:26px">{esc(v)}</span>'
+        rec = f"{s.record.win}-{s.record.loss}" + (f"-{s.record.draw}"
+                                                  if s.record.draw else "")
+        out.append(
+            f'<div class="li" style="grid-template-columns:{cols}">'
+            f'<span class="rk{" lead-rank" if s.rank <= 2 else ""}">{s.rank}</span>'
+            f'<span class="t1" style="font-size:29px">{esc(_nm(league, s.team_code))}</span>'
+            f'<span class="t2" style="text-align:right;font-size:27px">{esc(rec)}</span>'
+            f'<span class="t2" style="text-align:right;font-size:27px">{esc(s.pct)}</span>'
+            f'<span class="t2" style="text-align:right;font-size:27px">{esc(gb)}</span>'
+            f'{l10}<span style="text-align:right;font-size:26px">{st}</span></div>')
+    return "".join(out)
+
+
+def body_leaders(leaders: dict, league: League, categories: list[str]) -> str:
+    """부문 — 2×2. **비어 있는 부문은 칸을 만들지 않는다.**"""
+    out = []
+    for cat in categories:
+        entries = leaders.get(cat) or []
+        if not entries:
+            continue
+        rows = "".join(
+            f'<div class="qr{" first" if e.rank == 1 else ""}">'
+            f'<i>{e.rank}</i><b>{esc(e.name)}</b>'
+            f'<small>{esc(_nm(league, e.team_code))}</small>'
+            f'<span>{esc(e.value)}</span></div>' for e in entries)
+        out.append(f'<div class="qb"><h4>{esc(cat)}</h4>{rows}</div>')
+    return f'<div class="quad">{"".join(out)}</div>' if out else ""
+
+
+def body_compare(rows: list[tuple], away_name: str, home_name: str,
+                 away_sub: str, home_sub: str, footer: tuple | None = None) -> str:
+    """분석 — 좌우 대비. `rows`는 (왼값, 이름, 오른값, 어느쪽이_앞서나) 이다.
+    `앞서나`는 'l' | 'r' | '' — **비기면 아무 쪽도 강조하지 않는다.**"""
+    body = [f'<div class="duo"><div><div class="n">{esc(away_name)}</div>'
+            f'<div class="p">{esc(away_sub)}</div></div><div class="x">VS</div>'
+            f'<div><div class="n r">{esc(home_name)}</div>'
+            f'<div class="p r">{esc(home_sub)}</div></div></div>']
+    for left, key, right, better in rows:
+        lc = "v r on" if better == "l" else "v r"
+        rc = "v on" if better == "r" else "v"
+        body.append(f'<div class="cmp"><div class="{lc}">{esc(left)}</div>'
+                    f'<div class="k">{esc(key)}</div>'
+                    f'<div class="{rc}">{esc(right)}</div></div>')
+    if footer:
+        body.append(f'<div class="bar"><span class="k">{esc(footer[0])}</span>'
+                    f'<span class="v">{esc(footer[1])}</span></div>')
+    return "".join(body)
+
+
+def body_index(rows: list[tuple]) -> str:
+    """나이트 — 리그별 한 줄. `rows`는 (리그라벨, 건수문구, 대표결과) 이다.
+
+    **결과를 다시 쓰지 않는다.** 상세는 리그별 결과 카드에 있다 — 여기서 되풀이하면
+    같은 내용이 하루에 두 번 나간다(옛 나이트 브리핑이 정확히 그랬다).
+    """
+    return "".join(
+        f'<div class="ix"><span class="bg">{esc(lg)}</span>'
+        f'<span class="cn">{cnt}</span>'
+        f'<span class="pk">{pick}</span></div>' for lg, cnt, pick in rows)
+
+
+# ══════════════════════════════════════════════════════════════
+# 게이트 — 카드를 실제로 그려서 잰다
+# ══════════════════════════════════════════════════════════════
+#
+# **재는 방법이 틀리면 통과는 증거가 아니다 (약점 62).**
+# 그때 `getClientRects().length`로 줄을 셌는데, 대상이 grid item이라 블록으로
+# 바뀌어 **몇 줄이든 rect가 1개**였다. 이 파일을 처음 짤 때 나도 같은 함정에
+# 그대로 다시 빠졌다 — '삼성'이 세로 두 줄로 쪼개진 채 검사를 통과했다.
+#
+# 그래서 **높이 ÷ 줄높이**로 잰다. 블록이든 인라인이든 접히면 높이가 늘어난다.
+WRAP_TOLERANCE = 1.5          # 이 줄 수를 넘으면 접힌 것으로 본다
+MIN_FONT_PX = 20              # 이보다 작으면 폰에서 못 읽는다
+
+_MEASURE_JS = """() => {
+  const out = [];
+  const card = document.querySelector('.card');
+  const cr = card.getBoundingClientRect();
+  // ① 한 줄이어야 하는 칸이 접혔나 — 높이 ÷ 줄높이로 잰다
+  document.querySelectorAll('.t1,.t2,.lead,.qr b,.duo .n,.ix .cn,.sc,.cmp .v').forEach(el => {
+    const cs = getComputedStyle(el);
+    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
+    const h  = el.getBoundingClientRect().height;
+    if (lh > 0 && h / lh > %(tol)s)
+      out.push('접힘(' + (h/lh).toFixed(1) + '줄): ' + el.textContent.trim().slice(0, 24));
+  });
+  // ② 같은 행의 칸끼리 포개졌나
+  //    **이탈 검사만으로는 못 잡는다** — 카드 안에서 겹치는 것은 밖으로 나가지
+  //    않기 때문이다. 실제로 순위 배지가 카드 머리와 같은 클래스 이름(`.top`)을
+  //    써서 padding을 상속받아 폭이 두 배가 되고 팀명 위로 42px 포개졌는데,
+  //    접힘·이탈·폰트 검사 셋 다 통과했다. 이름 충돌은 조용히 겹친다.
+  document.querySelectorAll('.li,.cmp,.ix,.qr').forEach(row => {
+    const kids = [...row.children].map(el => el.getBoundingClientRect())
+                   .filter(r => r.width > 0);
+    for (let i = 1; i < kids.length; i++)
+      if (kids[i].left < kids[i-1].right - 1) {
+        out.push('겹침(' + Math.round(kids[i-1].right - kids[i].left) + 'px): '
+                 + row.textContent.trim().slice(0, 26));
+        break;
+      }
+  });
+  // ③ 카드 밖으로 밀려났나
+  document.querySelectorAll('.card *').forEach(el => {
+    const r = el.getBoundingClientRect();
+    if (r.width > 0 && (r.right > cr.right + 1 || r.left < cr.left - 1))
+      out.push('이탈: ' + el.textContent.trim().slice(0, 20));
+  });
+  // ④ 읽을 수 없이 작은 글자
+  document.querySelectorAll('.card *').forEach(el => {
+    if (el.children.length === 0 && el.textContent.trim()) {
+      const fs = parseFloat(getComputedStyle(el).fontSize);
+      if (fs < %(min)s)
+        out.push('작은 글자 ' + fs + 'px: ' + el.textContent.trim().slice(0, 18));
+    }
+  });
+  // ⑤ 한글이 두부로 그려지나 — 폰트가 없으면 오류도 경고도 없이 □□□가 된다
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  x.font = '40px Pretendard, "Noto Sans KR", sans-serif';
+  const ko = x.measureText('가').width;
+  x.font = '40px monospace';
+  const tofu = x.measureText('\\uFFFD').width;
+  if (ko <= 0 || Math.abs(ko - tofu) < 0.5) out.push('두부 의심: 한글 폭 ' + ko);
+  return [...new Set(out)];
+}""" % {"tol": WRAP_TOLERANCE, "min": MIN_FONT_PX}
+
+
+async def audit(page, html: str) -> list[str]:
+    """카드 하나를 그려서 결함 목록을 돌려준다. 빈 목록이면 통과."""
+    await page.set_content(html)
+    await page.wait_for_timeout(180)
+    return await page.evaluate(_MEASURE_JS)
