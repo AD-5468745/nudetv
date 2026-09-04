@@ -1274,6 +1274,51 @@ check("가장 긴 이름으로 실제 렌더해도 통과",
       _no_raise(lambda: P.render_png(
           P.render_result(_long, "2026-08-29"), TMP / "longnames.png")))
 
+# ── 캐시로 버틴 것을 '갓 수집'으로 읽지 않는가 (fix46) ─────────
+#
+# 대표님 채널에 온 알림이 출발점이다:
+#   LCK: 캐시로 버팀(묵은 데이터) 2.4시간 전 스냅샷
+#   INTL_LOL: 캐시로 버팀(묵은 데이터) 1.1시간 전 스냅샷
+# 리밋에 걸려 캐시를 돌려준 어댑터도 fn()은 정상으로 끝난다. 그래서
+# ① fetch.json의 at이 '지금'으로 찍혀 24시간 발송 보류가 영원히 안 걸리고
+# ② 성공으로 찍히니 레이트리밋 백오프가 안 걸려 30분마다 다시 두드렸다.
+print("\n캐시로 버틴 수집 — 갓 수집한 것으로 읽지 않는가")
+import tick as T                                                     # noqa: E402
+
+_NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+
+
+def _age(rec, now=_NOW):
+    return T.snapshot_age_seconds("LCK", {"LCK": rec}, now)
+
+
+check("갓 수집한 스냅샷은 나이가 0에 가깝다",
+      _age({"at": T._iso(_NOW)}) < 60, str(_age({"at": T._iso(_NOW)})))
+# 캐시로 버틴 그 순간 — 데이터는 이미 2.4시간 묵어 있었다
+_c = {"at": T._iso(_NOW), "cache_age": 2.4 * 3600}
+check("캐시로 버틴 틱은 캐시 나이만큼 묵은 것으로 센다",
+      abs(_age(_c) - 2.4 * 3600) < 60, f"{_age(_c) / 3600:.2f}시간")
+# **제동에 걸린 다음 틱들** — 어댑터가 안 돌아 인스턴스 값은 0이다.
+# 기록에 안 남기면 여기서 '갓 수집'으로 되돌아간다(fix44와 같은 부류).
+check("제동에 걸린 뒤에도 진짜 나이를 안다 (캐시 나이 + 그 뒤 흐른 시간)",
+      abs(_age(_c, _NOW + timedelta(hours=3)) - 5.4 * 3600) < 60,
+      f"{_age(_c, _NOW + timedelta(hours=3)) / 3600:.2f}시간")
+# 24시간을 넘기면 그 리그는 발송을 보류해야 한다 — 그것이 이 값의 존재 이유다
+check("캐시로 오래 버티면 결국 발송 보류 문턱을 넘는다",
+      _age(_c, _NOW + timedelta(hours=22)) >= T.STALE_SNAPSHOT_BLOCK_SECONDS,
+      f"{_age(_c, _NOW + timedelta(hours=22)) / 3600:.1f}시간 "
+      f"vs 문턱 {T.STALE_SNAPSHOT_BLOCK_SECONDS / 3600:.0f}시간")
+check("캐시를 안 쓴 리그는 아무것도 달라지지 않는다",
+      _age({"at": T._iso(_NOW), "cache_age": 0}) < 60)
+check("기록이 깨져 있어도 죽지 않는다 (감시가 예외로 사라지면 안 된다)",
+      _no_raise(lambda: _age({"at": T._iso(_NOW), "cache_age": "몰라"})))
+check("레이트리밋 백오프가 30분 제동보다 길다 (계속 두드리면 쿼터가 안 풀린다)",
+      T.RETRY_AFTER_RATELIMIT_SECONDS > T.FETCH_EVERY_SECONDS,
+      f"{T.RETRY_AFTER_RATELIMIT_SECONDS}s vs {T.FETCH_EVERY_SECONDS}s")
+# 캐시로 버틴 기록은 백오프가 걸리게 'ratelimited'로 남는다
+check("캐시로 버틴 기록은 레이트리밋으로 분류된다",
+      "ratelimited" in T._RATELIMITED_BY_CACHE.lower())
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

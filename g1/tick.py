@@ -91,6 +91,10 @@ RETRY_AFTER_FAIL_SECONDS = 15 * 60
 # 그건 회복할 틈을 주지 않는 것이다. **막힌 상대는 오래 쉬게 둔다.**
 RETRY_AFTER_RATELIMIT_SECONDS = 6 * 3600
 
+# 캐시로 버틴 수집을 이 문구로 기록한다 — 위 백오프는 'ratelimited'를 보고 걸린다.
+# 문자열을 두 곳에 따로 적으면 한쪽만 고쳐 백오프가 조용히 풀린다.
+_RATELIMITED_BY_CACHE = "ratelimited — 캐시로 버팀(새 데이터를 못 받음)"
+
 # 큐에서 이만큼 앞선 것까지 이번 틱에 처리한다.
 # **틱 간격과 맞춰야 한다.** 짧으면 다음 틱까지 못 기다리는 항목이 통째로 누락되고,
 # 길면 필요 이상으로 일찍 보낸다. 정각 시계(무료 환경)면 60분이 맞다.
@@ -705,14 +709,22 @@ def _jobs() -> dict[str, tuple[League, callable]]:
 
 def snapshot_age_seconds(name: str, log: dict, now: datetime) -> float:
     """이 리그 스냅샷이 몇 초 묵었나. 판단 근거가 없으면 0(=모름)."""
-    at = (log.get(name) or {}).get("at")
+    rec = log.get(name) or {}
+    at = rec.get("at")
     age = 0.0
     if at:
         try:
             age = max(0.0, (now - datetime.fromisoformat(at)).total_seconds())
         except ValueError:
             age = 0.0
-    # 어댑터가 스스로 "캐시로 버텼다"고 말하면 그쪽이 더 클 수 있다.
+    # **캐시로 버틴 틱이면 그 데이터는 이미 그만큼 묵어 있었다 (fix46).**
+    # 기록에 남겨 두어야 **수집 제동에 걸린 틱에도** 진짜 나이를 안다 —
+    # 어댑터 인스턴스에만 두면 그 틱에만 보이고 나머지 틱은 '갓 수집'으로 읽힌다.
+    try:
+        age += max(0.0, float(rec.get("cache_age") or 0.0))
+    except (TypeError, ValueError):
+        pass
+    # 어댑터가 지금 스스로 "캐시로 버텼다"고 말하면 그쪽이 더 클 수 있다.
     return max(age, _adapter_health(name)[1])
 
 
@@ -928,6 +940,25 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,
                          "seconds": round(dt, 1)}
+            # **캐시로 버틴 것은 '수집 성공'이 아니다 (fix46).**
+            #
+            # 리밋에 걸려 캐시를 되돌려 준 어댑터도 `fn()`은 정상으로 끝난다.
+            # 그래서 두 가지가 동시에 어긋나 있었다:
+            #  ① `at`이 '지금'으로 찍혀 **스냅샷이 늘 갓 수집한 것처럼 보였다** —
+            #     묵은 데이터로 '오늘 경기'를 내지 않으려는 24시간 보류 장치가
+            #     캐시를 쓰는 유일한 어댑터(LoL 둘)에서 영원히 안 걸린다.
+            #     그 나이는 어댑터 인스턴스에만 있어서 **제동에 걸린 틱에는 0**이 된다
+            #     (fix44와 같은 부류 — 그때만 계산되는 값에 안전장치를 걸면 안 된다).
+            #  ② 성공으로 찍히니 레이트리밋 백오프(6시간)가 안 걸리고 30분마다
+            #     다시 두드렸다. **계속 두드리면 쿼터가 회복되지 않는다**(약점 26).
+            #     실제로 LCK가 2.4시간째, 국제 LoL이 1.1시간째 캐시로 버티고 있었다.
+            _cage = _adapter_health(name)[1]
+            if _cage > 0:
+                log[name]["cache_age"] = round(_cage, 1)
+                log[name]["failed_at"] = _iso(now)
+                log[name]["error"] = _RATELIMITED_BY_CACHE
+                soft.append(f"{name}: 캐시로 버팀 {_cage / 3600:.1f}시간 — "
+                            f"{RETRY_AFTER_RATELIMIT_SECONDS // 3600}시간 쉬었다 다시 본다")
             counts[name] = len(games)
             if dt > SLOW_FETCH_SECONDS:
                 errors.append(f"{name}: 수집이 {dt:.0f}초 걸렸습니다 "
