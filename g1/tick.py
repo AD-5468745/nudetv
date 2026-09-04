@@ -849,6 +849,63 @@ def _write_fetch_log(log: dict) -> None:
         pass                                # 제동 기록을 못 남겨도 발송은 계속한다
 
 
+HEALTH_LOG = ROOT / "health.json"
+
+# 오류 **원문은 남기지 않는다** — 분류만. 공개 저장소라, 런타임에 만들어지는
+# 문자열을 그대로 커밋하면 배포 전 공개 점검이 못 보는 자리가 된다.
+_ERROR_KINDS = (("ratelimited", "ratelimited"), ("캐시로 버팀", "ratelimited"),
+                ("gate", "gate"), ("GateError", "gate"), ("UnknownStatus", "gate"))
+
+
+def _error_kind(err) -> str:
+    """오류를 분류만 한다(원문 금지). 없으면 빈 문자열."""
+    if not err:
+        return ""
+    s = str(err)
+    low = s.lower()
+    for needle, kind in _ERROR_KINDS:
+        if needle.lower() in low:
+            return kind
+    return "other"
+
+
+def _write_health(now: datetime, flog: dict, adapter_notes: list,
+                  stale_notes: list, cov) -> None:
+    """`state/health.json` — 사람이 열어 보고 상태를 판단할 수 있는 최소한.
+
+    담는 것: 리그별 마지막 수집 시각·건수·캐시 나이·오류 **분류**,
+    이번 틱의 알림 줄 수, 커버리지 판정.
+    안 담는 것: 오류 원문·알림 본문·채널·토큰 — 어느 것도 여기 오지 않는다.
+    """
+    leagues: dict[str, dict] = {}
+    for name in _jobs():
+        rec = flog.get(name) or {}
+        row: dict = {"at": rec.get("at"), "count": rec.get("count")}
+        try:
+            age = float(rec.get("cache_age") or 0.0)
+        except (TypeError, ValueError):
+            age = 0.0
+        if age > 0:
+            row["cache_hours"] = round(age / 3600, 1)
+        kind = _error_kind(rec.get("error"))
+        if kind:
+            row["error_kind"] = kind
+            row["failed_at"] = rec.get("failed_at")
+        # 이 값이 발송 보류(24시간)를 결정한다 — 그래서 계산값도 함께 남긴다
+        row["stale_hours"] = round(snapshot_age_seconds(name, flog, now) / 3600, 1)
+        leagues[name] = row
+    out = {
+        "at": _iso(now),
+        "leagues": leagues,
+        "alert_lines": len(adapter_notes) + len(stale_notes),
+        "stale_blocked": [n.split(":")[0] for n in stale_notes if "발송 보류" in n],
+        "coverage_ok": bool(getattr(cov, "ok", True)),
+    }
+    ROOT.mkdir(parents=True, exist_ok=True)
+    HEALTH_LOG.write_text(json.dumps(out, ensure_ascii=False, indent=1),
+                          encoding="utf-8")
+
+
 def _fetch_log() -> dict:
     if FETCH_LOG.exists():
         try:
@@ -1789,6 +1846,22 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             snd.alert("시계 점검 필요", lines)
         except Exception:                                    # noqa: BLE001
             print("    (알림 발송도 실패)")
+
+    # **우리가 못 보는 상태는 고쳐도 확인할 수 없다 (fix47).**
+    #
+    # fix46으로 '캐시로 버팀'을 `state/fetch.json`에 기록하게 만들어 놓고,
+    # 정작 그것이 도는지 확인하려니 **읽을 방법이 없었다** — fetch.json은
+    # 캐시로만 나르고 저장소에는 없다. 알림 본문도 지문만 남기므로(그건 옳다)
+    # "조용해졌는가"조차 대표님 채널을 통해서만 알 수 있었다.
+    # 고친 사람이 자기 수정을 확인할 수 없으면 그 수정은 '했다'로 끝난다.
+    #
+    # 그래서 **판단에 필요한 것만** 저장소에 남긴다. 오류 원문은 넣지 않고
+    # 분류만 남긴다 — 공개 저장소라 런타임에 생기는 문자열을 그대로 커밋하면
+    # 배포 전 공개 점검(verify_public)이 잡을 수 없는 자리가 된다.
+    try:
+        _write_health(now, _flog, adapter_notes, stale_notes, cov)
+    except Exception:                                        # noqa: BLE001
+        pass                     # 관측이 본 작업을 죽이지 않는다
 
     # 빨간불의 뜻: **이번 틱에 실제로 일어난 사고.**
     #   · errors  — 소스 구조 변경 등, 기다려도 안 풀린다

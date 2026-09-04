@@ -248,7 +248,7 @@ jobs:
                   ok=1
                   for f in $u; do
                     case "$f" in
-                      state/alerts.json|state/burst.json)
+                      state/alerts.json|state/burst.json|state/health.json)
                         git checkout --ours -- "$f" && git add -- "$f" || ok=0 ;;
                       *) ok=0 ;;   # 대장이 여기 오면 사람이 봐야 한다
                     esac
@@ -269,7 +269,7 @@ jobs:
           }
 
           save_ledger() {
-            git add -A state/ledger.jsonl state/alerts.json state/burst.json \
+            git add -A state/ledger.jsonl state/alerts.json state/burst.json state/health.json \
                        state/.gitkeep 2>/dev/null || true
             git diff --cached --quiet && return 0
             git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 1
@@ -361,7 +361,7 @@ jobs:
           # (매 실행이 새 컨테이너라 "방금 보냈다"를 파일로만 기억할 수 있습니다).
           # burst.json도 함께 — 폭주 차단 상태가 실행 사이에 살아남아야
           # 차단이 뜻을 갖습니다(메모리에 두면 다음 실행이 또 폭주합니다).
-          git add -A state/ledger.jsonl state/alerts.json state/burst.json \
+          git add -A state/ledger.jsonl state/alerts.json state/burst.json state/health.json \
                      state/.gitkeep 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음"
@@ -392,7 +392,7 @@ jobs:
                 ok=1
                 for f in $u; do
                   case "$f" in
-                    state/alerts.json|state/burst.json)
+                    state/alerts.json|state/burst.json|state/health.json)
                       git checkout --ours -- "$f" && git add -- "$f" || ok=0 ;;
                     *) ok=0 ;;
                   esac

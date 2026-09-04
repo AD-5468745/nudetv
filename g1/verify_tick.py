@@ -1319,6 +1319,50 @@ check("레이트리밋 백오프가 30분 제동보다 길다 (계속 두드리�
 check("캐시로 버틴 기록은 레이트리밋으로 분류된다",
       "ratelimited" in T._RATELIMITED_BY_CACHE.lower())
 
+# ── state/health.json — 우리가 상태를 볼 수 있는가 (fix47) ──────
+#
+# fix46으로 '캐시로 버팀'을 fetch.json에 기록하게 만들어 놓고, 정작 그것이
+# 도는지 확인하려니 **읽을 방법이 없었다** — fetch.json은 캐시로만 나르고
+# 저장소에 없다. 고친 사람이 자기 수정을 확인할 수 없으면 그 수정은 '했다'로 끝난다.
+# **공개 저장소이므로 오류 원문은 절대 넣지 않는다 — 분류만.**
+print("\nstate/health.json — 상태를 볼 수 있는가 (원문은 새지 않는가)")
+
+_HNOW = datetime(2026, 9, 4, 14, 30, tzinfo=timezone.utc)
+_hflog = {
+    "LCK": {"at": T._iso(_HNOW), "count": 53, "cache_age": 3.5 * 3600,
+            "error": T._RATELIMITED_BY_CACHE, "failed_at": T._iso(_HNOW)},
+    "KBO": {"at": T._iso(_HNOW), "count": 348, "error": None},
+    "MLB": {"at": T._iso(_HNOW), "count": 97,
+            "error": "GateError: 토큰 1234567890:AAHsecretvalue 가 섞인 오류 원문"},
+}
+
+
+class _Cov:
+    ok = True
+
+
+_no_raise(lambda: T._write_health(_HNOW, _hflog, ["LCK: 캐시로 버팀 3.5시간"],
+                                  ["LCK: 스냅샷이 25.0시간 묵었습니다 — 이번 틱 발송 보류"],
+                                  _Cov()))
+_htxt = T.HEALTH_LOG.read_text(encoding="utf-8")
+_h = json.loads(_htxt)
+check("캐시로 버틴 리그의 나이가 보인다", _h["leagues"]["LCK"].get("cache_hours") == 3.5,
+      str(_h["leagues"]["LCK"]))
+check("발송 보류가 걸린 리그가 보인다", _h["stale_blocked"] == ["LCK"], str(_h["stale_blocked"]))
+check("레이트리밋인지 게이트인지 분류가 보인다",
+      _h["leagues"]["LCK"]["error_kind"] == "ratelimited"
+      and _h["leagues"]["MLB"]["error_kind"] == "gate", str(_h["leagues"]))
+check("정상 리그에는 오류 표시가 없다", "error_kind" not in _h["leagues"]["KBO"])
+# ★ 공개 저장소에 커밋되는 파일이다 — 원문이 새면 배포 전 점검이 못 잡는 자리가 된다
+check("★ 오류 원문이 새지 않는다 (분류만 남긴다)",
+      "secret" not in _htxt and "1234567890" not in _htxt and "토큰" not in _htxt,
+      _htxt[:120])
+check("알림 본문도 안 남는다 (줄 수만)",
+      "캐시로 버팀" not in _htxt and isinstance(_h["alert_lines"], int), _htxt[:120])
+check("관측이 본 작업을 죽이지 않는다 (기록이 깨져도)",
+      _no_raise(lambda: T._write_health(_HNOW, {"LCK": {"cache_age": "몰라"}},
+                                        [], [], _Cov())))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
