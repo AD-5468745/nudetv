@@ -2302,8 +2302,8 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
         "PEPPER": "페퍼저축",
     },
     League.NPB: {
-        "YOG": "요미우리", "DEN": "DeNA", "HAN": "한신", "CHU": "주니치",
-        "YAK": "야쿠르트", "HIR": "히로시마", "SOF": "소프트뱅크", "NIP": "니혼햄",
+        "YOG": "요미우리", "DEN": "요코하마", "HAN": "한신", "CHU": "주니치",
+        "YAK": "야쿠르트", "HIR": "히로시마", "SOF": "소프트뱅크", "NIP": "닛폰햄",
         "LOT": "지바롯데", "RAK": "라쿠텐", "ORI": "오릭스", "SEI": "세이부",
         "CEN": "센트럴", "PAC": "퍼시픽",
     },
@@ -2321,8 +2321,12 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
         "BOS": "보스턴", "NYY": "뉴욕양키스", "TB": "탬파베이", "TOR": "토론토",
         "BAL": "볼티모어",
         "CLE": "클리블랜드", "MIN": "미네소타", "DET": "디트로이트", "KC": "캔자스시티",
-        # v1.11i: '시카고W'는 한글+로마자 한 글자 혼종이라 오타로 읽힌다.
-        # 시카고컵스와 구별하면서 실제로 쓰는 약칭은 '화이트삭스'다.
+        # **여기 하나만 네이버를 안 따른다 (대표님 확인 2026-09-04).**
+        # 네이버는 일정·통계 화면 둘 다 '시카고W'로 쓴다. 그런데 그건 좁은 칸에
+        # 맞춘 축약이지 사람이 부르는 이름이 아니다 — 한글+로마자 한 글자 혼종이라
+        # 오타로 읽힌다. 카드에는 자리가 있다.
+        # **원칙: 표기 기준은 네이버지만, 소스가 자리 때문에 줄인 것은 따르지 않는다.**
+        # (되돌리려면 이 줄만 고치면 된다. 그때는 이 주석도 함께 지울 것.)
         "CWS": "화이트삭스",
         "HOU": "휴스턴", "SEA": "시애틀", "TEX": "텍사스", "LAA": "LA에인절스",
         "ATH": "애슬레틱스",
@@ -2835,6 +2839,15 @@ class Standing:
     streak_len: int = 0
     home: Optional[WLD] = None
     away: Optional[WLD] = None
+    # **순위가 매겨지는 단위 (v1.12).**
+    #
+    # KBO는 리그 하나라 전체가 한 줄로 선다(`None`). 그런데 MLB는 **지구 6개**,
+    # NPB는 **센트럴·퍼시픽 2개**가 각자 1위를 갖는다. 그것을 한 줄로 세우면
+    # 1위가 여섯 명이 되고 승차가 뒤죽박죽이 된다 — 카드가 거짓말을 하게 된다.
+    # 그래서 소속 단위를 값으로 들고 다닌다. 순위·승차의 뜻은 **이 단위 안에서만** 참이다.
+    # (계약 밖 부가속성으로 두면 게이트가 안 본다 — 그렇게 뒀다가 NPB 리그 구분이
+    #  검증을 통과한 채로 어긋난 적이 있다.)
+    group: Optional[str] = None
 
     @property
     def remaining(self) -> Optional[int]:
@@ -2984,20 +2997,28 @@ def assert_recordbook(rb: RecordBook, *, require_h2h: bool = True,
     if len(set(codes)) != len(codes):
         raise GateError(f"{rb.league.value}: 순위표에 중복 팀")
 
-    ranks = sorted(s.rank for s in rb.standings)
-    if ranks != list(range(1, len(ranks) + 1)):
-        raise GateError(f"{rb.league.value}: 순위 불연속 {ranks}")
-
-    prev_gb = None
-    for s in sorted(rb.standings, key=lambda x: x.rank):
-        s.validate()
-        try:
-            gb = float(s.games_behind)
-        except ValueError:
-            raise GateError(f"{s.team_code}: 게임차 파싱 불가 {s.games_behind!r}")
-        if prev_gb is not None and gb < prev_gb - 1e-9:
-            raise GateError(f"{s.team_code}: 게임차 역전 {prev_gb} → {gb}")
-        prev_gb = gb
+    # **순위와 승차는 '그 단위 안에서만' 참이다 (v1.12).**
+    # KBO는 단위가 하나라 예전과 똑같이 검사된다(`group`이 전부 None → 한 덩어리).
+    # MLB는 지구 6개, NPB는 센트럴·퍼시픽 2개라 1위가 여럿이다 — 전체를 한 줄로
+    # 세워 검사하면 멀쩡한 순위표가 '순위 불연속'으로 막힌다.
+    groups: dict = {}
+    for s in rb.standings:
+        groups.setdefault(s.group, []).append(s)
+    for gname, members in groups.items():
+        where = f"{rb.league.value}" + (f"/{gname}" if gname else "")
+        ranks = sorted(s.rank for s in members)
+        if ranks != list(range(1, len(ranks) + 1)):
+            raise GateError(f"{where}: 순위 불연속 {ranks}")
+        prev_gb = None
+        for s in sorted(members, key=lambda x: x.rank):
+            s.validate()
+            try:
+                gb = float(s.games_behind)
+            except ValueError:
+                raise GateError(f"{s.team_code}: 게임차 파싱 불가 {s.games_behind!r}")
+            if prev_gb is not None and gb < prev_gb - 1e-9:
+                raise GateError(f"{where} {s.team_code}: 게임차 역전 {prev_gb} → {gb}")
+            prev_gb = gb
 
     if require_h2h:
         if not rb.h2h:
