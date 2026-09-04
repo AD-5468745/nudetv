@@ -472,7 +472,7 @@ class NpbAdapter(NoticeMixin):
             filled += f
             conflict += c
 
-        self.note_text("결과 보강",
+        self.note_text_info("결과 보강",
                        f"결과 대기 {sum(pending.values())}건 · 조회 {len(days)}일 · "
                        f"보강 {filled}건 · 소스 불일치로 결과 보류 {conflict}건 "
                        f"(1차 npb.jp 일정 / 2차 npb.jp 속보 + {_NAVER_SOURCE}"

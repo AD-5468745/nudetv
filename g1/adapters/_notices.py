@@ -74,6 +74,7 @@ class NoticeMixin:
         self._notice_counts.clear()
         self._notice_samples.clear()
         self._notice_texts.clear()
+        self._info_labels.clear()
         self.cache_age_seconds = 0.0
 
     def note(self, label: str, sample: Any = None, *, count: int = 1) -> None:
@@ -89,6 +90,40 @@ class NoticeMixin:
         """건수가 아니라 상태를 적는다(예: '48.2시간 묵은 캐시로 버팀')."""
         if text:
             self._notice_texts[label] = str(text)[:200]
+
+    # ── 정보와 경고를 가른다 (v1.11p) ─────────────────────────
+    #
+    # **경보가 소음이 되면 감시가 없는 것과 같다** — 27번 약점을 다시 앓았다.
+    # 실운영 알림 로그(대표님 제공)를 보니 매 틱 이런 줄이 올라오고 있었다:
+    #   "KBO: 시리즈별 수집 정규시즌 238 · 와일드카드 0 · 플레이오프 0"
+    #   "VLEAGUE_M: 선택한 시즌 023 (126경기)"
+    #   "LCK: 대진 미확정(TBD)이라 건너뜀 3건"
+    # 셋 다 **정상 상태**다(9월엔 포스트시즌이 없고, 시즌 코드는 정보이며,
+    # 플레이오프 대진 미정은 당연하다). 진짜 사고가 이 사이에 묻힌다.
+    #
+    # 그래서 등급을 둔다. **기본은 경고**다 — 새 어댑터가 등급을 안 정하면
+    # 시끄러운 쪽으로 기울게 해서, 조용히 사라지는 일이 없게 한다.
+    def note_info(self, label: str, sample: "Any" = None, *, count: int = 1) -> None:
+        """**정상 상태**를 적는다. 로그에는 남고 알림에는 안 실린다."""
+        self._info_labels.add(label)
+        self.note(label, sample, count=count)
+
+    def note_text_info(self, label: str, text: str) -> None:
+        """정상 상태 설명. 로그에는 남고 알림에는 안 실린다."""
+        self._info_labels.add(label)
+        self.note_text(label, text)
+
+    @property
+    def _info_labels(self) -> set:
+        d = self.__dict__.get("_il")
+        if d is None:
+            d = self.__dict__["_il"] = set()
+        return d
+
+    def is_info(self, label: str) -> bool:
+        """이 라벨이 '정상 상태'인가. 예시 항목(`… 예시`)도 같이 본다."""
+        base = label[:-3].rstrip() if label.endswith(" 예시") else label
+        return base in self._info_labels
 
     def note_cache_age(self, age_seconds: float) -> None:
         """캐시로 버틴 사실은 속성과 보고서 **양쪽**에 남긴다.
@@ -119,6 +154,11 @@ class NoticeMixin:
                 out[f"{label} 예시"] = " / ".join(samples[:2])
         out.update(self._notice_texts)
         return out
+
+    def alert_report(self) -> dict:
+        """**알림에 실을 것만.** 정상 상태(note_info)는 뺀다 (v1.11p)."""
+        return {k: v for k, v in self.skipped_report().items()
+                if not self.is_info(k)}
 
     @property
     def notices(self) -> list[str]:

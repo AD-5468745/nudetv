@@ -277,6 +277,95 @@ if _fb:
     check("표본이 3경기면 제목도 5경기라 하지 않는다",
           "최근 5경기" not in _ft, _ft[:120])
 
+# ─────────────────────────────────────────────────────────────
+# 11. 경보가 소음이 되지 않는가 (v1.11p)
+# ─────────────────────────────────────────────────────────────
+# 대표님이 보내주신 실운영 알림 로그에 이런 줄이 **매 틱** 올라왔다:
+#   "KBO: 시리즈별 수집 정규시즌 238 · 와일드카드 0 · 플레이오프 0"
+#   "VLEAGUE_M: 선택한 시즌 023 (126경기)"
+#   "LCK: 대진 미확정(TBD)이라 건너뜀 3건"
+# 셋 다 정상 상태다. 진짜 사고가 이 사이에 묻힌다(27번 약점의 재발).
+print("\n11. 경보가 소음이 되지 않는가")
+
+from adapters._notices import NoticeMixin                     # noqa: E402
+
+
+class _Probe(NoticeMixin):
+    pass
+
+
+_pr = _Probe()
+_pr.note_info("선택한 시즌", "023 (126경기)")
+_pr.note_info("대진 미확정(TBD)이라 건너뜀", "T1 vs TBD")
+_pr.note("미등록 팀·상태로 건너뜀", "미지 상태값 'Delayed'")
+_pr.note_cache_age(48 * 3600)
+
+_all = _pr.skipped_report()
+_alert = _pr.alert_report()
+check("정상 상태도 로그(전체 보고)에는 남는다",
+      "선택한 시즌" in _all and "대진 미확정(TBD)이라 건너뜀" in _all, str(_all))
+check("정상 상태는 알림에 안 실린다",
+      "선택한 시즌" not in _alert
+      and "대진 미확정(TBD)이라 건너뜀" not in _alert, str(_alert))
+check("정상 상태의 '예시' 항목도 함께 빠진다",
+      not any(k.endswith("예시") and "선택한 시즌" in k for k in _alert), str(_alert))
+check("진짜 경고는 알림에 남는다", "미등록 팀·상태로 건너뜀" in _alert, str(_alert))
+check("묵은 캐시는 정상이 아니다 — 알림에 남는다",
+      any("캐시" in k for k in _alert), str(_alert))
+check("등급을 안 정하면 경고 쪽이다 (조용히 사라지지 않게)",
+      "미등록 팀·상태로 건너뜀" in _alert)
+_pr.reset_notices()
+check("수집을 새로 시작하면 등급도 초기화된다", _pr.alert_report() == {})
+
+# 실제 어댑터가 정상 상태를 정보로 표시하고 있는가 (소스 확인)
+_src_pairs = [
+    ("g1/adapters/kbo.py", "시리즈별 수집"),
+    ("g1/adapters/kovo.py", "선택한 시즌"),
+    ("g1/adapters/lck.py", "대진 미확정(TBD)이라 건너뜀"),
+    ("g1/adapters/mlb.py", "발행 대상 아닌 경기 종류로 건너뜀"),
+]
+_root = pathlib.Path(__file__).resolve().parents[1]
+for _f, _label in _src_pairs:
+    _t = (_root / _f).read_text(encoding="utf-8")
+    _line = next((ln for ln in _t.splitlines() if _label in ln and "note" in ln), "")
+    check(f"{_f.split('/')[-1]}: '{_label}'은 정보로 표시한다",
+          "note_info" in _line or "note_text_info" in _line, _line.strip()[:90])
+
+# ─────────────────────────────────────────────────────────────
+# 12. 처음 보는 상태값에 경기를 잃지 않는가 (v1.11p)
+# ─────────────────────────────────────────────────────────────
+# 실운영에서 'Delayed Start' · 'Delayed' · 'Player challenge'가 사흘에 걸쳐 떴고
+# 그때마다 그 경기가 통째로 빠졌다. detailedState는 MLB가 계속 늘리는 값이다.
+print("\n12. 처음 보는 상태값 — 경기를 잃지 않는가")
+from adapters.mlb import MlbAdapter                           # noqa: E402
+
+_ad = MlbAdapter.__new__(MlbAdapter)
+
+
+def _st(ab, ds):
+    """**검사가 예외로 죽으면 통과도 실패도 아니다.** 안전하게 감싼다 —
+    폴백을 없애는 변이에서 이 파일이 통째로 죽어 결과 줄조차 안 찍혔다."""
+    try:
+        return _ad._status_of({"abstractGameState": ab}, ds)
+    except Exception as e:                                   # noqa: BLE001
+        return e
+
+
+for _ds, _ab, _want in [("Delayed Start", "Preview", Status.SCHEDULED),
+                        ("Delayed", "Live", Status.LIVE),
+                        ("Player challenge", "Live", Status.LIVE)]:
+    _got = _st(_ab, _ds)
+    check(f"'{_ds}'를 잃지 않는다 → {_want.value}", _got is _want,
+          f"{type(_got).__name__ if isinstance(_got, Exception) else _got}")
+check("처음 보는 값은 조용히 넘기지 않는다 (알림에 남는다)",
+      any("처음 보는 상태값" in k for k in _ad.skipped_report()),
+      str(_ad.skipped_report()))
+# Final 계열은 폴백하지 않는다 — 연기 경기도 abstract가 Final이라 위험하다
+check("Final 계열은 지어내지 않고 건너뛴다 (연기도 abstract가 Final이다)",
+      isinstance(_st("Final", "Some New Final-ish State"), Exception))
+check("아는 값은 그대로 정확히 (연기가 종료로 바뀌지 않는다)",
+      _st("Final", "Postponed") is Status.POSTPONED)
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:

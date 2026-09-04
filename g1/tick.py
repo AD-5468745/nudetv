@@ -461,7 +461,10 @@ def fetch_months(today: datetime) -> tuple[int, list[str]]:
 # 어댑터 담당자가 이 값들을 **공통 속성 하나**로 통일하는 중이라,
 # 통일된 이름을 먼저 찾고 없으면 지금 있는 이름들을 그대로 읽는다.
 # 통일이 끝나면 아래 `_HEALTH_UNIFIED`만 남기고 `_HEALTH_LEGACY`를 지우면 된다.
-_HEALTH_UNIFIED = ("health", "adapter_health", "collection_health",
+# **알림에 실을 것만 먼저 본다 (v1.11p).** `alert_report()`는 정상 상태
+# (`note_info`)를 뺀 것이다. 매 틱 "포스트시즌 0경기"·"선택한 시즌 023"이
+# 경고로 올라와 진짜 사고가 그 사이에 묻혔다.
+_HEALTH_UNIFIED = ("alert_report", "health", "adapter_health", "collection_health",
                    "skipped_report", "quality", "dropped")
 _HEALTH_LEGACY = ("skipped_unknown", "skipped_types", "unresolved",
                   "skipped_categories", "skipped_placeholder", "unknown_notes")
@@ -1702,8 +1705,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 처리 대상이었는데 그 종류가 한 건도 못 만들어졌다면 데이터가 없는 것이
     # 아니라 코드가 막힌 것일 수 있다 — 나이트 브리핑이 정확히 그랬다.
     # (그 종류의 처리 대상이 애초에 없었으면 여기 오지 않는다.)
+    # **기록 제동에 걸린 것은 정상이다 (v1.11p).** 순위표·리더보드·분석은
+    # 기록이 있어야 만들어지는데, 소스를 아끼려고 30분에 한 번만 긁는다.
+    # 그 사이 틱은 기록이 없어 '만들 내용 없음'이 되는 것이 **설계대로**다.
+    # 그런데 이 알림이 그것까지 올려 매 틱 울렸다 — 경보가 소음이 됐다.
+    # 기록이 없는 리그의 기록 기반 콘텐츠는 세지 않는다.
+    _record_based = {ContentType.STANDINGS.value, ContentType.LEADERBOARD.value,
+                     ContentType.ANALYSIS.value}
     for _ct, _n in sorted(empty_kinds.items()):
-        _due_n = sum(1 for i in due if i.content_type.value == _ct)
+        _due = [i for i in due if i.content_type.value == _ct]
+        if _ct in _record_based:
+            _due = [i for i in _due
+                    if i.league and i.league.value in records]
+        _due_n = len(_due)
         if _due_n and _n >= _due_n:
             lines.append(f"⚠️ [{_ct}] 처리 대상 {_due_n}건이 전부 "
                          f"'만들 내용 없음'이었습니다 — 데이터가 없는 것인지 "

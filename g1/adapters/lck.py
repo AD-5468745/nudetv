@@ -319,7 +319,8 @@ class LckAdapter(NoticeMixin):
         # 그대로 두면 'TBD 대 TBD' 카드가 나간다 — 실제로 2026 Worlds 대진에 있다.
         if t1.upper() in PLACEHOLDER_TEAMS or t2.upper() in PLACEHOLDER_TEAMS:
             self.skipped_placeholder = getattr(self, "skipped_placeholder", 0) + 1
-            self.note("대진 미확정(TBD)이라 건너뜀",
+            # 플레이오프는 앞 경기가 끝나야 대진이 정해진다 — 정상이다.
+            self.note_info("대진 미확정(TBD)이라 건너뜀",
                       f"{dt[:10]} {r.get('Name')} {t1 or '?'} vs {t2 or '?'}")
             return None                       # 대진 미발행(토너먼트 등록만 된 상태)
 

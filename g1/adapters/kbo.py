@@ -324,7 +324,7 @@ class KboAdapter(NoticeMixin):
         # (10월에 '정규시즌 0건 · 포스트시즌 0건'이면 그 자체가 사고 신호다.)
         picked = " · ".join(f"{SERIES_NAMES.get(sr, sr)} {per_series.get(sr, 0)}"
                             for sr in SERIES_IDS)
-        self.note_text("시리즈별 수집", picked)
+        self.note_text_info("시리즈별 수집", picked)   # 9월엔 포스트시즌 0이 정상
         if self.unknown_notes:
             for note in sorted(self.unknown_notes):
                 self.note("처음 보는 취소 사유", note)

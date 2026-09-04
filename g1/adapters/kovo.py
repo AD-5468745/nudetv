@@ -262,14 +262,15 @@ class KovoAdapter(NoticeMixin):
         for r in picked:
             # 대진 미확정 자리표시자는 팀이 아니다(위 `_PLACEHOLDER_TEAM` 주석).
             if _is_placeholder(r.get("hname")) or _is_placeholder(r.get("aname")):
-                self.note("대진 미확정·가상팀이라 건너뜀",
+                # 컵대회 자리표시자('A조 1위')·올스타 가상팀은 늘 있다 — 정상이다.
+                self.note_info("대진 미확정·가상팀이라 건너뜀",
                           f"{r.get('gdate')} {r.get('hname')} - {r.get('aname')}")
                 continue
             out.append(self._parse(r))
         if not out:
             raise GateError(f"KOVO({self.league.value}): 시즌 {season_code} "
                             f"파싱 후 0건 — 0건은 항상 의심")
-        self.note_text("선택한 시즌", f"{season_code} ({len(out)}경기)")
+        self.note_text_info("선택한 시즌", f"{season_code} ({len(out)}경기)")
         return out
 
     def _parse(self, r: dict) -> Game:

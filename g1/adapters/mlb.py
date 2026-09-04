@@ -119,7 +119,7 @@ class MlbAdapter(NoticeMixin):
                     raw.append(g)
                     continue
                 self.skipped_types += 1
-                self.note("발행 대상 아닌 경기 종류로 건너뜀", f"gameType={gt}")
+                self.note_info("발행 대상 아닌 경기 종류로 건너뜀", f"gameType={gt}")
                 if gt not in _KNOWN_GAME_TYPES:
                     # 도메인에 없는 코드다. 막지는 않되(경기 하나 때문에 리그를
                     # 죽이지 않는다) 조용히 넘기지도 않는다.
@@ -200,10 +200,44 @@ class MlbAdapter(NoticeMixin):
                 f"/{(drop.get('status') or {}).get('detailedState')}")
         return list(by_pk.values())
 
+    # ── 상태 판정 (v1.11p) ────────────────────────────────────
+    #
+    # **`detailedState`는 MLB가 계속 늘리는 값이다.** 실운영 알림에 사흘 동안
+    # `'Delayed Start'` · `'Delayed'` · `'Player challenge'` 세 개가 새로 떴고,
+    # 그때마다 **그 경기가 통째로 빠졌다**(미등록이면 건너뛰기 때문).
+    # 표에 다 적는 것은 불가능하다 — 내일 또 새 값이 온다.
+    #
+    # 그런데 MLB API는 `abstractGameState`라는 **셋뿐인 상위 분류**를 함께 준다:
+    # `Preview`(아직 안 열림) · `Live`(진행 중) · `Final`(끝남).
+    # 실측(2026 시즌 넉 달 1,272경기): Final 1,241 · Scheduled 16 ·
+    # Postponed 13 · Completed Early 2 — 그리고 **연기 경기의 abstract는 `Final`**이다.
+    #
+    # 그래서 폴백을 **안전한 방향으로만** 연다:
+    #   · Preview → SCHEDULED  : 아직 안 열린 것이 확실하다. 결과 카드에 안 실린다.
+    #   · Live    → LIVE       : 진행 중이면 점수를 결과로 쓰지 않는다.
+    #   · Final   → **폴백하지 않는다.** 연기(Postponed)도 abstract가 Final이라,
+    #                떨어뜨리면 연기 경기가 '점수 없는 종료'로 결과 카드에 실린다.
+    #                이건 지금처럼 건너뛰고 사람이 보게 한다.
+    # `'Delayed Start'`(Preview) · `'Delayed'`·`'Player challenge'`(Live)가 이 폭에 든다.
+    _ABSTRACT_FALLBACK = {"preview": Status.SCHEDULED, "live": Status.LIVE}
+
+    def _status_of(self, st: dict, detailed: str) -> Status:
+        try:
+            return parse_status(detailed, League.MLB)
+        except UnknownStatus:
+            key = (st.get("abstractGameState") or "").strip().lower()
+            fb = self._ABSTRACT_FALLBACK.get(key)
+            if fb is None:
+                raise            # Final 계열은 지어내지 않는다 — 건너뛰고 알린다
+            # 조용히 넘기지 않는다. 표에 넣을지는 사람이 정한다.
+            self.note("처음 보는 상태값 — 상위 분류로 처리",
+                      f"{detailed!r} → {key} → {fb.value}")
+            return fb
+
     def _parse(self, g: dict) -> Game:
         st = g.get("status", {})
         detailed = (st.get("detailedState") or "").strip()
-        status = parse_status(detailed, League.MLB)      # 미등록 상태값이면 UnknownStatus
+        status = self._status_of(st, detailed)
 
         home_n, away_n = g["teams"]["home"], g["teams"]["away"]
         hs, as_ = home_n.get("score"), away_n.get("score")

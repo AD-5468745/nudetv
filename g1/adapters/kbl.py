@@ -120,7 +120,7 @@ class KblAdapter(NoticeMixin):
                 continue
             cat = (r.get("seasonCategory") or "").strip()
             if cat not in KBL_SEASON_CATEGORY_ALLOW:
-                self.note("발행 대상 아닌 시즌 구분이라 제외",
+                self.note_info("발행 대상 아닌 시즌 구분이라 제외",
                           f"{r.get('gameDate')} seasonCategory={cat!r}")
                 continue                       # 오픈매치 등은 여기서 걸러진다
             # **EASL·올스타는 발행 대상이 아니다 (v1.11h).**
