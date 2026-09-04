@@ -944,13 +944,26 @@ check("큐에 오르는 7종 전부가 실측 최악 간격을 덮는다", not _
 check("결과 카드는 마감보다 일찍 나가지 않는다 (앞창 0)",
       lookahead_for(ContentType.LEAGUE_RESULT, 90 * 60) == 0,
       str(lookahead_for(ContentType.LEAGUE_RESULT, 90 * 60)))
-check("순위 카드도 마찬가지",
-      lookahead_for(ContentType.STANDINGS, 90 * 60) == 0)
+# **순위표는 0이 아니라 '오프셋만큼'이다 (v1.11n에서 바뀜).**
+# 전에는 결과 카드와 똑같이 0으로 잠가 두었는데, 순위표의 예약은
+# `결과 카드 예약 + 10분`이고 결과 카드 예약은 그날이 끝났으면 '지금'이다.
+# 그래서 순위표는 매 틱 '지금+10분'으로 다시 계산되며 앞으로 도망갔고,
+# 앞창 0으로는 영원히 따라잡지 못해 **한 장도 못 나갔다**(실측 2026-09-04).
+# 잠금의 원래 목적(기본 앞창을 넓혀도 일찍 열리지 않는다)은 그대로 지킨다 —
+# 값이 오프셋에 고정되어 기본 앞창을 따라 늘어나지 않는다.
+check("순위 카드 앞창은 '결과 뒤 오프셋'에 고정된다",
+      lookahead_for(ContentType.STANDINGS, 90 * 60) == C.STANDINGS_AFTER_RESULT_SECONDS,
+      str(lookahead_for(ContentType.STANDINGS, 90 * 60)))
+check("순위 카드 앞창이 오프셋보다 좁으면 영원히 안 나간다 — 그 아래로는 못 내려간다",
+      lookahead_for(ContentType.STANDINGS, 0) >= C.STANDINGS_AFTER_RESULT_SECONDS)
 # 기본 앞창을 아무리 넓혀도 잠긴 것은 열리지 않아야 한다
 check("기본 앞창을 크게 줘도 잠금이 이긴다",
       all(lookahead_for(ct, 999 * 60) == 0
           for ct in (ContentType.MORNING, ContentType.LEAGUE_RESULT,
-                     ContentType.STANDINGS, ContentType.NIGHT_BRIEF)))
+                     ContentType.NIGHT_BRIEF)))
+check("기본 앞창을 크게 줘도 순위 카드는 오프셋에서 안 늘어난다",
+      lookahead_for(ContentType.STANDINGS, 999 * 60)
+      == C.STANDINGS_AFTER_RESULT_SECONDS)
 
 # 사고 당시 설정을 되돌려 게이트가 그것을 잡는지 본다
 _saved = C.GRACE_SECONDS[ContentType.MORNING]

@@ -761,6 +761,57 @@ check("게이트가 실제로 잡는다 — 일부러 접힌 bn을 넣어본다"
           [{"t": "요미우리", "cls": "bn", "lines": 2, "fs": 42}])))
 
 
+# ─────────────────────────────────────────────────────────────
+# (14) 순위표가 실제로 처리 대상이 되는가 (v1.11n)
+# ─────────────────────────────────────────────────────────────
+# 순위표 예약 = 결과 카드 예약 + 10분인데, 결과 카드 예약은 그날이 다 끝났으면
+# **'지금'**이다. 그래서 순위표는 매 틱 '지금+10분'으로 다시 계산되며 앞으로
+# 도망간다. 앞창이 0이면 영원히 따라잡지 못한다 — 실제로 한 장도 못 나갔고,
+# 큐에는 매 틱 `+10.0분`으로 얌전히 들어 있어 오류도 경고도 없었다.
+from contract import ContentType  # noqa: E402
+print("\n14. 순위표가 처리 대상이 되는가")
+_lb = C.lookahead_for(ContentType.STANDINGS, 3600)
+check("순위표 앞창이 '결과 뒤 오프셋' 이상이다",
+      _lb >= P.STANDINGS_AFTER_RESULT_SECONDS,
+      f"앞창 {_lb}초 < 오프셋 {P.STANDINGS_AFTER_RESULT_SECONDS}초")
+
+# 그날 경기가 전부 끝난 순간을 만들어, 그 틱에서 실제로 due가 되는지 본다.
+_day = "2026-09-03"
+_end = datetime(2026, 9, 3, 21, 30, tzinfo=KST).astimezone(timezone.utc)
+_gs = [mk(League.KBO, _day, 18, 30, tz="Asia/Seoul", h="LG", a="OB",
+          status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS)),
+       mk(League.KBO, _day, 17, 0, tz="Asia/Seoul", h="SS", a="KT",
+          status=Status.FINAL, score=Score(2, 4, ScoreUnit.RUNS))]
+_now = _end + timedelta(minutes=30)          # 마지막 경기가 끝나고 30분 뒤
+_q = P.build_queue(_gs, _now, "chtest", floor_hours=0)
+_st = [i for i in _q if i.content_type is ContentType.STANDINGS]
+check("경기가 다 끝난 뒤 순위표가 큐에 오른다", len(_st) == 1, f"{len(_st)}건")
+if _st:
+    _due = _st[0].scheduled_utc <= _now + timedelta(
+        seconds=C.lookahead_for(ContentType.STANDINGS, 3600))
+    check("그 틱에서 실제로 처리 대상(due)이 된다", _due,
+          f"예약 {(_st[0].scheduled_utc - _now).total_seconds() / 60:+.1f}분 · 앞창 {_lb // 60}분")
+    # 5분 뒤 틱에서도 계속 due여야 한다(도망가지 않는지)
+    _now2 = _now + timedelta(minutes=5)
+    _q2 = P.build_queue(_gs, _now2, "chtest", floor_hours=0)
+    _st2 = [i for i in _q2 if i.content_type is ContentType.STANDINGS]
+    check("다음 틱에서도 계속 처리 대상이다 (앞으로 도망가지 않는다)",
+          bool(_st2) and _st2[0].scheduled_utc <= _now2 + timedelta(
+              seconds=C.lookahead_for(ContentType.STANDINGS, 3600)))
+
+# 아직 안 끝난 날에는 일찍 열리지 않는다 — 앞창을 연 대가가 없어야 한다.
+_gs_open = [mk(League.KBO, _day, 18, 30, tz="Asia/Seoul", h="LG", a="OB",
+               status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS)),
+            mk(League.KBO, _day, 20, 0, tz="Asia/Seoul", h="SS", a="KT")]
+_now3 = datetime(2026, 9, 3, 19, 0, tzinfo=KST).astimezone(timezone.utc)
+_q3 = P.build_queue(_gs_open, _now3, "chtest", floor_hours=0)
+_st3 = [i for i in _q3 if i.content_type is ContentType.STANDINGS]
+check("아직 안 끝난 날은 순위표가 일찍 열리지 않는다",
+      not _st3 or _st3[0].scheduled_utc > _now3 + timedelta(
+          seconds=C.lookahead_for(ContentType.STANDINGS, 3600)),
+      "경기가 남았는데 순위표가 처리 대상이 됐다")
+
+
 if __name__ == "__main__":
     print()
     print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

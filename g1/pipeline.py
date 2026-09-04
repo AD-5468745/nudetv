@@ -281,7 +281,9 @@ RECORD_SOURCE_LEAGUES = frozenset({League.KBO, League.NPB})
 # 순위표(PACER_PRIORITY 6)와 결과 카드(6)가 같은 값이라 예약 시각이 순서를 정한다.
 # 0으로 두면 정렬이 불안정해져 순위표가 결과보다 먼저 나갈 수 있다 — 그날 결과를
 # 반영한 순위표가 결과 카드보다 먼저 도착하면 읽는 순서가 뒤집힌다.
-STANDINGS_AFTER_RESULT_SECONDS = 600      # 10분
+# **계약에서 가져온다 (v1.11n).** 여기 따로 적어 두었더니 계약의 앞창과 짝이
+# 어긋나 순위표가 영원히 안 나갔다 — 두 값은 반드시 같은 곳에서 나와야 한다.
+from contract import STANDINGS_AFTER_RESULT_SECONDS      # noqa: E402,F401
 
 LEADERBOARD_HOUR_KST = 12                 # 점심 리그 리더보드
 NIGHT_BRIEF_HOUR_KST = 23                 # 하루를 닫는 카드

@@ -921,6 +921,12 @@ def cancel_reason_text(raw: Optional[str], status: Optional["Status"] = None,
     return "취소"
 
 
+# 순위표를 결과 카드보다 얼마나 뒤에 둘지. **앞창과 짝을 이루는 값이다** —
+# 아래 LOOKAHEAD_SECONDS_BY_CONTENT[STANDINGS]가 이 값보다 작으면 순위표는
+# 영원히 발송되지 않는다(v1.11n에서 실제로 그랬다. 아래 주석 참조).
+STANDINGS_AFTER_RESULT_SECONDS = 600      # 10분
+
+
 LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 일찍 보내도 된다 — 문구가 "N시간 M분 뒤 시작"으로 그때그때 계산된다.
     # v1.11i: 2h → 2.5h. 뒷창은 (리드타임-5분)에 묶여 있어 늘릴 수 없다
@@ -934,7 +940,6 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
     ContentType.MORNING: 0,
-    ContentType.NIGHT_BRIEF: 0,
     # **결과 카드도 일찍 보내면 안 된다 — 여기가 특히 위험하다.**
     # 결과 카드의 예약 시각은 '마감'이다. 그날 경기가 다 끝나기를 기다리는 시각이다.
     # 렌더는 "한 경기라도 끝났으면" 카드를 만들므로, 앞창을 열어 두면 5경기 중
@@ -943,7 +948,21 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 마감 1시간 전 LCK 결과 카드가 처리 대상에 들어왔다.
     # 유예가 6시간이라 창은 그것만으로 충분하다 — 앞창은 필요 없다.
     ContentType.LEAGUE_RESULT: 0,
-    ContentType.STANDINGS: 0,
+    # **★ 순위표만은 앞창이 0이면 안 된다 (v1.11n — 실제로 한 장도 못 나갔다).**
+    #
+    # 순위표의 예약 시각은 `결과 카드의 예약 시각 + 10분`이고, 결과 카드의 예약은
+    # 그날 경기가 다 끝났으면 **`지금`**이다(마감을 기다리지 않는다).
+    # 그래서 순위표는 **매 틱 '지금+10분'으로 다시 계산된다** — 틱마다 10분씩
+    # 앞으로 도망간다. 앞창이 0이면 영원히 따라잡지 못한다.
+    # 실측 2026-09-04: 결과·모닝은 나가는데 순위표만 0건이었고, 큐에는 매 틱
+    # `+10.0분`으로 얌전히 들어 있었다. 오류도 경고도 없었다.
+    #
+    # 앞창을 오프셋만큼 열면 **결과 카드가 나가는 그 틱에 함께** 처리 대상이 된다.
+    # 일찍 나갈 위험은 없다 — 아직 안 끝난 날은 예약이 `마감+10분`이라
+    # 이 앞창으로도 마감 전에는 열리지 않는다. 게다가 순위표 내용은 그날 경기가
+    # 아니라 시즌 누적이라 몇 분 일러도 사실이 달라지지 않는다.
+    # (같은 틱에 걸리면 페이서가 예약 시각순으로 결과를 먼저 내보낸다.)
+    ContentType.STANDINGS: STANDINGS_AFTER_RESULT_SECONDS,
     # **나이트 브리핑도 일찍 보내면 안 된다** — 23:00 카드가 저녁에 나가면
     # 그날 결과가 아직 다 안 들어온 채로 '하루 마감'을 말하게 된다.
     ContentType.NIGHT_BRIEF: 0,
@@ -3015,6 +3034,12 @@ assert set(DECIDED_BY_ALLOWED) == set(ScoreUnit), "DECIDED_BY_ALLOWED 누락"
 assert set(GRACE_SECONDS) == set(ContentType), "GRACE_SECONDS 누락"
 assert set(LEASE_SECONDS) == set(ContentType), "LEASE_SECONDS 누락"
 assert set(PACER_PRIORITY) == set(ContentType), "PACER_PRIORITY 누락"
+# **예약이 '지금'을 기준으로 다시 계산되는 콘텐츠는, 그 오프셋만큼 앞창이 있어야 한다.**
+# 없으면 예약 시각이 틱마다 앞으로 도망가 영원히 발송되지 않는다 — 오류도 경고도 없이.
+# (2026-09-04 순위표가 정확히 그랬다. 큐에는 매 틱 얌전히 들어 있었다.)
+assert (LOOKAHEAD_SECONDS_BY_CONTENT.get(ContentType.STANDINGS, 0)
+        >= STANDINGS_AFTER_RESULT_SECONDS), (
+    "순위표 앞창이 '결과 뒤 오프셋'보다 좁습니다 — 순위표가 영원히 안 나갑니다")
 for _ct in ContentType:
     assert LEASE_SECONDS[_ct] < GRACE_SECONDS[_ct], f"{_ct.value}: 리스가 유예보다 길다"
 assert CARD_WIDTH_PX + CARD_MAX_HEIGHT_PX <= GATE_PHOTO_DIM_SUM_MAX
