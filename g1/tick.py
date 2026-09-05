@@ -485,6 +485,46 @@ def _use(name: str, adapter, call):
     return call(adapter)
 
 
+_FLOW_ADAPTER = None
+# 한 리그가 한 틱에 보강할 경기 수 상한. 요청 간격이 1.2초라 12개면 최대 15초다.
+# 종료 경기는 디스크에 영구 캐시되므로 두 번째 틱부터는 거의 0초다.
+FLOW_MAX_PER_LEAGUE = 12
+
+
+def _enrich_flow(name: str, league, games: list, soft: list) -> None:
+    """경기에 흐름(이닝·쿼터·세트·득점)을 얹는다.
+
+    **실패해도 아무 일도 일어나지 않는다.** 흐름표가 빠진 카드는 오늘까지 나가던
+    것과 같고, 여기서 예외를 내보내면 그 리그가 그 틱을 통째로 건너뛴다 —
+    원래 사고보다 나쁘다(v1.11h).
+    """
+    global _FLOW_ADAPTER
+    try:
+        import render_v5 as _R5
+        if not any(_R5.USE_V5.values()):
+            return
+        from adapters.naver_game import NAVER_LEAGUE, NaverGameAdapter
+        if league not in NAVER_LEAGUE:
+            return
+        if _FLOW_ADAPTER is None:
+            _FLOW_ADAPTER = NaverGameAdapter()
+        ad = _FLOW_ADAPTER
+        ad.reset_notices()
+        old = getattr(ad, "MAX", None)
+        import adapters.naver_game as _ng
+        _ng.MAX_GAMES_PER_TICK = FLOW_MAX_PER_LEAGUE
+        done = ad.enrich(games, league)
+        if done:
+            print(f"  [흐름] {name} {done}건")
+        # 어댑터가 남긴 메모를 그대로 알림에 싣는다 — 이름이 통일돼 있어서
+        # 여기서 리그마다 새로 짤 필요가 없다(_notices.py의 계약).
+        for line in ad.notices:
+            if "흐름 보강" not in line:            # 정상 동작은 알림에 올리지 않는다
+                soft.append(f"{name}: 흐름 {line}")
+    except Exception as e:                                   # noqa: BLE001
+        soft.append(f"{name}: 흐름 보강을 건너뜀 ({e.__class__.__name__})")
+
+
 def _adapter_health(name: str) -> tuple[list[str], float]:
     """(사람이 읽을 메모, 캐시 나이 초). 어댑터가 없거나 조용하면 ([], 0)."""
     ad = _ADAPTERS.get(name)
@@ -993,6 +1033,10 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             games, _demoted = demote_impossible_finals(games, now)
             for _n in _demoted:
                 soft.append(f"{name}: {_n}")
+            # **흐름을 얹는다 — 이닝·쿼터·세트·득점 시각 (v1.12).**
+            # 수집이 끝난 뒤에 붙인다. 보강이 실패해도 경기 목록은 그대로 저장되고
+            # 카드는 흐름표 없이 나간다 — 오늘까지 나가던 것과 같아질 뿐이다.
+            _enrich_flow(name, lg, games, soft)
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,
@@ -1298,8 +1342,35 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # 실측: KBO 2026-08-05·06·07·09·28 — 5경기 전 경기 폭염취소.
         if not any(g.is_terminal for g in todays):
             return None                     # 아직 아무것도 안 끝났다 — 다음 틱에 다시 본다
-        html = P.render_result(todays, day)
-        parts = P.caption_result(todays, day, as_parts=True)
+        # **새 카드를 먼저 시도하고, 안 되면 옛 카드로 떨어진다 (v1.12).**
+        # 새것이 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야 켜 볼 수 있다.
+        # `render_v5.USE_V5['result'] = False` 하나로 즉시 옛 카드로 돌아간다.
+        html = parts = None
+        try:
+            import render_v5 as _R5
+            # **리그가 없으면 새 카드를 시도조차 하지 않는다.** 결과 카드는 늘
+            # 리그가 있지만, 없는 항목이 흘러들어오면 여기서 터져 그 리그의
+            # 결과 발송이 통째로 멈춘다 — 검증이 이것을 잡았다.
+            _lg = getattr(item, "league", None)
+            if _lg is not None and _R5.USE_V5.get("result"):
+                _v5 = _R5.result_card(todays, _lg, day, now=_now())
+                if _v5:
+                    html, parts = _v5
+        except Exception as _e:                              # noqa: BLE001
+            print(f"  ⚠️ [v5] 결과 카드 실패 — 옛 카드로 그립니다: "
+                  f"{_e.__class__.__name__}")
+            html = None
+        if html is not None:
+            # **v5는 자체 경로로 그린다.** 골격이 다르면 검사도 다르다 —
+            # 옛 render_png에 넣으면 그쪽 타이포 검사가 `#card`를 못 찾아 터진다.
+            _p = out / f"{tag}.png"
+            _r = _R5.render_png(html, _p)
+            if _r:
+                return [(_p.name, _p.read_bytes(), _r[0], _r[1])], parts
+            html = None                      # 검사에 걸렸다 — 옛 카드로 떨어진다
+        if html is None:
+            html = P.render_result(todays, day)
+            parts = P.caption_result(todays, day, as_parts=True)
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
         scoped = [g for g in games if day_schedule_scope(g) == item.scope]

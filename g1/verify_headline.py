@@ -318,5 +318,147 @@ check("모든 리그가 표에 있다 (빠뜨리면 조용히 꺼진다)",
 check("맵 스코어 리그의 임계가 득점 리그보다 작다 (단위가 다르다)",
       H.BLOWOUT_MARGIN[League.LCK] < H.BLOWOUT_MARGIN[League.KBO])
 
+
+# ══════════════════════════════════════════════════════════════
+print("\n10. 관전 포인트 — 읽어 주는 것과 지어내는 것의 경계")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님이 프로토 고객을 위한 "어느 팀이 좋아 보인다"를 요청했다.
+# **여기서 선을 넘으면 카드가 도박 예측을 하는 물건이 된다.** 그 선을 검사로 못 박는다.
+
+_M = H.Metric
+_SET = [
+    _M("순위", "1위", "3위", 1, 3, higher_better=False, can_headline=False),
+    _M("승률", ".607", ".567", .607, .567),
+    _M("팀 타율", ".279", ".267", .2791, .26678),
+    _M("팀 평균자책", "4.13", "4.78", 4.125, 4.778, higher_better=False),
+    _M("홈런", "110개", "112개", 110, 112),
+    _M("최근 5경기", "3승 2패", "4승 1패", 3, 4),
+]
+_v = H.for_preview(away_name="삼성", home_name="LG", metrics=_SET, h2h_text="삼성 8승 6패")
+_txt = " ".join(_v.lines)
+
+check("우세한 쪽을 집계해 말한다", "6개 항목 중 4개" in _txt, _txt[:60])
+check("낮을수록 좋은 항목의 방향을 뒤집어 읽는다 (평균자책 4.13이 앞선다)",
+      _SET[3].winner() == "away")
+# **순위는 '가장 벌어진 곳'이 될 수 없다** — 다른 항목들의 결과라서 동어반복이 된다
+check("★ 순위를 '가장 벌어진 곳'으로 꼽지 않는다",
+      "가장 벌어진 곳은 팀 평균자책" in _txt, _txt)
+# **한쪽 근거만 대면 예측이 되고, 양쪽을 대면 정보가 된다**
+check("★ 뒤진 쪽이 앞선 항목을 반드시 함께 적는다",
+      "다만" in _txt and "LG가 낫다" in _txt, _txt)
+check("조사를 받침에 맞춰 고른다 ('LG가', '전북이')",
+      "LG가 낫다" in _txt
+      and "전북이" in " ".join(H.for_preview(
+          away_name="서울", home_name="전북", metrics=_SET).lines), _txt)
+
+# ── 금지어 — 이 낱말이 하나라도 나오면 카드가 예측을 하는 물건이 된다 ──
+_bad = [w for w in H.BANNED_WORDS if w in _txt]
+check("★ 확률·추천·베팅 같은 낱말을 쓰지 않는다", not _bad, str(_bad))
+
+# ── 문장의 모든 수가 facts에서 나왔는가 (8절과 같은 규율) ──
+_nums = set(re.findall(r"\d+(?:\.\d+)?", _txt))
+_fact_nums = set()
+for v_ in _v.facts.values():
+    _fact_nums |= set(re.findall(r"\d+(?:\.\d+)?", str(v_)))
+_orphan = sorted(_nums - _fact_nums)
+check("★ 문장에 찍힌 모든 수가 facts에 있다 (출처 못 대는 수는 지어낸 것)",
+      not _orphan, f"근거 없는 수: {_orphan}")
+
+# ── 억지로 한쪽을 고르지 않는다 ──
+# 동점 하나를 섞는다 — **분모가 '비교한 6개'가 아니라 '갈린 4개'여야 한다.**
+_even = [_M("가", "1", "2", 1, 2), _M("나", "3", "2", 3, 2), _M("다", "1", "1", 1, 1),
+         _M("라", "5", "4", 5, 4), _M("마", "1", "9", 1, 9)]
+_vs = H.for_preview(away_name="A", home_name="B", metrics=_even)
+check("★ 숫자가 갈리면 갈렸다고 쓴다 (한쪽을 억지로 고르지 않는다)",
+      _vs.rule == "V-SPLIT" and "반씩 갈린다" in _vs.lines[0], str(_vs.lines[:1]))
+check("★ 분모는 '비교한 항목'이 아니라 '승부가 갈린 항목'이다",
+      "4개 항목 중 2대 2" in _vs.lines[0] and _vs.facts["compared"] == 5,
+      str(_vs.lines[0]))
+
+check("항목이 3개보다 적으면 만들지 않는다",
+      H.for_preview(away_name="A", home_name="B", metrics=_SET[:2]) is None)
+check("전부 동점이면 만들지 않는다",
+      H.for_preview(away_name="A", home_name="B",
+                    metrics=[_M(f"x{i}", "1", "1", 1, 1) for i in range(4)]) is None)
+check("맞대결이 없으면 그 줄을 넣지 않는다",
+      not any("맞대결" in x for x in
+              H.for_preview(away_name="삼성", home_name="LG", metrics=_SET).lines))
+check("만든 규칙이 등록 목록에 있다", _v.rule in H.ALL_RULES and "V-SPLIT" in H.ALL_RULES)
+check("배지도 금지어를 안 쓴다",
+      not [w for w in H.BANNED_WORDS if w in _v.pick], _v.pick)
+
+# ── 예상 한 줄 — 대표님 정정: "승부예측이라기 보다는 어디가 이길것같다 예상" ──
+check("★ 어느 쪽이 좋아 보이는지 한 줄로 가리킨다", _v.pick == "삼성 우세", _v.pick)
+# **비율이 아니라 격차로 잰다.** 4대 2를 비율(0.67)로 재면 '근소'가 되는데
+# 사람 눈에 4대 2는 근소가 아니다.
+check("★ 우세의 세기를 격차로 잰다 (4대 2는 '근소'가 아니다)",
+      H._edge_word(4, 2) == "우세" and H._edge_word(3, 2) == "근소 우세"
+      and H._edge_word(5, 0) == "크게 우세",
+      f"{H._edge_word(4, 2)} / {H._edge_word(3, 2)} / {H._edge_word(5, 0)}")
+check("★ 반반이면 한쪽을 찍지 않고 '팽팽'이라고 쓴다", _vs.pick == "팽팽", _vs.pick)
+# **결과를 보장하는 말은 계속 막는다.** 예상은 보장이 아니다.
+check("'확실'·'필승'·'무조건'은 금지 목록에 남아 있다",
+      {"확실", "필승", "무조건", "장담"} <= set(H.BANNED_WORDS))
+
+
+# ══════════════════════════════════════════════════════════════
+print("\n11. 한 경기짜리 결과 카드 — 개수가 아니라 이야기를 말한다")
+# ══════════════════════════════════════════════════════════════
+import datetime as _dt                                          # noqa: E402
+from contract import (Game as _G, GameMeta as _M, Score as _S,  # noqa: E402
+                      ScoreUnit as _U, TeamRef as _T, KST as _K)
+
+
+def _g1(aw, hm, sa, sh, rows=(), unit=_U.RUNS, lg=League.KBO):
+    t = _dt.datetime(2026, 9, 5, 17, 0, tzinfo=_K).astimezone(_dt.timezone.utc)
+    m = _M()
+    m.line_score = list(rows)
+    return _G(league=lg, season="2026", source_key=aw + hm, away=_T(lg, aw),
+              home=_T(lg, hm), start_utc=t, home_tz="Asia/Seoul",
+              status=Status.FINAL, score=_S(home=sh, away=sa, unit=unit), meta=m)
+
+
+_h1 = H.for_single_result(_g1("HH", "LT", 11, 6, [(0, 0)] * 7 + [(0, 6), (0, 0)]), League.KBO)
+check("점수를 그대로 말한다", "한화 11 : 6 롯데" == _h1.text, _h1.text)
+check("★ 한 구간에 몰아친 점수를 잡는다", "8회에만 6점" == _h1.sub, _h1.sub)
+check("문장의 모든 수가 facts에 있다",
+      set(re.findall(r"\d+", _h1.text + _h1.sub))
+      <= {str(v) for v in _h1.facts.values()},
+      f"{_h1.facts} / {_h1.text} {_h1.sub}")
+
+# **강조되는 칸과 머리말이 말하는 칸은 같은 기준이어야 한다.**
+# 두 곳이 갈리면 카드에서 초록으로 빛나는 칸과 머리말이 가리키는 칸이 어긋난다.
+import cards_v5 as _C5                                          # noqa: E402
+check("★ 강조 기준과 머리말 기준이 같은 값이다",
+      H.BIG_PERIOD_RUNS == _C5.BIG_CELL_MIN,
+      f"headline {H.BIG_PERIOD_RUNS} vs cards {_C5.BIG_CELL_MIN}")
+
+_h2 = H.for_single_result(_g1("SS", "LG", 4, 3), League.KBO)
+check("한 점 차를 잡는다", _h2.sub == "한 점 차" and _h2.rule == "G-CLOSE", str(_h2))
+_h3 = H.for_single_result(_g1("HT", "OB", 15, 2), League.KBO)
+check("대승을 잡는다 (리그별 실측 임계값)",
+      _h3.rule == "G-BLOWOUT1" and "13점 차" == _h3.sub, str(_h3))
+_h4 = H.for_single_result(_g1("HT", "OB", 7, 4), League.KBO)
+check("아무 규칙도 안 걸리면 점수만 말한다 (없는 이야기를 짓지 않는다)",
+      _h4.rule == "G-SCORE" and _h4.sub == "", str(_h4))
+
+# 세트·쿼터 종목은 구간 이름이 다르다
+_h5 = H.for_single_result(
+    _g1("HK", "PEPPER", 1, 3, [(25, 21), (20, 25), (25, 23), (25, 16)],
+        unit=_U.SETS, lg=League.VLEAGUE_W), League.VLEAGUE_W)
+check("종목에 따라 구간 이름이 바뀐다 (회/세트/쿼터)",
+      "세트에만" in (_h5.sub or ""), str(_h5))
+
+check("진행 중 경기에는 머리말을 만들지 않는다",
+      H.for_single_result(
+          _G(league=League.KBO, season="2026", source_key="x",
+             away=_T(League.KBO, "HH"), home=_T(League.KBO, "LT"),
+             start_utc=_dt.datetime.now(_dt.timezone.utc), home_tz="Asia/Seoul",
+             status=Status.LIVE, score=_S(home=1, away=0, unit=_U.RUNS), meta=_M()),
+          League.KBO) is None)
+check("새 규칙이 전부 등록 목록에 있다",
+      {"G-BIGPERIOD", "G-CLOSE", "G-BLOWOUT1", "G-SCORE"} <= H.ALL_RULES)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

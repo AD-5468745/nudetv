@@ -244,7 +244,18 @@ if res:
         # '펼치기'는 "내용이 더 있다"는 거짓 신호다. 게다가 같은 5경기가 메시지
         # 종류에 따라 접히기도 안 접히기도 했다(시작 알림만 6줄 기준을 썼다).
         # 지켜야 할 것은 '접힘'이 아니라 **캡션이 인용블록을 쓴다**는 구조다.
-        check("캡션이 인용블록을 쓴다", "<blockquote" in parts[0], parts[0][:80])
+        # **v1.12: 조건이 바뀌었다.** 인용블록의 목적은 긴 텍스트를 접는 것인데,
+        # v5 카드는 **긴 텍스트 자체를 없앴다** — 카드에 다 들어가면 본문을 안 붙인다
+        # (대표님 지적: "굳이 텍스트를 넣지 않아도 되는 카드들도 있는 것 같아").
+        # 그래서 검사도 조건부로 바꾼다: **덧붙일 내용이 있을 때만** 인용블록을 쓴다.
+        # 조건을 지우지 않고 좁힌다 — 지우면 긴 텍스트가 안 접혀도 아무도 모른다.
+        _cap = parts[0]
+        _has_extra = "\n\n" in _cap or len(_cap.splitlines()) > 2
+        check("덧붙인 내용이 있으면 인용블록을 쓴다",
+              (not _has_extra) or "<blockquote" in _cap, _cap[:80])
+        check("캡션 첫 줄이 무엇/언제를 말한다",
+              _cap.startswith(("✅", "📋", "⏰", "📊", "🏅", "⚖️", "🌙"))
+              and "<b>" in _cap.splitlines()[0], _cap[:60])
         _long = "\n".join(f"줄 {i}" for i in range(12))
         check("긴 캡션은 접는다", P.QUOTE_EXPANDABLE_THRESHOLD_LINES < 12)
         check("사진이 실제 바이트", len(photos[0][1]) > 5000, f"{len(photos[0][1])}B")
@@ -1166,9 +1177,13 @@ _off = [_kbo("LG", "OB", 14, Status.CANCELED, cancel="우천취소"),
 _it5 = _result_item(_off)
 check("전부 취소된 날도 결과 카드를 만든다", _it5 is not None)
 _r5 = T.render_for(_it5, _off) if _it5 else None
-check("그 카드는 '전 경기 취소'라고 말한다",
-      bool(_r5) and "전 경기 취소" in "".join(_r5[1]),
-      str(_r5[1])[:120] if _r5 else "None")
+# **글자가 아니라 뜻을 검사한다.** 옛 카드는 "전 경기 취소 · 우천취소"처럼
+# 둘로 나눠 적었고, v5는 "전 경기 우천취소"로 합쳐 적는다 — 같은 말이다.
+# 지켜야 할 것은 낱말의 배열이 아니라 **'오늘 볼 경기가 없다'가 캡션에 있다**는 것이다.
+_cap5 = "".join(_r5[1]) if _r5 else ""
+check("그 카드는 '전 경기가 취소됐다'고 말한다",
+      "전 경기" in _cap5 and ("취소" in _cap5 or "연기" in _cap5),
+      _cap5[:120] or "None")
 check("취소 사유가 실린다", bool(_r5) and "우천취소" in "".join(_r5[1]))
 
 # 아무것도 끝나지 않은 날(전부 예정·진행 중)은 여전히 카드를 안 만든다

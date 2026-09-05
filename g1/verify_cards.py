@@ -278,5 +278,133 @@ except ImportError:
     skip = len(_CARDS) + 3
     print(f"  SKIP  실렌더 {skip}건 — playwright가 없습니다 (SKIP은 PASS가 아닙니다)")
 
+
+# ══════════════════════════════════════════════════════════════
+# 5. 흐름표 — 야구 이닝 · 농구 쿼터 · 배구 세트 · 축구 타임라인
+# ══════════════════════════════════════════════════════════════
+#
+# **골격이 하나이므로 검사도 하나다.** 종목이 늘어도 검사를 새로 짜지 않는다.
+print("\n5. 흐름표 — 골격은 하나, 언어만 종목이 정한다")
+
+_KBO_IN = dict(labels=[str(i) for i in range(1, 10)],
+               away_name="한화", home_name="롯데",
+               away=[0, 1, 3, 0, 0, 1, 3, 0, 6], home=[0, 0, 0, 0, 3, 0, 1, 0, 0],
+               total_labels=["R", "H", "E"],
+               away_totals=[14, 19, 0], home_totals=[4, 10, 2], highlight=True)
+
+_h = C5.body_periods(**_KBO_IN)
+check("이닝별 점수가 전부 표에 들어간다",
+      all(f">{v}<" in _h or f'">{v}</span>' in _h for v in (6, 14, 19)), "")
+check("0은 흐리게, 큰 이닝은 강조한다",
+      'class="zero">0<' in _h and 'class="big">6<' in _h, "")
+check("이긴 쪽 팀명이 굵다", 'fg fr win' in _h and _h.index('fg fr win') < _h.index('fg fr"'),
+      "원정(한화)이 이겼으므로 첫 행이 win")
+
+# **칸이 좁아지면 막는다** — "안 들어가면 줄인다"가 아니라 "들어가는지 먼저 본다"
+try:
+    C5.body_periods(labels=[str(i) for i in range(1, 19)], away_name="A", home_name="B",
+                    away=[0] * 18, home=[0] * 18)
+    check("★ 구간이 너무 많으면 막는다", False, "18구간이 통과했다")
+except ValueError as e:
+    check("★ 구간이 너무 많으면 막는다", "칸이 좁습니다" in str(e), str(e)[:60])
+
+try:
+    C5.body_periods(labels=["1", "2"], away_name="A", home_name="B", away=[1], home=[1, 2])
+    check("★ 라벨과 점수 개수가 다르면 막는다", False, "통과했다")
+except ValueError:
+    check("★ 라벨과 점수 개수가 다르면 막는다", True, "")
+
+# 축구 — 구간이 없다. 시각이 곧 흐름이다
+_t = C5.body_timeline(away_name="맨시티", home_name="크리스털", away_win=True,
+                      events=[(17, "away", "홀란", ""), (56, "home", "돈나룸마", "자책"),
+                              (84, "away", "홀란", "")])
+check("득점 시각이 오름차순으로 정렬된다", _t.index("17′") < _t.index("56′") < _t.index("84′"), "")
+check("자책골은 소스가 준 표시를 그대로 단다", "(자책)" in _t, "")
+check("득점이 없으면 '득점 없음'을 쓴다 (빈 표를 내지 않는다)",
+      "득점 없음" in C5.body_timeline(away_name="A", home_name="B", events=[]), "")
+# **원정이 왼쪽** — 야구·농구·배구 표는 원정이 첫 줄이다. 축구만 다르면
+# 같은 카드 안에서 헤드라인과 표가 서로 다른 순서를 말한다(약점 95 계열)
+check("★ 축구도 원정이 왼쪽 — 다른 종목 표와 순서가 같다",
+      _t.index("맨시티") < _t.index("크리스털"), "")
+
+try:
+    from playwright.sync_api import sync_playwright        # noqa: F401
+    import asyncio as _aio
+    from playwright.async_api import async_playwright as _apw
+
+    _FLOW = [
+        ("흐름-야구", League.KBO, C5.body_periods(**_KBO_IN)),
+        ("흐름-농구", League.KBL, C5.body_periods(
+            labels=["1Q", "2Q", "3Q", "4Q"], away_name="부산 KCC", home_name="원주 DB",
+            away=[31, 35, 20, 18], home=[18, 28, 21, 17],
+            total_labels=["합계"], away_totals=[104], home_totals=[84])),
+        ("흐름-배구", League.VLEAGUE_W, C5.body_periods(
+            labels=["1세트", "2세트", "3세트", "4세트"],
+            away_name="흥국생명", home_name="페퍼저축은행",
+            away=[21, 25, 23, 16], home=[25, 20, 25, 25],
+            total_labels=["승세트"], away_totals=[1], home_totals=[3])),
+        ("흐름-축구", League.EPL, _t),
+        # **가장 긴 이름으로도 그려 본다.** 지금 이름이 짧아 우연히 무사한 것과
+        # 검사가 지켜 주는 것은 다르다(약점 62). 전 리그 최장 팀명을 실측으로 뽑았다 —
+        # '디플러스 기아'(LCK) · '한국도로공사'·'페퍼저축은행'(V리그) ·
+        # '세인트루이스'·'샌프란시스코'(MLB).
+        ("흐름-최장이름", League.VLEAGUE_W, C5.body_periods(
+            labels=["1세트", "2세트", "3세트", "4세트", "5세트"],
+            away_name="페퍼저축은행", home_name="한국도로공사",
+            away=[25, 20, 25, 23, 15], home=[23, 25, 21, 25, 13],
+            total_labels=["승세트"], away_totals=[3], home_totals=[2])),
+        ("흐름-최장이름-야구", League.MLB, C5.body_periods(
+            labels=[str(i) for i in range(1, 13)],          # 연장 12회까지
+            away_name="샌프란시스코", home_name="세인트루이스",
+            away=[0, 1, 0, 2, 0, 0, 1, 0, 0, 0, 0, 1],
+            home=[1, 0, 0, 0, 2, 0, 0, 1, 0, 0, 0, 0],
+            total_labels=["R", "H", "E"],
+            away_totals=[5, 11, 1], home_totals=[4, 9, 2], highlight=True)),
+    ]
+
+    async def _run_flow():
+        found, clipped = [], []
+        async with _apw() as pw:
+            b = await pw.chromium.launch()
+            pg = await b.new_page(viewport={"width": C5.CARD_W, "height": 1400})
+            for name, lg, body in _FLOW:
+                html = C5.shell(kind="result", league=lg, date_label="9.4 금",
+                                head=H.Headline(rule="X", text="가 1 : 0 나", sub="", facts={}),
+                                body=body, foot_left="네이버 스포츠")
+                found.append((name, await C5.audit(pg, html)))
+            # ── 변이시험: 잘림을 잡는가 ──
+            # 실제로 '페퍼저축은행'이 '페퍼저축은헹'으로 나갔는데 게이트 넷이 통과했다.
+            mut = C5.shell(kind="result", league=League.VLEAGUE_W, date_label="3.1 일",
+                           head=H.Headline(rule="X", text="가 1 : 3 나", sub="", facts={}),
+                           body=_FLOW[2][2].replace("212px", "150px"),
+                           foot_left="변이시험")
+            clipped = await C5.audit(pg, mut)
+            # ── 변이시험: **검사 목록에 없는 새 골격도 잡는가** ──
+            # 게이트가 '검사할 클래스 목록'이던 시절에는 새 골격을 만들 때마다
+            # 그 목록에 넣는 것을 잊으면 그 칸이 무방비였다(약점 92). 이제
+            # '전체 - 예외'로 뒤집었으니, **한 번도 등록한 적 없는 클래스**를
+            # 일부러 접히게 만들어 잡히는지 본다.
+            unknown = C5.shell(
+                kind="result", league=League.KBO, date_label="9.4 금",
+                head=H.Headline(rule="X", text="가 1 : 0 나", sub="", facts={}),
+                body='<div class="li" style="grid-template-columns:1fr">'
+                     '<span class="never-registered" style="width:60px;display:block">'
+                     '한 번도 검사 목록에 넣은 적 없는 새 골격입니다</span></div>',
+                foot_left="변이시험")
+            newgate = await C5.audit(pg, unknown)
+            await b.close()
+        return found, clipped, newgate
+
+    _ff, _clip, _new = _aio.run(_run_flow())
+    for name, issues in _ff:
+        check(f"실렌더 결함 없음: {name}", not issues, " | ".join(issues[:2]))
+    check("★ 변이 — 팀명 칸을 좁히면 잘림을 잡는다",
+          any("잘림" in x for x in _clip), str(_clip[:2]))
+    check("★★ 변이 — 검사 목록에 없는 새 골격도 잡는다 (게이트가 '전체 - 예외'다)",
+          any("접힘" in x for x in _new), str(_new[:2]))
+except ImportError:
+    skip += 5
+    print("  SKIP  흐름표 실렌더 5건 — playwright가 없습니다 (SKIP은 PASS가 아닙니다)")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

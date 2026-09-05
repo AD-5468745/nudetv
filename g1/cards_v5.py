@@ -42,6 +42,8 @@ LEAGUE_LABEL = {
     League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
     League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1", League.LCK: "LCK",
     League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
+    League.EPL: "프리미어리그", League.LALIGA: "라리가", League.SERIEA: "세리에A",
+    League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "챔피언스리그",
 }
 
 # 콘텐츠 종류마다 **고유한 아이콘 + 라벨**. 색이 아니라 이 둘이 종류를 가른다 —
@@ -182,11 +184,14 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .duo .p.r{{text-align:right}}
 .duo .x{{font-size:21px;font-weight:800;color:{th['faint']};letter-spacing:.14em;
   padding:0 28px 12px}}
-.cmp{{display:grid;grid-template-columns:1fr 210px 1fr;align-items:center;
+.cmp{{display:grid;grid-template-columns:1fr 320px 1fr;align-items:center;
   padding:18px 0;border-bottom:1px solid {th['line']}}}
 .cmp:last-of-type{{border-bottom:none}}
-.cmp .v{{font-size:30px;font-weight:600;color:{th['dim']}}}
-.cmp .v.r{{text-align:right}}
+/* **값은 자기 팀 이름 아래에 선다.** 전에는 좌우 값이 둘 다 가운데로 몰려서
+   팀명(바깥 끝)과 값(가운데) 사이가 끊겼다 — 어느 값이 누구 것인지
+   눈으로 이어붙여야 했다. 게이트 다섯이 전부 통과한 채로 그랬다. */
+.cmp .v{{font-size:30px;font-weight:600;color:{th['dim']};text-align:right}}
+.cmp .v.r{{text-align:left}}
 .cmp .v.on{{color:{th['accent']};font-weight:800}}
 .cmp .k{{text-align:center;font-size:20px;font-weight:700;letter-spacing:.09em;
   color:{th['faint']}}}
@@ -205,6 +210,52 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .ix .pk{{margin-left:auto;font-size:24px;color:{th['dim']};font-weight:600;
   text-align:right}}
 .ix .pk b{{color:{th['ink']};font-weight:800}}
+/* ── 흐름표 — 야구 이닝 · 농구 쿼터 · 배구 세트가 같은 골격을 쓴다 ── */
+.fw{{margin-top:6px}}
+.fg{{display:grid;align-items:center}}
+.fh{{padding:0 0 14px;border-bottom:1px solid {th['rule']}}}
+.fh>span{{font-size:20px;font-weight:800;letter-spacing:.06em;color:{th['faint']};
+  text-align:center}}
+.fh>span.nm{{text-align:left;letter-spacing:.14em}}
+.fr{{padding:22px 0;border-bottom:1px solid {th['line']}}}
+.fr:last-child{{border-bottom:none}}
+.fr>span{{font-size:34px;font-weight:600;text-align:center;color:{th['ink']}}}
+.fr>span.nm{{font-size:32px;font-weight:600;text-align:left;color:{th['dim']};
+  letter-spacing:-.02em;white-space:nowrap;overflow:hidden}}
+.fr.win>span.nm{{font-weight:800;color:{th['ink']}}}
+.fr>span.tot{{font-weight:800;color:{th['ink']}}}
+.fr>span.big{{font-size:38px;font-weight:800;color:{th['accent']}}}
+.fr>span.zero{{color:{th['faint']};font-weight:500}}
+/* ── 타임라인 — 축구는 구간이 없다. 시각이 곧 흐름이다 ── */
+.tw{{margin-top:6px}}
+.th2{{display:grid;grid-template-columns:1fr 120px 1fr;padding:0 0 16px;
+  border-bottom:1px solid {th['rule']}}}
+.th2>span{{font-size:24px;font-weight:800;letter-spacing:-.02em;color:{th['dim']};
+  white-space:nowrap;overflow:hidden}}
+.th2>span.win{{color:{th['ink']}}}
+.th2>span.r{{text-align:right}}
+.th2>span.c{{text-align:center;font-size:20px;color:{th['faint']};letter-spacing:.10em}}
+.tl{{display:grid;grid-template-columns:1fr 120px 1fr;align-items:baseline;
+  padding:19px 0;border-bottom:1px solid {th['line']}}}
+.tl:last-child{{border-bottom:none}}
+.tl>span{{font-size:30px;font-weight:700;color:{th['ink']};white-space:nowrap;
+  overflow:hidden}}
+.tl>span.r{{text-align:right}}
+.tl>span.m{{text-align:center;font-size:24px;font-weight:800;color:{th['accent']};
+  letter-spacing:-.01em}}
+.tl>span em{{font-style:normal;font-size:22px;font-weight:600;color:{th['faint']}}}
+/* ── 관전 포인트 — 숫자를 읽어 주는 자리 (예측하는 자리가 아니다) ── */
+.vd{{margin-top:30px;border-left:4px solid {th['accent']};padding:2px 0 2px 26px}}
+.vd p{{font-size:28px;line-height:1.52;color:{th['ink']};font-weight:600;
+  letter-spacing:-.02em}}
+.vd p+p{{margin-top:12px;color:{th['dim']};font-weight:500}}
+.vd .pick{{display:flex;align-items:baseline;gap:16px;margin-bottom:18px}}
+.vd .pick i{{font-style:normal;font-size:20px;font-weight:800;letter-spacing:.14em;
+  color:{th['chip_ink']};background:{th['chip_bg']};padding:8px 14px;
+  border-radius:{th['radius']}}}
+.vd .pick b{{font-size:36px;font-weight:800;letter-spacing:-.03em;color:{th['ink']}}}
+.vd .tag{{margin-top:20px;font-size:21px;font-weight:700;letter-spacing:.08em;
+  color:{th['faint']}}}
 </style></head><body><div class="card">
   <div class="top">{rail}
     <div class="lab"><svg viewBox="0 0 24 24" fill="none" stroke="{th['accent']}"
@@ -364,18 +415,175 @@ def body_index(rows: list[tuple]) -> str:
 # 그대로 다시 빠졌다 — '삼성'이 세로 두 줄로 쪼개진 채 검사를 통과했다.
 #
 # 그래서 **높이 ÷ 줄높이**로 잰다. 블록이든 인라인이든 접히면 높이가 늘어난다.
+
+# ══════════════════════════════════════════════════════════════
+# 흐름표 — **골격은 하나, 언어만 종목이 정한다**
+# ══════════════════════════════════════════════════════════════
+#
+# 조사에서 나온 것: 종목마다 데이터는 다른데 **하는 일은 같다** —
+# "경기가 어떻게 흘러갔나"를 한 줄로 보여주는 것.
+#
+#   야구  이닝별 `0 1 3 0 0 1 3 0 6`     네이버 record.scoreBoard.inn
+#   농구  쿼터별 `18 28 21 17`           네이버 record.homeQ1Score~Q4Score
+#   배구  세트별 `25 20 25 25`           네이버 base game.currentScoreBySet
+#
+# 그래서 셋이 **같은 함수**를 쓴다. 리그가 늘어도 카드가 따로 놀지 않는다.
+# (축구만 구간이 없다 — 시각이 곧 흐름이라 `body_timeline`을 쓴다)
+
+NAME_COL_PX = 212             # 팀명 칸. '페퍼저축은행'(6자)이 178px에서 잘렸다
+NAME_FS_MAX = 32              # 팀명 기본 크기
+NAME_FS_MIN = 24              # 이보다 줄이면 폰에서 안 읽힌다 — 그 전에 게이트가 막는다
+CELL_MIN_PX = 46              # 이보다 좁으면 두 자리 수가 접힌다
+BIG_CELL_MIN = 4              # 이 값 이상인 칸을 강조한다(야구 한 이닝 4점)
+
+
+def _name_cell(name: str) -> str:
+    """팀명 칸 — **글자 수가 아니라 폭으로 정한다**(약점 63).
+
+    한글은 글자당 폰트 크기만큼, 영문·숫자·공백은 그 절반 남짓을 쓴다.
+    넘치면 줄이고, 최소 크기로도 안 되면 **게이트가 잡도록 그대로 둔다** —
+    여기서 몰래 자르면 '페퍼저축은헹' 사고가 그대로 되풀이된다.
+    """
+    units = sum(1.0 if ord(c) > 0x1100 else 0.55 for c in name)
+    fs = NAME_FS_MAX
+    while fs > NAME_FS_MIN and units * fs > NAME_COL_PX - 8:
+        fs -= 1
+    return f'<span class="nm" style="font-size:{fs}px">{esc(name)}</span>'
+
+
+def _cells(vals, *, highlight: bool) -> str:
+    out = []
+    for v in vals:
+        if v is None:
+            out.append('<span class="zero">·</span>')
+            continue
+        cls = "big" if (highlight and isinstance(v, int) and v >= BIG_CELL_MIN) else (
+            "zero" if v == 0 else "")
+        out.append(f'<span class="{cls}">{esc(v)}</span>')
+    return "".join(out)
+
+
+def body_periods(*, labels: list, away_name: str, home_name: str,
+                 away: list, home: list,
+                 total_labels: Optional[list] = None,
+                 away_totals: Optional[list] = None,
+                 home_totals: Optional[list] = None,
+                 highlight: bool = False) -> str:
+    """구간별 점수표 — 야구(이닝)·농구(쿼터)·배구(세트)가 함께 쓴다.
+
+    `labels`가 구간 이름, `total_labels`가 오른쪽 합계 칸(야구 R·H·E 등).
+    **칸이 좁아지면 두 자리 수가 접힌다.** 그래서 구간 수 상한을 계산으로 막는다 —
+    "표에 안 들어가면 표를 줄인다"가 아니라 **들어가는지 먼저 검사한다**(약점 62·92).
+    """
+    total_labels = total_labels or []
+    away_totals = away_totals or []
+    home_totals = home_totals or []
+    if not (len(labels) == len(away) == len(home)):
+        raise ValueError("구간 라벨과 점수 개수가 다릅니다")
+    if not (len(total_labels) == len(away_totals) == len(home_totals)):
+        raise ValueError("합계 라벨과 값 개수가 다릅니다")
+
+    n = len(labels) + len(total_labels)
+    avail = CARD_W - 56 * 2 - NAME_COL_PX
+    if n and avail / n < CELL_MIN_PX:
+        raise ValueError(
+            f"칸이 좁습니다: {n}칸에 {avail}px (칸당 {avail / n:.0f}px < {CELL_MIN_PX}px). "
+            f"구간을 줄이거나 팀명 칸을 좁혀야 합니다.")
+    cols = f"{NAME_COL_PX}px repeat({n}, 1fr)" if n else f"{NAME_COL_PX}px"
+
+    def row(name, vals, totals, win):
+        tot = "".join('<span class="tot">%s</span>' % esc(v) for v in totals)
+        cls = "fg fr win" if win else "fg fr"
+        return (f'<div class="{cls}" style="grid-template-columns:{cols}">'
+                f'{_name_cell(name)}'
+                f'{_cells(vals, highlight=highlight)}{tot}</div>')
+
+    a_sum = away_totals[0] if away_totals else sum(v for v in away if v)
+    h_sum = home_totals[0] if home_totals else sum(v for v in home if v)
+    cells = "".join('<span>%s</span>' % esc(x) for x in list(labels) + list(total_labels))
+    head = (f'<div class="fg fh" style="grid-template-columns:{cols}">'
+            f'<span class="nm"></span>{cells}</div>')
+    return ('<div class="fw">' + head
+            + row(away_name, away, away_totals, a_sum > h_sum)
+            + row(home_name, home, home_totals, h_sum > a_sum) + '</div>')
+
+
+def body_timeline(*, away_name: str, home_name: str, events: list,
+                  away_win: bool = False, home_win: bool = False) -> str:
+    """득점 타임라인 — 축구. `events`는 (분, 'home'|'away', 이름, 꼬리표) 순서쌍.
+
+    **꼬리표는 소스가 주는 것만 쓴다.** 자책골은 `ownGoal` 플래그가 있어서 쓴다 —
+    없는 것을 추측해 붙이지 않는다.
+    """
+    rows = []
+    for minute, side, name, note in sorted(events, key=lambda e: e[0]):
+        tag = f' <em>({esc(note)})</em>' if note else ""
+        cell = f'{esc(name)}{tag}'
+        if side == "away":
+            rows.append(f'<div class="tl"><span class="r">{cell}</span>'
+                        f'<span class="m">{esc(minute)}′</span>'
+                        f'<span></span></div>')
+        else:
+            rows.append(f'<div class="tl"><span></span>'
+                        f'<span class="m">{esc(minute)}′</span>'
+                        f'<span>{cell}</span></div>')
+    acls = "r win" if away_win else "r"
+    hcls = "win" if home_win else ""
+    head = (f'<div class="th2"><span class="{acls}">{esc(away_name)}</span>'
+            f'<span class="c">득점</span>'
+            f'<span class="{hcls}">{esc(home_name)}</span></div>')
+    if not rows:
+        rows = ['<div class="tl"><span></span><span class="m">—</span>'
+                '<span>득점 없음</span></div>']
+    return '<div class="tw">' + head + "".join(rows) + '</div>'
+
+
+def body_verdict(v, *, note: str = "팀 기록으로 본 예상입니다 · 결과를 보장하지 않습니다") -> str:
+    """관전 포인트 — `headline.for_preview()`가 만든 문장을 그대로 싣는다.
+
+    **여기서 문장을 짓지 않는다.** 카드가 말을 만들기 시작하면 그 말이 어디서
+    왔는지 아무도 추적할 수 없다. 규칙 엔진이 만들고, 게이트가 그 문장의 모든
+    숫자가 `facts`에 있는지 검사하고, 카드는 받아 적기만 한다.
+
+    꼬리표(`note`)는 **지운다고 예뻐지지 않는다** — 프로토를 보는 독자에게
+    이것이 예측이 아니라는 것을 밝히는 자리다.
+    """
+    if not v or not v.lines:
+        return ""
+    pick = (f'<div class="pick"><i>예상</i><b>{esc(v.pick)}</b></div>'
+            if getattr(v, "pick", "") else "")
+    ps = "".join(f"<p>{esc(x)}</p>" for x in v.lines)
+    tag = f'<div class="tag">{esc(note)}</div>' if note else ""
+    return f'<div class="vd">{pick}{ps}{tag}</div>'
+
+
 WRAP_TOLERANCE = 1.5          # 이 줄 수를 넘으면 접힌 것으로 본다
 MIN_FONT_PX = 20              # 이보다 작으면 폰에서 못 읽는다
 
 _MEASURE_JS = """() => {
   const out = [];
   const card = document.querySelector('.card');
+  // **카드가 없으면 조용히 빈 결과를 돌려준다.** 여기서 터지면 드라이런 렌더
+  // 시험이 통째로 죽고, 그건 카드 한 장이 깨지는 것보다 나쁘다(v1.11h).
+  if (!card) return ['카드 골격(.card)이 없습니다'];
   const cr = card.getBoundingClientRect();
   // ① 한 줄이어야 하는 칸이 접혔나 — 높이 ÷ 줄높이로 잰다
-  document.querySelectorAll('.t1,.t2,.lead,.qr b,.duo .n,.ix .cn,.sc,.cmp .v').forEach(el => {
+  //
+  // **목록이 아니라 '전체 - 예외'로 잰다.** 전에는 검사할 클래스를 하나하나
+  // 적어 두었는데, 새 골격을 만들 때마다 그 목록에 넣는 것을 잊으면 그 칸은
+  // 무방비가 된다. 실제로 흐름표를 만들 때 그랬다(약점 92의 재발).
+  // 이제는 잎 노드 전부를 보고, **접혀도 되는 것만** 예외로 적는다 —
+  // 예외는 눈에 띄고, 빠뜨리면 오검출이 나서 바로 알게 된다.
+  const WRAP_OK = '.sub,.vd p';        // 문장은 여러 줄이 정상이다
+  document.querySelectorAll('.card *').forEach(el => {
+    if (el.children.length || !el.textContent.trim()) return;   // 잎 노드만
+    if (el.closest(WRAP_OK)) return;
     const cs = getComputedStyle(el);
     const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.2;
-    const h  = el.getBoundingClientRect().height;
+    // **안쪽 여백을 빼고 잰다.** 배지처럼 padding이 있는 칸은 글자가 한 줄이어도
+    // 바깥 높이가 1.7배가 된다 — 그대로 재면 멀쩡한 칸을 접혔다고 잡는다.
+    const h = el.getBoundingClientRect().height
+              - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
     if (lh > 0 && h / lh > %(tol)s)
       out.push('접힘(' + (h/lh).toFixed(1) + '줄): ' + el.textContent.trim().slice(0, 24));
   });
@@ -384,9 +592,28 @@ _MEASURE_JS = """() => {
   //    않기 때문이다. 실제로 순위 배지가 카드 머리와 같은 클래스 이름(`.top`)을
   //    써서 padding을 상속받아 폭이 두 배가 되고 팀명 위로 42px 포개졌는데,
   //    접힘·이탈·폰트 검사 셋 다 통과했다. 이름 충돌은 조용히 겹친다.
-  document.querySelectorAll('.li,.cmp,.ix,.qr').forEach(row => {
+  //
+  // **여기도 목록을 버린다.** 가로로 나란히 놓이는 것은 `display:grid`나 `flex`가
+  // 만든다 — 그러니 그것을 직접 찾으면 새 골격이 저절로 검사 대상이 된다.
+  document.querySelectorAll('.card *').forEach(row => {
+    const disp = getComputedStyle(row).display;
+    if (disp !== 'grid' && disp !== 'flex') return;
+    if (getComputedStyle(row).gridTemplateColumns === 'none' && disp === 'grid') return;
     const kids = [...row.children].map(el => el.getBoundingClientRect())
                    .filter(r => r.width > 0);
+    if (kids.length < 2) return;
+    // **여러 줄로 접히는 grid만 건너뛴다.**
+    //
+    // 처음엔 '자식들의 top이 어긋나면 건너뛴다'로 짰는데, 그러자 원래 잡던 사고를
+    // 못 잡게 됐다 — 그 사고가 바로 **배지가 커지면서 줄이 어긋난** 경우였기 때문이다.
+    // 게이트를 고치다 게이트를 죽인 셈이고, 변이시험이 그것을 잡았다.
+    //
+    // 옳은 기준은 위치가 아니라 **골격**이다. grid의 열 수보다 자식이 많으면
+    // 그 골격은 원래 여러 줄이다(2열 부문 상자 같은 것). 그때만 건너뛰고,
+    // 한 줄짜리 골격은 **DOM 순서 그대로** 좌우를 견준다.
+    const gtc = getComputedStyle(row).gridTemplateColumns;
+    if (disp === 'grid' && gtc && gtc !== 'none'
+        && kids.length > gtc.trim().split(/\s+/).length) return;
     for (let i = 1; i < kids.length; i++)
       if (kids[i].left < kids[i-1].right - 1) {
         out.push('겹침(' + Math.round(kids[i-1].right - kids[i].left) + 'px): '
@@ -394,13 +621,23 @@ _MEASURE_JS = """() => {
         break;
       }
   });
-  // ③ 카드 밖으로 밀려났나
+  // ③ 칸 안에서 잘렸나 — **overflow:hidden은 조용히 글자를 먹는다**
+  //    실측: 팀명 칸 178px에 '페퍼저축은행'(6자)이 '페퍼저축은헹'으로 잘려 나갔고
+  //    접힘·겹침·이탈·폰트 검사 넷이 전부 통과했다. 높이도 정상, 카드 안에도 있고,
+  //    폰트도 크다 — 잘린 것만 아무도 안 봤다(약점 62·92의 새 얼굴).
+  document.querySelectorAll('.card *').forEach(el => {
+    if (el.children.length === 0 && el.textContent.trim()
+        && el.scrollWidth > el.clientWidth + 1)
+      out.push('잘림(' + (el.scrollWidth - el.clientWidth) + 'px): '
+               + el.textContent.trim().slice(0, 20));
+  });
+  // ④ 카드 밖으로 밀려났나
   document.querySelectorAll('.card *').forEach(el => {
     const r = el.getBoundingClientRect();
     if (r.width > 0 && (r.right > cr.right + 1 || r.left < cr.left - 1))
       out.push('이탈: ' + el.textContent.trim().slice(0, 20));
   });
-  // ④ 읽을 수 없이 작은 글자
+  // ⑤ 읽을 수 없이 작은 글자
   document.querySelectorAll('.card *').forEach(el => {
     if (el.children.length === 0 && el.textContent.trim()) {
       const fs = parseFloat(getComputedStyle(el).fontSize);
@@ -408,7 +645,7 @@ _MEASURE_JS = """() => {
         out.push('작은 글자 ' + fs + 'px: ' + el.textContent.trim().slice(0, 18));
     }
   });
-  // ⑤ 한글이 두부로 그려지나 — 폰트가 없으면 오류도 경고도 없이 □□□가 된다
+  // ⑥ 한글이 두부로 그려지나 — 폰트가 없으면 오류도 경고도 없이 □□□가 된다
   const c = document.createElement('canvas'), x = c.getContext('2d');
   x.font = '40px Pretendard, "Noto Sans KR", sans-serif';
   const ko = x.measureText('가').width;

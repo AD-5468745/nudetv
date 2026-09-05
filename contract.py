@@ -543,6 +543,20 @@ class PlayerLine:
     pitching: Optional[dict] = None   # IP H ER K BB ERA WHIP decision
 
 
+@dataclass(frozen=True)
+class Goal:
+    """축구 득점 하나. **소스가 준 것만 담는다** — 도움·상황 설명은 넣지 않는다.
+
+    `own_goal`은 소스가 `ownGoal` 플래그로 직접 준다. 우리가 추론하지 않는다.
+    관례대로 자책골은 **득점한 팀 쪽**에 기록하고 넣은 선수 이름을 쓴다.
+    """
+    minute: int                       # 경기 시간(분)
+    side: str                         # "home" | "away" — 득점한 팀
+    name: str                         # 선수명. **읽을 수 있는 표기만** (is_readable_ko)
+    own_goal: bool = False
+    added: int = 0                    # 추가시간(45+2의 2). 없으면 0
+
+
 @dataclass
 class GameMeta:
     decided_by: DecidedBy = DecidedBy.REGULAR
@@ -568,7 +582,24 @@ class GameMeta:
     # v1.9 신설 — 인플레이 스코어보드
     period: Optional[int] = None            # 이닝/쿼터/세트 번호
     period_state: Optional[str] = None      # "top"/"bot"/"HT" 등
+    # **구간별 점수. 순서는 언제나 (홈, 원정)이다.**
+    # 야구=이닝 · 농구=쿼터 · 배구=세트. 종목이 달라도 이 한 칸을 쓴다 —
+    # 카드도 함수 하나(`body_periods`)로 넷을 다 그린다.
+    # 배구는 소스가 **안 한 세트도 0:0으로 항상 5개**를 준다. 담기 전에 거른다.
     line_score: list[tuple[int, int]] = field(default_factory=list)
+
+    # v1.12 신설 — 흐름표의 나머지 세 조각
+    #
+    # `line_totals` — 구간 합계 오른쪽에 붙는 칸. 키가 곧 카드에 찍히는 라벨이다.
+    #   야구 {"R": (4, 14), "H": (10, 19), "E": (2, 0)}   값은 (홈, 원정)
+    #   농구·배구는 합계가 구간의 합이라 비워 둔다(카드가 직접 더한다).
+    # `goals` — 축구. 구간이 없는 종목이라 시각이 곧 흐름이다.
+    # `highlights` — (라벨, 문장) 쌍. **소스가 문장으로 준 것만 넣는다.**
+    #   예: ("결승타", "장규현 · 2회 2사 1,3루 우중간 안타")
+    #   우리가 문장을 만들면 그 순간 지어낸 것이 된다(FACT_LOCK).
+    line_totals: dict = field(default_factory=dict)
+    goals: tuple = ()
+    highlights: tuple = ()
 
     # v1.9 신설 — 코리안리거·리더보드
     player_lines: list[PlayerLine] = field(default_factory=list)
@@ -2348,15 +2379,15 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
     },
     League.VLEAGUE_M: {
         "KAL": "대한항공", "HDC": "현대캐피탈", "SFI": "삼성화재", "WOORI": "우리카드",
-        "OK": "OK저축은행", "KEPCO": "한국전력", "KB": "KB손보",
+        "OK": "OK저축은행", "KEPCO": "한국전력", "KB": "KB손해보험",
     },
     League.VLEAGUE_W: {
-        "HK": "흥국생명", "HDE": "현대건설", "GS": "GS칼텍스", "KEC": "도로공사",
+        "HK": "흥국생명", "HDE": "현대건설", "GS": "GS칼텍스", "KEC": "한국도로공사",
         "IBK": "IBK기업은행", "KGC": "정관장", "SOOP": "SOOP",
         # 페퍼저축은행은 2026년 SOOP에 인수되어 'SOOP 수퍼스'가 됐다.
         # 지금 소스는 SOOP 코드만 보내지만, 과거 경기를 다시 긁을 때를 대비해 남긴다.
         # (지우면 그 경기들의 팀명이 카드에 'PEPPER'로 찍힌다.)
-        "PEPPER": "페퍼저축",
+        "PEPPER": "페퍼저축은행",
     },
     League.NPB: {
         "YOG": "요미우리", "DEN": "요코하마", "HAN": "한신", "CHU": "주니치",

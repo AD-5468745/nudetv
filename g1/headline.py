@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from contract import (League, ScoreUnit, SCORE_UNIT_BY_LEAGUE, Status,
-                      StreakKind, TEAM_NAMES)
+                      StreakKind, TEAM_NAMES, josa)
 
 
 @dataclass(frozen=True)
@@ -159,12 +159,73 @@ def for_result(games: list, league: League, *, standings: list | None = None
         reasons.discard("")
         # 사유가 하나로 모이면 그것을 쓴다. 여럿이면 뭉뚱그리지 않는다.
         why = reasons.pop() if len(reasons) == 1 else "취소·연기"
+        # **전 경기가 취소면 그렇다고 말한다.**
+        # "2경기 우천취소"만 보면 다른 경기가 남았는지 알 수 없다. 구독자에게
+        # 중요한 것은 사유가 아니라 **오늘 볼 경기가 없다**는 사실이다.
+        # (v1.11h에서 전 경기 취소를 알리기로 한 이유가 그것이었다.)
+        allout = not fin
         return Headline(
             rule="R-CANCEL",
-            text=f"{len(off)}경기 {why}",
-            sub=f"{len(fin)}경기 종료" if fin else "",
+            text=(f"전 경기 {why}" if allout else f"{len(off)}경기 {why}"),
+            sub=(f"{len(off)}경기 모두" if allout
+                 else (f"{len(fin)}경기 종료" if fin else "")),
             facts={"off": len(off), "final": len(fin), "reason": why})
     return None
+
+
+def for_single_result(game, league: League) -> Optional[Headline]:
+    """한 경기짜리 결과 카드의 머리말 (v1.12).
+
+    **묶음 카드와 규칙이 다르다.** 다섯 경기를 한 장에 담을 때는 "5경기 종료"가
+    맞지만, 한 경기만 담은 카드에서 그 말은 아무것도 알려주지 않는다.
+    한 경기에는 그 경기의 이야기가 있다 — 흐름표가 그것을 보여주므로,
+    머리말은 **표에서 눈에 띄는 한 가지**를 말한다.
+
+    문장에 찍는 모든 수는 `facts`에 담는다. 출처를 못 대는 수는 지어낸 것이다.
+    """
+    if not game.score or game.status is not Status.FINAL:
+        return None
+    a, h = game.score.away, game.score.home
+    an = TEAM_NAMES.get(league, {}).get(_code(game.away), _code(game.away))
+    hn = TEAM_NAMES.get(league, {}).get(_code(game.home), _code(game.home))
+    text = f"{an} {a} : {h} {hn}"
+    facts: dict = {"away": a, "home": h}
+    rows = list(getattr(game.meta, "line_score", ()) or ())
+
+    # ① 한 구간에 몰아친 점수 — 표에서 가장 먼저 눈에 띄는 칸이다
+    if rows:
+        best_i = best_v = None
+        for i, (hv, av) in enumerate(rows):
+            for v in (hv, av):
+                if v is not None and (best_v is None or v > best_v):
+                    best_i, best_v = i + 1, v
+        if best_v is not None and best_v >= BIG_PERIOD_RUNS:
+            facts["period"] = best_i
+            facts["runs"] = best_v
+            unit = SCORE_UNIT_BY_LEAGUE.get(league)
+            word = "세트" if unit is ScoreUnit.SETS else (
+                "쿼터" if unit is ScoreUnit.POINTS else "회")
+            return Headline(rule="G-BIGPERIOD", text=text,
+                            sub=f"{best_i}{word}에만 {best_v}점", facts=facts)
+
+    # ② 한 점 차 — 표 없이도 말할 수 있는 사실
+    if abs(a - h) == 1:
+        return Headline(rule="G-CLOSE", text=text, sub="한 점 차", facts=facts)
+
+    # ③ 대승 — 리그별 실측 상위 10% 임계값을 그대로 쓴다
+    margin = BLOWOUT_MARGIN.get(league)
+    if margin and abs(a - h) >= margin:
+        facts["margin"] = abs(a - h)
+        return Headline(rule="G-BLOWOUT1", text=text,
+                        sub=f"{abs(a - h)}점 차", facts=facts)
+
+    # ④ 아무 규칙도 안 걸리면 **점수만** 말한다. 없는 이야기를 짓지 않는다.
+    return Headline(rule="G-SCORE", text=text, sub="", facts=facts)
+
+
+# 한 구간에 이만큼 나면 그 자체가 이야기다. 카드에서 강조되는 칸과 같은 값을 쓴다 —
+# 두 곳이 다르면 "강조된 칸"과 "머리말이 말하는 칸"이 어긋난다.
+BIG_PERIOD_RUNS = 4
 
 
 # ══════════════════════════════════════════════════════════════
@@ -405,6 +466,150 @@ def fallback(kind: str, **kw) -> Headline:
     raise ValueError(f"모르는 종류: {kind}")
 
 
+# ══════════════════════════════════════════════════════════════
+# 관전 포인트 — "어느 쪽이 좋아 보이나" (v1.12 신설)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 요청: *"어느 팀이 더 좋아보인다 프로토 고객들을 위한 분석 예상글도
+# 간단히 재미있게 적어주는게 어때?"*
+#
+# **하는 것과 안 하는 것을 분명히 가른다.**
+#
+#   한다  — 우리가 가진 숫자를 읽어 준다. "여섯 중 다섯을 삼성이 가져간다",
+#           "가장 벌어진 곳은 평균자책 4.13 대 4.78". 전부 데이터에 있는 수다.
+#   안 한다 — 승률·확률·추천. "삼성 승리 확률 62%"를 쓰려면 모델이 있어야 하는데
+#           우리에겐 없다. 없는 것을 쓰면 그 순간 카드가 지어낸 말을 하는 것이고,
+#           틀렸을 때 브랜드에 남는 상처가 재미보다 크다.
+#
+# **한쪽 근거만 대면 예측이 되고, 양쪽을 다 대면 정보가 된다.**
+# 그래서 뒤진 쪽이 앞선 항목이 하나라도 있으면 **반드시 함께 적는다** —
+# 이것이 이 규칙의 핵심이고, 아래 게이트가 그것을 강제한다.
+
+# **예상은 하되 단정은 안 한다.**
+# 대표님 정정: "승부예측이라기 보다는 어디가 이길것같다 예상".
+# 그래서 방향은 분명히 가리킨다 — "삼성 우세". 다만 아래 낱말은 계속 막는다.
+#   확률·배당 — 모델이 없으면 지어낸 수다
+#   추천·픽·베팅 — 돈을 걸라는 말이 되고, 그건 우리가 할 말이 아니다
+#   필승·무조건·장담·확실 — 결과를 보장하는 말. 예상은 보장이 아니다
+BANNED_WORDS = ("확률", "배당", "추천", "배팅", "베팅", "픽",
+                "적중", "필승", "무조건", "장담", "확실")
+
+# 우세의 정도를 말로 옮긴다. **몇 대 몇인지에 따라 세기가 달라진다** —
+# 4대 2와 6대 0을 똑같이 "우세"라 하면 그 말이 아무 뜻도 없어진다.
+def _edge_word(lead: int, trail: int) -> str:
+    """**비율이 아니라 격차로 잰다.** 4대 2를 비율로 재면 0.67이라 '근소'로
+    떨어지는데, 사람 눈에 4대 2는 근소가 아니다. 몇 개 더 가져갔는지가 곧 세기다."""
+    d = lead - trail
+    if d >= 4:
+        return "크게 우세"
+    if d >= 2:
+        return "우세"
+    return "근소 우세"
+
+
+@dataclass(frozen=True)
+class Metric:
+    """비교 항목 하나. `higher_better`가 방향을 정한다 — 평균자책은 낮아야 좋다."""
+    label: str
+    away_text: str          # 카드에 찍히는 표기 ("4.13")
+    home_text: str
+    away_val: float         # 비교용 수
+    home_val: float
+    higher_better: bool = True
+    # **'가장 벌어진 곳'으로 뽑힐 수 있는가.** 순위는 안 된다 — 순위는 다른
+    # 항목들의 *결과*라서, "가장 벌어진 곳은 순위"는 동어반복이 된다
+    # ("1위와 3위인 이유는 1위와 3위이기 때문"). 실측에서 실제로 그렇게 나왔다.
+    can_headline: bool = True
+
+    def winner(self) -> str:
+        if self.away_val == self.home_val:
+            return ""
+        a_better = (self.away_val > self.home_val) if self.higher_better else (
+            self.away_val < self.home_val)
+        return "away" if a_better else "home"
+
+    def gap(self) -> float:
+        base = max(abs(self.away_val), abs(self.home_val)) or 1.0
+        return abs(self.away_val - self.home_val) / base
+
+
+@dataclass(frozen=True)
+class Verdict:
+    rule: str
+    lines: tuple
+    facts: dict = field(default_factory=dict)
+    pick: str = ""          # 카드 배지에 찍히는 한 줄 — "삼성 우세" · "팽팽"
+
+
+def for_preview(*, away_name: str, home_name: str, metrics: list,
+                h2h_text: str = "") -> Optional[Verdict]:
+    """관전 포인트를 만든다. 항목이 셋보다 적으면 만들지 않는다.
+
+    **숫자가 갈리면 갈렸다고 쓴다.** 억지로 한쪽을 고르지 않는다 —
+    그것이 곧 예측이 되기 때문이다.
+    """
+    graded = [m for m in metrics if m.winner()]
+    if len(metrics) < 3 or not graded:
+        return None
+    a_win = [m for m in graded if m.winner() == "away"]
+    h_win = [m for m in graded if m.winner() == "home"]
+    lead_name, lead, trail_name, trail = (
+        (away_name, a_win, home_name, h_win) if len(a_win) >= len(h_win)
+        else (home_name, h_win, away_name, a_win))
+
+    # **분모는 '비교한 항목'이 아니라 '승부가 갈린 항목'이다.**
+    # 동점을 분모에 넣으면 "6개 중 3개"가 "나머지 3개는 상대 것"으로 읽힌다 —
+    # 실제로는 2개와 동점 1개인데. 검증이 이것을 잡았다.
+    n = len(graded)
+    facts: dict = {"total": n, "lead": len(lead), "trail": len(trail),
+                   "compared": len(metrics)}
+    lines: list = []
+
+    if len(lead) == len(trail):
+        # **억지로 한쪽을 고르지 않는다.** 반반이면 반반이라고 말하는 것이
+        # 예상이고, 그때 한쪽을 찍는 것은 예상이 아니라 찍기다.
+        lines.append(f"기록이 반씩 갈린다 — {n}개 항목 중 "
+                     f"{len(lead)}대 {len(trail)}.")
+        return _verdict(rule="V-SPLIT", lines=lines, facts=facts, lead=lead,
+                        trail=trail, trail_name=trail_name, h2h_text=h2h_text,
+                        pick="팽팽")
+    word = _edge_word(len(lead), len(trail))
+    facts["edge"] = word
+    lines.append(f"기록은 {lead_name} 쪽이다. "
+                 f"{n}개 항목 중 {len(lead)}개를 가져간다.")
+    return _verdict(rule="V-EDGE", lines=lines, facts=facts, lead=lead,
+                    trail=trail, trail_name=trail_name, h2h_text=h2h_text,
+                    pick=f"{lead_name} {word}")
+
+
+def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick):
+    """첫 줄 뒤는 규칙이 갈리지 않는다 — 격차·반대 근거·맞대결은 늘 같은 순서다."""
+
+    pool = [m for m in lead if m.can_headline] or lead
+    top = max(pool, key=lambda m: m.gap())
+    facts["top_label"] = top.label
+    facts["top_away"] = top.away_text
+    facts["top_home"] = top.home_text
+    lines.append(f"가장 벌어진 곳은 {top.label} — "
+                 f"{top.away_text} 대 {top.home_text}.")
+
+    # **반대 근거.** 뒤진 쪽이 앞선 항목이 있으면 반드시 적는다 —
+    # 한쪽 말만 하면 그것은 정보가 아니라 예측이다.
+    if trail:
+        tpool = [m for m in trail if m.can_headline] or trail
+        t = max(tpool, key=lambda m: m.gap())
+        facts["counter_label"] = t.label
+        facts["counter_away"] = t.away_text
+        facts["counter_home"] = t.home_text
+        lines.append(f"다만 {t.label}{josa(t.label, '은', '는')} "
+                     f"{trail_name}{josa(trail_name, '이', '가')} 낫다 — "
+                     f"{t.away_text} 대 {t.home_text}.")
+    if h2h_text:
+        facts["h2h"] = h2h_text
+        lines.append(f"올해 맞대결은 {h2h_text}.")
+    return Verdict(rule=rule, lines=tuple(lines), facts=dict(facts), pick=pick)
+
+
 # 이 파일이 만들 수 있는 규칙 전부. **게이트가 이 목록으로 미등록 규칙을 막는다** —
 # 새 규칙을 넣으면 여기 한 줄 더해야 하고, 그때 '이게 정말 사실인가'를 한 번 더 생각하게 된다.
 ALL_RULES = frozenset({
@@ -415,4 +620,6 @@ ALL_RULES = frozenset({
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
     "N-COUNT",
+    "V-EDGE", "V-SPLIT",
+    "G-BIGPERIOD", "G-CLOSE", "G-BLOWOUT1", "G-SCORE",
 })
