@@ -1,40 +1,40 @@
 {
- "at": "2026-09-05T02:34:57.068027+00:00",
+ "at": "2026-09-05T02:40:12.711227+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-05T02:28:49.155897+00:00",
+   "at": "2026-09-05T02:40:12.711227+00:00",
    "count": 238,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "MLB": {
-   "at": "2026-09-05T02:28:49.155897+00:00",
+   "at": "2026-09-05T02:40:12.711227+00:00",
    "count": 96,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "KBL": {
    "at": "2026-09-05T02:28:49.155897+00:00",
    "count": 0,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_M": {
    "at": "2026-09-05T02:28:49.155897+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_W": {
    "at": "2026-09-05T02:28:49.155897+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "KL1": {
-   "at": "2026-09-05T02:28:49.155897+00:00",
+   "at": "2026-09-05T02:40:12.711227+00:00",
    "count": 60,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "NPB": {
-   "at": "2026-09-05T02:28:49.155897+00:00",
+   "at": "2026-09-05T02:40:12.711227+00:00",
    "count": 289,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "LCK": {
    "at": "2026-09-05T01:50:12.196431+00:00",
@@ -42,7 +42,7 @@
    "cache_hours": 6.2,
    "error_kind": "ratelimited",
    "failed_at": "2026-09-05T01:50:12.196431+00:00",
-   "stale_hours": 7.0
+   "stale_hours": 7.1
   },
   "INTL_LOL": {
    "at": "2026-09-04T21:07:32.990525+00:00",
@@ -50,10 +50,10 @@
    "cache_hours": 0.5,
    "error_kind": "ratelimited",
    "failed_at": "2026-09-04T21:07:32.990525+00:00",
-   "stale_hours": 6.0
+   "stale_hours": 6.1
   }
  },
- "alert_lines": 1,
+ "alert_lines": 2,
  "stale_blocked": [],
  "coverage_ok": true
 }
