@@ -1,40 +1,40 @@
 {
- "at": "2026-09-05T02:07:12.680142+00:00",
+ "at": "2026-09-05T02:12:43.926412+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-05T02:07:12.680142+00:00",
    "count": 238,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "MLB": {
    "at": "2026-09-05T02:07:12.680142+00:00",
    "count": 96,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "KBL": {
    "at": "2026-09-05T01:55:46.363867+00:00",
    "count": 0,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_M": {
    "at": "2026-09-05T01:55:46.363867+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_W": {
    "at": "2026-09-05T01:55:46.363867+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "KL1": {
    "at": "2026-09-05T02:07:12.680142+00:00",
    "count": 60,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "NPB": {
    "at": "2026-09-05T02:07:12.680142+00:00",
    "count": 289,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "LCK": {
    "at": "2026-09-05T01:50:12.196431+00:00",
@@ -42,7 +42,7 @@
    "cache_hours": 6.2,
    "error_kind": "ratelimited",
    "failed_at": "2026-09-05T01:50:12.196431+00:00",
-   "stale_hours": 6.5
+   "stale_hours": 6.6
   },
   "INTL_LOL": {
    "at": "2026-09-04T21:07:32.990525+00:00",
@@ -50,7 +50,7 @@
    "cache_hours": 0.5,
    "error_kind": "ratelimited",
    "failed_at": "2026-09-04T21:07:32.990525+00:00",
-   "stale_hours": 5.5
+   "stale_hours": 5.6
   }
  },
  "alert_lines": 1,
