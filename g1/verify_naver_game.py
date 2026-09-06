@@ -228,5 +228,59 @@ check("★ 소스가 죽어도 예외를 밖으로 내보내지 않는다 (결�
 check("소스가 죽은 것을 알림에 남긴다",
       any("보강 실패" in x for x in b.notices), str(b.notices))
 
+
+# ══════════════════════════════════════════════════════════════
+# 캐시 청소 — **캐시는 늙어 죽어야 한다** (fix51)
+# ══════════════════════════════════════════════════════════════
+#
+# 종료 경기 원본은 디스크에 영구 보관하는데, 이 폴더(`g1/cache`)는 워크플로
+# 캐시 경로에 들어 있어 **실행이 바뀌어도 살아남는다.** 지우는 사람이 없으면
+# 시즌 내내 쌓이고, 캐시를 복원·저장하는 시간이 매 실행 앞뒤에 그대로 붙는다.
+print("\n캐시 청소 (fix51)")
+import os as _os
+import tempfile as _tf
+import time as _tm
+
+_cd = pathlib.Path(_tf.mkdtemp())
+_old = _cd / "old.json"
+_new = _cd / "new.json"
+_old.write_text('{"gameId": "old"}', encoding="utf-8")
+_new.write_text('{"gameId": "new"}', encoding="utf-8")
+_ago = _tm.time() - (NG.CACHE_KEEP_DAYS + 1) * 86400
+_os.utime(_old, (_ago, _ago))
+
+_pa = NG.NaverGameAdapter(sleep=lambda *_: None, cache_dir=_cd)
+_pa._prune_cache()
+check("★ 상한을 넘긴 원본은 지운다 (캐시가 무한히 자라지 않는다)", not _old.exists())
+check("★ 아직 쓸 원본은 남긴다 (지나친 청소는 소스를 다시 두드리게 만든다)",
+      _new.exists())
+check("정리한 것을 알림에 남긴다 (정상 동작이므로 정보 등급)",
+      any("묵은 경기 캐시 정리" in x for x in _pa.notices), str(_pa.notices))
+
+# 한 프로세스에 한 번만 — 매 경기마다 폴더를 훑으면 그 자체가 비용이다
+_pa2 = NG.NaverGameAdapter(sleep=lambda *_: None, cache_dir=_cd)
+_scans = []
+_real_glob = pathlib.Path.glob
+pathlib.Path.glob = lambda self, pat: (_scans.append(1), _real_glob(self, pat))[1]
+try:
+    _pa2._prune_cache()
+    _pa2._prune_cache()
+    _pa2._prune_cache()
+finally:
+    pathlib.Path.glob = _real_glob
+check("청소는 한 프로세스에 한 번만 돈다", len(_scans) == 1, f"{len(_scans)}회")
+
+# 폴더가 없어도, 파일이 깨져 있어도 본 작업을 죽이지 않는다
+_pa3 = NG.NaverGameAdapter(sleep=lambda *_: None, cache_dir=_cd / "없는폴더")
+def _prune_ok(a):
+    try:
+        a._prune_cache()
+        return True
+    except Exception:
+        return False
+
+check("★ 캐시 폴더가 없어도 죽지 않는다 (청소가 본 작업을 죽이면 안 된다)",
+      _prune_ok(_pa3))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

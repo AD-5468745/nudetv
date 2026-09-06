@@ -516,6 +516,19 @@ class Metric:
     away_val: float         # 비교용 수
     home_val: float
     higher_better: bool = True
+    # **이 값이 언제 기준인가 (v1.12b, 약점 123).**
+    #
+    # 네이버 `preview`는 경기 **전날** 만들어져 굳고(`generateDate`),
+    # `statistics`는 **지금**을 준다. 실측 2026-09-05:
+    #     preview     삼성 70승 46패 · 2위   (9/4 기준)
+    #     statistics  삼성 71승 46패 · 1위   (지금)
+    # 둘 다 맞다 — 시점이 다를 뿐이다. 그런데 한 카드가 둘을 섞으면
+    # **카드가 스스로 모순된다.** 구독자는 어느 쪽이 맞는지 알 길이 없고,
+    # 그 순간 카드의 모든 숫자가 못 믿을 것이 된다.
+    #
+    # 그래서 시점을 값에 붙여 들고 다닌다. 빈 문자열은 '안 밝힘'이고,
+    # 섞이면 `for_preview`가 카드를 **만들지 않는다**(아래 게이트).
+    as_of: str = ""
     # **'가장 벌어진 곳'으로 뽑힐 수 있는가.** 순위는 안 된다 — 순위는 다른
     # 항목들의 *결과*라서, "가장 벌어진 곳은 순위"는 동어반복이 된다
     # ("1위와 3위인 이유는 1위와 3위이기 때문"). 실측에서 실제로 그렇게 나왔다.
@@ -548,6 +561,14 @@ def for_preview(*, away_name: str, home_name: str, metrics: list,
     **숫자가 갈리면 갈렸다고 쓴다.** 억지로 한쪽을 고르지 않는다 —
     그것이 곧 예측이 되기 때문이다.
     """
+    # ── 시점 게이트 (약점 123) ──────────────────────────────
+    # **한 카드는 한 시점만 말한다.** 항목마다 기준일이 다르면 카드를 만들지
+    # 않는다 — 틀린 카드를 내느니 안 내는 쪽이 언제나 낫다.
+    # 이 게이트는 분석 카드를 배선하기 **전에** 세운다. 배선하면서 세우면
+    # 그때 잊고, 잊으면 조용히 틀린 카드가 나간다.
+    stamps = {m.as_of for m in metrics if getattr(m, "as_of", "")}
+    if len(stamps) > 1:
+        return None
     graded = [m for m in metrics if m.winner()]
     if len(metrics) < 3 or not graded:
         return None
@@ -563,6 +584,10 @@ def for_preview(*, away_name: str, home_name: str, metrics: list,
     n = len(graded)
     facts: dict = {"total": n, "lead": len(lead), "trail": len(trail),
                    "compared": len(metrics)}
+    # 시점을 밝혔으면 카드 꼬리말에 그대로 찍는다 — "언제 기준인가"를
+    # 구독자가 알 수 있어야 숫자를 믿을 수 있다.
+    if stamps:
+        facts["as_of"] = next(iter(stamps))
     lines: list = []
 
     if len(lead) == len(trail):

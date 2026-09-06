@@ -510,10 +510,8 @@ def _enrich_flow(name: str, league, games: list, soft: list) -> None:
             _FLOW_ADAPTER = NaverGameAdapter()
         ad = _FLOW_ADAPTER
         ad.reset_notices()
-        old = getattr(ad, "MAX", None)
-        import adapters.naver_game as _ng
-        _ng.MAX_GAMES_PER_TICK = FLOW_MAX_PER_LEAGUE
-        done = ad.enrich(games, league)
+        # 상한은 **인자로** 넘긴다. 전역을 덮어쓰면 되돌아오지 않는다(fix49).
+        done = ad.enrich(games, league, limit=FLOW_MAX_PER_LEAGUE)
         if done:
             print(f"  [흐름] {name} {done}건")
         # 어댑터가 남긴 메모를 그대로 알림에 싣는다 — 이름이 통일돼 있어서
@@ -815,10 +813,65 @@ def _save_games(name: str, games: list) -> None:
         "set_scores": [list(x) for x in g.meta.set_scores] if g.meta.set_scores else None,
         "doubleheader_seq": g.meta.doubleheader_seq,
         "is_dome": g.meta.is_dome,
+        # **v1.12 흐름 — 담지 않았더니 기능이 통째로 죽어 있었다 (fix49).**
+        #
+        # 카드는 메모리의 games가 아니라 **여기 저장한 것을 되읽어서** 그린다
+        # (`tick()`의 `snaps = all_games()`). 수집 직후 `_enrich_flow`가 흐름을
+        # 얹어도 이 목록에 없으면 저장에서 조용히 사라지고, 되읽은 Game에는
+        # 흐름이 없어 카드가 **언제나** 한 줄 요약으로 떨어진다.
+        # 게다가 다음 틱은 '아직 흐름 없음'으로 보고 보강을 처음부터 다시 한다.
+        #
+        # v1.11h에서 `decided_by`·`gender`가 똑같이 유실됐다 — **두 번째다.**
+        # 그래서 아래 `assert_meta_persisted()`로 구조 검사를 세웠다:
+        # 이제 GameMeta에 필드를 늘리면 여기에 담거나 예외로 적어야 통과한다.
+        "line_score": [list(x) for x in g.meta.line_score] if g.meta.line_score else None,
+        "line_totals": ({k: list(v) for k, v in g.meta.line_totals.items()}
+                        if g.meta.line_totals else None),
+        "goals": ([[x.minute, x.side, x.name, x.own_goal, x.added]
+                   for x in g.meta.goals] if g.meta.goals else None),
+        "highlights": [list(x) for x in g.meta.highlights] if g.meta.highlights else None,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     tmp.replace(_snap_path(name))          # 원자적 교체 — 중간에 죽어도 반쪽 파일이 남지 않는다
+
+
+# ── 저장 누락 게이트 (fix49) ──────────────────────────────────
+#
+# **게이트가 '목록'이면 반드시 구멍이 난다** — 그래서 '전체 − 예외'로 뒤집는다.
+# `_save_games`가 담는 키를 세는 대신, **GameMeta의 모든 필드**를 훑어
+# "저장되거나, 안 하는 이유가 적혀 있거나" 둘 중 하나를 강제한다.
+# 필드를 새로 만들면 이 검사가 자동으로 걸린다 — 사람이 기억할 필요가 없다.
+#
+# 같은 사고가 두 번 났다: v1.11h(`decided_by`·`gender` 유실 → 스냅샷 1,000건 중
+# 252건 실패), v1.12(`line_score` 등 유실 → 흐름표가 한 장도 안 나감).
+# 두 번째부터는 규칙으로 만든다.
+
+# 일부러 저장하지 않는 필드 — **이유를 함께 적는다.** 이유가 없으면 예외가 아니라 구멍이다.
+META_NOT_PERSISTED = {
+    "period": "인플레이 값 — 매 틱 새로 수집한다. 저장하면 지난 값이 살아난다",
+    "period_state": "인플레이 값 — 위와 같다",
+    "weather": "실시간 값 — 저장된 날씨는 사실이 아니게 된다",
+    "starting_pitchers": "경기 전 정보 — 예고 카드 경로가 매 틱 새로 받는다",
+    "player_lines": "기록 경로(run_records)가 따로 채운다 — 스냅샷의 몫이 아니다",
+    "analysis_metrics": "분석 카드 경로가 그 자리에서 만든다",
+    "shortened_innings": "아직 어느 어댑터도 채우지 않는다(미사용 필드)",
+}
+
+
+def assert_meta_persisted() -> list[str]:
+    """저장 스키마에서 빠진 GameMeta 필드를 돌려준다. 비어 있으면 통과."""
+    from dataclasses import fields
+    from contract import GameMeta
+    import inspect
+    src = inspect.getsource(_save_games)
+    missing = []
+    for f in fields(GameMeta):
+        if f.name in META_NOT_PERSISTED:
+            continue
+        if f'"{f.name}"' not in src:
+            missing.append(f.name)
+    return missing
 
 
 def _load_raw(name: str) -> list:
@@ -834,7 +887,7 @@ def _load_raw(name: str) -> list:
 
 def _load_games(name: str) -> list:
     """스냅샷을 Game으로 되돌린다. 카드 렌더는 이것만 있으면 된다."""
-    from contract import (DecidedBy, Game, GameMeta, Score, ScoreUnit,
+    from contract import (DecidedBy, Game, GameMeta, Goal, Score, ScoreUnit,
                           Status, TeamRef)
     p = _snap_path(name)
     if not p.exists():
@@ -865,7 +918,18 @@ def _load_games(name: str) -> list:
                                      if d.get("penalties") else None),
                           set_scores=[tuple(x) for x in (d.get("set_scores") or [])],
                           doubleheader_seq=d.get("doubleheader_seq"),
-                          is_dome=bool(d.get("is_dome")))))
+                          is_dome=bool(d.get("is_dome")),
+                          # v1.12 흐름 (fix49) — 저장한 것을 그대로 되돌린다.
+                          # 없으면 기본값이라 옛 스냅샷도 그냥 읽힌다.
+                          line_score=[tuple(x) for x in (d.get("line_score") or [])],
+                          line_totals={k: tuple(v) for k, v
+                                       in (d.get("line_totals") or {}).items()},
+                          goals=tuple(Goal(minute=int(x[0]), side=str(x[1]),
+                                           name=str(x[2]), own_goal=bool(x[3]),
+                                           added=int(x[4]))
+                                      for x in (d.get("goals") or [])),
+                          highlights=tuple(tuple(x)
+                                           for x in (d.get("highlights") or [])))))
 
     # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
     # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나

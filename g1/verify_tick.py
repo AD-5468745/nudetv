@@ -1378,6 +1378,108 @@ check("관측이 본 작업을 죽이지 않는다 (기록이 깨져도)",
       _no_raise(lambda: T._write_health(_HNOW, {"LCK": {"cache_age": "몰라"}},
                                         [], [], _Cov())))
 
+
+# ══════════════════════════════════════════════════════════════
+# 스냅샷 왕복 — **메모리에서 되는 것이 디스크를 지나면 안 된다** (fix49)
+# ══════════════════════════════════════════════════════════════
+#
+# 카드는 수집한 games가 아니라 **저장했다가 되읽은 것**으로 그린다
+# (`tick()`의 `snaps = all_games()`). 그래서 `_save_games`가 안 담는 필드는
+# 카드에 절대 닿지 않는다 — 예외도 경고도 없이, 그냥 없는 것이 된다.
+#
+# 두 번 당했다: v1.11h(`decided_by`·`gender` → 되읽은 1,000건 중 252건 실패),
+# v1.12(`line_score`·`goals` → 흐름표가 실서비스에서 한 장도 안 나감).
+# 검증 809건이 둘 다 못 잡았다 — **왕복을 안 시켜봤기 때문이다.**
+
+from contract import Goal as _Goal
+
+# ① 구조 검사 — 목록이 아니라 '전체 − 예외'다. 필드를 늘리면 자동으로 걸린다.
+_miss = T.assert_meta_persisted()
+check("★ GameMeta의 모든 필드가 저장되거나 예외로 적혀 있다",
+      _miss == [], f"저장 목록에서 빠진 필드: {_miss}")
+check("저장 안 하는 필드마다 이유가 적혀 있다",
+      all(isinstance(v, str) and len(v) > 10 for v in T.META_NOT_PERSISTED.values()))
+
+# ② 변이시험 — 게이트가 진짜 잡는지. 안 잡으면 게이트가 아니라 장식이다.
+import inspect as _insp
+from dataclasses import fields as _dcf
+_src_mut = _insp.getsource(T._save_games).replace('"line_score"', '"ZZZ"')
+_caught = [f.name for f in _dcf(GameMeta)
+           if f.name not in T.META_NOT_PERSISTED and f'"{f.name}"' not in _src_mut]
+check("★ 변이시험 — 저장 목록에서 필드를 빼면 게이트가 잡는다",
+      _caught == ["line_score"], str(_caught))
+
+# ③ 실제 왕복 — 야구 흐름이 디스크를 지나 살아 돌아오는가
+_rtdir = pathlib.Path(tempfile.mkdtemp())
+_old_snap = T._snap_path
+T._snap_path = lambda n: _rtdir / f"{n}.json"
+try:
+    _bg = Game(league=League.KBO, season="2026", source_key="rt1",
+               home=TeamRef(League.KBO, "HH"), away=TeamRef(League.KBO, "LT"),
+               start_utc=datetime(2026, 9, 5, 9, 30, tzinfo=timezone.utc),
+               home_tz="Asia/Seoul", status=Status.FINAL,
+               score=Score(11, 6, ScoreUnit.RUNS), venue="대전")
+    _bg.meta.line_score = [(0, 1), (6, 0), (5, 5)]
+    _bg.meta.line_totals = {"R": (11, 6), "H": (14, 9), "E": (0, 1)}
+    _bg.meta.highlights = (("결승타", "장규현 · 8회 2사 1,3루 우중간 안타"),)
+    T._save_games("rtkbo", [_bg])
+    _rb = T._load_games("rtkbo")[0]
+    check("★ 이닝별 점수가 디스크를 지나 살아온다",
+          _rb.meta.line_score == [(0, 1), (6, 0), (5, 5)], str(_rb.meta.line_score))
+    check("합계(R·H·E)도 살아온다",
+          _rb.meta.line_totals == {"R": (11, 6), "H": (14, 9), "E": (0, 1)},
+          str(_rb.meta.line_totals))
+    check("관전 포인트도 살아온다",
+          _rb.meta.highlights == (("결승타", "장규현 · 8회 2사 1,3루 우중간 안타"),),
+          str(_rb.meta.highlights))
+
+    # ④ 축구 득점 — 자책골 표시와 추가시간까지 살아야 한다
+    _fg = Game(league=League.KL1, season="2026", source_key="rt2",
+               home=TeamRef(League.KL1, "ULS"), away=TeamRef(League.KL1, "JBH"),
+               start_utc=datetime(2026, 9, 5, 10, 0, tzinfo=timezone.utc),
+               home_tz="Asia/Seoul", status=Status.FINAL,
+               score=Score(2, 1, ScoreUnit.GOALS), venue="문수")
+    _fg.meta.goals = (_Goal(minute=23, side="home", name="주민규"),
+                      _Goal(minute=90, side="away", name="김진규",
+                            own_goal=True, added=2))
+    T._save_games("rtkl", [_fg])
+    _rf = T._load_games("rtkl")[0]
+    check("★ 득점 시각·선수가 디스크를 지나 살아온다",
+          len(_rf.meta.goals) == 2 and _rf.meta.goals[0].name == "주민규",
+          str(_rf.meta.goals))
+    check("자책골 표시가 살아온다 (없으면 카드가 남의 골로 적는다)",
+          _rf.meta.goals[1].own_goal is True, str(_rf.meta.goals[1]))
+    check("추가시간이 살아온다", _rf.meta.goals[1].added == 2, str(_rf.meta.goals[1]))
+
+    # ⑤ 옛 스냅샷 호환 — 흐름 없이 저장된 파일도 그냥 읽혀야 한다
+    _snap = json.loads((_rtdir / "rtkbo.json").read_text(encoding="utf-8"))
+    for _k in ("line_score", "line_totals", "goals", "highlights"):
+        _snap[0].pop(_k, None)
+    (_rtdir / "rtold.json").write_text(json.dumps(_snap, ensure_ascii=False),
+                                       encoding="utf-8")
+    _ro = T._load_games("rtold")
+    check("흐름이 없던 옛 스냅샷도 그대로 읽힌다 (배포 순간 빈칸이 되지 않는다)",
+          len(_ro) == 1 and _ro[0].meta.line_score == [] and _ro[0].meta.goals == (),
+          str(_ro[:1]))
+
+    # ⑥ 끝까지 — 되읽은 것으로 v5 카드가 실제로 흐름표를 그리는가
+    import render_v5 as _R5
+    _card = _R5.result_card(T._load_games("rtkbo"), League.KBO, "2026-09-05")
+    check("★ 되읽은 스냅샷으로 흐름표 카드가 만들어진다",
+          bool(_card) and "결승타" in _card[0],
+          "카드 없음" if not _card else "흐름 없음(한 줄 요약으로 떨어짐)")
+finally:
+    T._snap_path = _old_snap
+    shutil.rmtree(_rtdir, ignore_errors=True)
+
+# ⑦ 흐름 보강 상한이 전역을 더럽히지 않는다 (fix49)
+import adapters.naver_game as _ngmod
+_before_max = _ngmod.MAX_GAMES_PER_TICK
+_no_raise(lambda: T._enrich_flow("KBO", League.KBO, [], []))
+check("흐름 상한을 넘겨도 어댑터 전역이 바뀌지 않는다",
+      _ngmod.MAX_GAMES_PER_TICK == _before_max,
+      f"{_before_max} → {_ngmod.MAX_GAMES_PER_TICK}")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

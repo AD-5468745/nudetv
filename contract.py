@@ -3094,9 +3094,30 @@ def assert_recordbook(rb: RecordBook, *, require_h2h: bool = True,
         groups.setdefault(s.group, []).append(s)
     for gname, members in groups.items():
         where = f"{rb.league.value}" + (f"/{gname}" if gname else "")
+        # **동률은 순위를 건너뛴다 — 그것이 정상이다 (v1.12a, 약점 120).**
+        # 1..N을 강요하면 동률이 생기는 날 그 리그의 기록 콘텐츠가 통째로 막힌다.
+        # 2026-09-05 실측: 한화 51-65-3(.440) · 롯데 51-65-2(.440)가 공동 8위가 되어
+        # 순위가 [1..8,8,10]이 됐고, KBO 기록 수집이 게이트에서 죽어
+        # 순위표·부문 순위·경기 분석 세 종류가 8시간 넘게 조용히 멈췄다.
+        # (알림은 v1.11p에서 기록 제동 소음을 막느라 억제돼 있어 로그도 조용했다.)
+        # 규칙(표준 경쟁순위): 첫 순위는 1, 그다음은 '앞과 같거나(동률)'
+        # '자기 자리 번호(i+1)'다. → [1,2,2,4] 통과 · [1,2,2,3]·[1,2,4,4] 차단.
         ranks = sorted(s.rank for s in members)
-        if ranks != list(range(1, len(ranks) + 1)):
+        if not ranks or ranks[0] != 1 or any(
+                r != ranks[i - 1] and r != i + 1
+                for i, r in enumerate(ranks) if i):
             raise GateError(f"{where}: 순위 불연속 {ranks}")
+        # **동률을 허용한 대가로 '진짜 동률인가'를 따로 본다.**
+        # 순위만 느슨하게 풀면 파싱이 한 칸 밀려 생긴 중복 순위가 그대로 통과한다.
+        # 같은 순위라면 게임차도 같아야 한다.
+        _by_rank: dict = {}
+        for s in members:
+            _by_rank.setdefault(s.rank, []).append(s)
+        for _r, _tied in _by_rank.items():
+            _gbs = {str(x.games_behind).strip() for x in _tied}
+            if len(_gbs) > 1:
+                raise GateError(
+                    f"{where}: 공동 {_r}위인데 게임차가 다름 {sorted(_gbs)}")
         prev_gb = None
         for s in sorted(members, key=lambda x: x.rank):
             s.validate()

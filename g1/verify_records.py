@@ -116,6 +116,58 @@ expect_gate("공동순위인데 값이 다름", lambda: broken(
     lambda x: x.leaders["홈런"].__setitem__(1, __import__("dataclasses").replace(
         x.leaders["홈런"][1], rank=1))))
 expect_gate("부문 0건", lambda: broken(lambda x: x.leaders.__setitem__("홈런", [])))
+# ── C-2. 동률 순위 (약점 120 — 2026-09-05 KBO 공동 8위로 기록이 통째로 멈췄다) ──
+# 게이트가 1..N을 강요해 정상 데이터를 막았다. 풀어 준 대신 '진짜 동률인가'를
+# 게임차로 확인한다. **통과해야 하는 것과 막혀야 하는 것을 둘 다 시험한다** —
+# 게이트를 고칠 때도 변이시험이 필요하다(이번 주에 실제로 게이트를 고치다 죽였다).
+print("\nC-2. 동률 순위 (표준 경쟁순위)")
+import dataclasses as _dc
+
+
+def _ranked(base, pairs):
+    """(팀코드, 순위[, 게임차])로 순위표를 다시 매긴 사본."""
+    x = copy.deepcopy(base)
+    idx = {s.team_code: i for i, s in enumerate(x.standings)}
+    for t, r, *gb in pairs:
+        s = x.standings[idx[t]]
+        x.standings[idx[t]] = _dc.replace(s, rank=r,
+                                          **({"games_behind": gb[0]} if gb else {}))
+    return x
+
+
+_order = [s.team_code for s in sorted(rb.standings, key=lambda x: x.rank)]
+_gb = {s.team_code: s.games_behind for s in rb.standings}
+# 실제 표에 동률이 있든 없든 항상 같은 시험이 되게, 8·9번째를 공동 8위로 만든다.
+_t8, _t9, _t10 = _order[7], _order[8], _order[9]
+_tie = [(_t8, 8, _gb[_t8]), (_t9, 8, _gb[_t8]), (_t10, 10, _gb[_t10])]
+
+
+def _pass_case(name, x):
+    global ok, fail
+    try:
+        assert_recordbook(x)
+        ok += 1
+        print(f"  PASS  {name}")
+    except (GateError, UnknownStatus) as e:
+        fail += 1
+        print(f"  FAIL  {name}  게이트가 정상 데이터를 막음: {str(e)[:70]}")
+
+
+_pass_case("공동 8위 [..8,8,10] 통과", _ranked(rb, _tie))
+_pass_case("공동 1위 [1,1,3..] 통과",
+           _ranked(rb, [(_order[0], 1, _gb[_order[0]]),
+                        (_order[1], 1, _gb[_order[0]])]))
+expect_gate("동률인데 건너뛰지 않음 [..8,8,9]",
+            lambda: assert_recordbook(_ranked(rb, _tie[:2] + [(_t10, 9)])))
+expect_gate("동률 없이 건너뜀 [..6,8,8,10]",
+            lambda: assert_recordbook(_ranked(rb, [(_order[6], 8)] + _tie)))
+expect_gate("두 칸 건너뜀 [..8,8,11]",
+            lambda: assert_recordbook(_ranked(rb, _tie[:2] + [(_t10, 11)])))
+expect_gate("공동인데 게임차가 다름 (파싱 밀림)",
+            lambda: assert_recordbook(_ranked(rb, [(_t8, 8, _gb[_t8]),
+                                                   (_t9, 8, _gb[_t9] + "9"),
+                                                   (_t10, 10, _gb[_t10])])))
+
 expect_gate("스냅샷 6시간 초과", lambda: assert_recordbook(
     rb, now_utc=rb.collected_utc + timedelta(seconds=RECORD_MAX_AGE_SECONDS + 60)))
 

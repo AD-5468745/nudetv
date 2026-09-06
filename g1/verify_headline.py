@@ -460,5 +460,39 @@ check("진행 중 경기에는 머리말을 만들지 않는다",
 check("새 규칙이 전부 등록 목록에 있다",
       {"G-BIGPERIOD", "G-CLOSE", "G-BLOWOUT1", "G-SCORE"} <= H.ALL_RULES)
 
+
+# ══════════════════════════════════════════════════════════════
+# 시점 혼합 — **한 카드가 두 시점을 말하지 않는다** (약점 123)
+# ══════════════════════════════════════════════════════════════
+#
+# 네이버 preview는 전날로 굳고 statistics는 지금이다. 실측 2026-09-05에
+# 같은 팀이 한쪽에선 70승 2위, 다른 쪽에선 71승 1위로 나왔다. 둘 다 맞다 —
+# 그런데 한 카드에 섞이면 카드가 스스로 모순되고, 그 순간 카드의 **모든**
+# 숫자가 못 믿을 것이 된다.
+print("\n시점 혼합 (약점 123)")
+import dataclasses as _dch
+
+
+def _stamped(ms, *stamps):
+    return [_dch.replace(m, as_of=s) for m, s in zip(ms, stamps)]
+
+
+_same = _stamped(_SET, *(["2026-09-05"] * len(_SET)))
+_mixed = _stamped(_SET, "2026-09-05", "2026-09-04",
+                  *(["2026-09-05"] * (len(_SET) - 2)))
+
+_r_same = H.for_preview(away_name="삼성", home_name="LG", metrics=_same)
+check("★ 시점이 같으면 평소대로 만든다", _r_same is not None)
+check("기준 시점을 사실로 남긴다 (카드 꼬리말에 찍을 수 있게)",
+      _r_same is not None and _r_same.facts.get("as_of") == "2026-09-05",
+      str(_r_same.facts if _r_same else None))
+check("★ 시점이 섞이면 카드를 만들지 않는다 (틀린 카드보다 없는 카드가 낫다)",
+      H.for_preview(away_name="삼성", home_name="LG", metrics=_mixed) is None)
+check("시점을 아무도 안 밝혔으면 예전처럼 만든다 (옛 호출부가 안 깨진다)",
+      H.for_preview(away_name="삼성", home_name="LG", metrics=_SET) is not None)
+check("시점을 안 밝혔으면 사실에도 안 남긴다 (모르는 것을 아는 척하지 않는다)",
+      "as_of" not in (H.for_preview(away_name="삼성", home_name="LG",
+                                    metrics=_SET).facts))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

@@ -66,6 +66,17 @@ REQUEST_GAP_SECONDS = 1.2
 SCHEDULE_CACHE_SECONDS = 30 * 60          # 그날 경기 목록 — 30분이면 충분하다
 MAX_GAMES_PER_TICK = 40                   # 한 틱에 이 이상은 보강하지 않는다
 
+# **캐시는 반드시 늙어 죽어야 한다 (fix51).**
+#
+# 종료 경기 원본을 디스크에 영구 보관하는데, 이 폴더(`g1/cache`)는 워크플로의
+# 캐시 경로에 들어 있어 **실행이 바뀌어도 살아남는다.** 즉 지우는 사람이 없으면
+# 시즌 내내 쌓인다 — 하루 40~60경기 × 수십 KB면 한 달에 100MB 단위다.
+#
+# 용량 자체보다 **캐시를 복원·저장하는 시간**이 문제다. 그 시간은 매 실행
+# 앞뒤에 그대로 붙고, 시계가 5분마다 도는 시스템에서 1분은 크다.
+# 흐름 보강은 '오늘 끝난 경기'에만 쓰므로 이틀이면 충분하고, 넉넉히 7일을 둔다.
+CACHE_KEEP_DAYS = 7
+
 # 리그 → (상위 카테고리, 카테고리). 실측으로 확인한 것만 적는다.
 NAVER_LEAGUE: dict = {
     League.KBO: ("kbaseball", "kbo"),
@@ -150,7 +161,31 @@ class NaverGameAdapter(NoticeMixin):
             pathlib.Path(__file__).resolve().parents[1] / "cache" / "naver_game")
         self._sched: dict = {}            # (리그, 날짜) → (받은시각, {(원정,홈): gameId})
         self._last_call = 0.0
+        self._pruned = False
         self.reset_notices()
+
+    def _prune_cache(self) -> None:
+        """오래된 경기 원본을 지운다. **한 프로세스에 한 번만.**
+
+        실패해도 아무 일도 없다 — 청소가 본 작업을 죽이면 안 된다(v1.11h).
+        """
+        if self._pruned:
+            return
+        self._pruned = True
+        try:
+            cutoff = time.time() - CACHE_KEEP_DAYS * 86400
+            gone = 0
+            for f in self._cache_dir.glob("*.json"):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                        gone += 1
+                except OSError:
+                    pass
+            if gone:
+                self.note_info("묵은 경기 캐시 정리", f"{gone}건")
+        except OSError:
+            pass
 
     # ── 요청 ──────────────────────────────────────────────────
     def _get(self, path: str, *, label: str) -> dict:
@@ -191,6 +226,7 @@ class NaverGameAdapter(NoticeMixin):
 
         5분마다 도는 시계에서 같은 경기를 다시 받으면 하루 수백 회가 된다.
         """
+        self._prune_cache()
         f = self._cache_dir / f"{gid}.json"
         if f.exists():
             try:
@@ -287,7 +323,7 @@ class NaverGameAdapter(NoticeMixin):
         return True
 
     # ── 바깥에서 부르는 것 ────────────────────────────────────
-    def enrich(self, games: list, league: League) -> int:
+    def enrich(self, games: list, league: League, *, limit: int | None = None) -> int:
         """종료된 경기에 흐름을 채운다. 채운 개수를 돌려준다.
 
         **예외를 던지지 않는다.** 보강이 실패해도 결과 카드는 나가야 한다 —
@@ -299,7 +335,11 @@ class NaverGameAdapter(NoticeMixin):
         todo = [g for g in games
                 if g.status is Status.FINAL and g.score is not None
                 and not g.meta.line_score and not g.meta.goals]
-        for game in todo[:MAX_GAMES_PER_TICK]:
+        # **한 틱에 몇 개까지 볼지는 부르는 쪽이 정한다 (fix49).**
+        # 예전엔 tick이 이 모듈의 전역 `MAX_GAMES_PER_TICK`을 덮어썼다 —
+        # 한 번 덮으면 되돌아오지 않아, 같은 프로세스의 다른 사용처(검증·기록)도
+        # 조용히 그 값으로 돌았다. 인자로 받으면 그런 옆효과가 없다.
+        for game in todo[:(limit or MAX_GAMES_PER_TICK)]:
             try:
                 day = game.start_utc.astimezone(KST).strftime("%Y-%m-%d")
                 sched = self._schedule(league, day)
