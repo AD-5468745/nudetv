@@ -41,7 +41,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 import dataclasses
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
-                      RecordBook, Standing, LeaderEntry,
+                      RecordBook, Standing, LeaderEntry, StreakKind, WLD,
                       Status, UnknownStatus, assert_home_away,
                       demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
@@ -75,6 +75,16 @@ FETCH_EVERY_LIVE_SECONDS = 10 * 60      # 그 리그에 오늘 경기가 있으�
 # 기록(순위·부문)은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
 # NPB는 한 수집이 18페이지·22.9초라 제동이 없으면 하루 288회를 긁는다.
 RECORD_FETCH_EVERY_SECONDS = 30 * 60
+
+# **기록이 이만큼 막히면 '사라진 것'으로 올린다 (fix52).**
+# 기록을 쓰는 콘텐츠 중 가장 자주 나가는 것이 순위표(하루 1회)·부문 순위(하루 1회)다.
+# 3시간이면 그 창(유예 3~6시간)을 절반 넘게 까먹은 것이라, 그 시점엔 이미
+# 그날 것이 위태롭다. 하루를 다 잃고 나서 알리면 늦다.
+RECORD_LOST_SECONDS = 3 * 3600
+
+# 누락 알림의 되풀이 유예. **상태 보고(6시간)보다 훨씬 짧다** —
+# 콘텐츠가 계속 사라지고 있으면 계속 말해야 한다.
+LOST_ALERT_REPEAT_SECONDS = 3600
 
 # **막힌 소스는 이만큼 쉬었다 다시 두드린다.**
 # 위의 30분 제동은 '성공 기록'을 기준으로 하므로, 한 번도 성공 못한 소스에는
@@ -242,6 +252,15 @@ def _collect_records(now: datetime, notes: list) -> dict:
             try:
                 if (now - datetime.fromisoformat(last)).total_seconds() < \
                         RECORD_FETCH_EVERY_SECONDS:
+                    # **제동에 걸린 틱에도 보관본은 쓴다 (fix53).**
+                    # 예전엔 그냥 건너뛰어서, 30분 중 29분 동안은 순위표·부문
+                    # 순위·분석을 **만들 기회 자체가 없었다.** 유예가 3~6시간이라
+                    # 언젠간 걸리지만, 걸릴 때까지는 '만들 내용 없음'이 쌓이고
+                    # 그 소음 속에 진짜 고장이 묻힌다(2026-09-06이 그랬다).
+                    # 6시간 상한 게이트가 그대로 지키므로 묵은 순위는 안 나간다.
+                    _fresh = _load_record_archive(name, now)
+                    if _fresh is not None:
+                        out[name] = _fresh
                     continue
             except ValueError:
                 pass
@@ -255,6 +274,11 @@ def _collect_records(now: datetime, notes: list) -> dict:
             try:
                 if (now - datetime.fromisoformat(failed_at)).total_seconds() < \
                         RETRY_AFTER_FAIL_SECONDS:
+                    # 백오프 중에도 마찬가지다 — 소스를 두드리지 않을 뿐,
+                    # 이미 갖고 있는 것까지 버릴 이유는 없다.
+                    _fresh = _load_record_archive(name, now)
+                    if _fresh is not None:
+                        out[name] = _fresh
                     continue
             except ValueError:
                 pass
@@ -266,10 +290,22 @@ def _collect_records(now: datetime, notes: list) -> dict:
             rb = make()
             out[name] = rb
             log[key] = {"at": _iso(now)}      # 성공 — failed_at을 지운다
+            # **게이트를 통과한 것만 보관한다** (fix53). 다음에 수집이 막히면
+            # 여기서 되살려, 순위표·부문 순위·분석 세 종류가 함께 죽는 것을 막는다.
+            _save_record_archive(name, rb)
         except Exception as e:                               # noqa: BLE001
-            notes.append(f"기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:70]}")
             log[key] = {"at": log.get(key, {}).get("at"), "failed_at": _iso(now),
                         "error": f"{type(e).__name__}: {str(e)[:120]}"}
+            _rb = _load_record_archive(name, now)
+            if _rb is not None:
+                out[name] = _rb
+                _mins = _rb.age_seconds(now) / 60
+                notes.append(f"기록 수집 실패 — {name}: {type(e).__name__} "
+                             f"{str(e)[:70]} → {_mins:.0f}분 전 보관본으로 버팁니다")
+            else:
+                notes.append(f"기록 수집 실패 — {name}: {type(e).__name__} "
+                             f"{str(e)[:70]} (보관본도 못 씁니다 — "
+                             f"순위표·부문 순위·분석이 멈춥니다)")
         _write_fetch_log(log)
     return out
 
@@ -672,6 +708,125 @@ def _kovo_season_code(adapter, today: datetime) -> str:
 # 기록 어댑터가 있는 리그. 지금은 KBO뿐이다 — 다른 리그는 어댑터 자체가 없다
 # (NPB는 npb.jp/bis/2026/stats/std_c.html 이 무인증으로 순위·상대전적까지 준다는 것을
 #  확인했지만 어댑터는 아직 없다. 후속 과제).
+# ══════════════════════════════════════════════════════════════
+# 기록 보관본 — **기록 하나가 막히면 세 콘텐츠가 함께 죽는다** (fix53)
+# ══════════════════════════════════════════════════════════════
+#
+# 순위표·부문 순위·경기 분석은 전부 기록(RecordBook)이 있어야 만들어진다.
+# 그래서 기록 수집이 막히는 순간 **세 종류가 동시에 조용히 사라진다.**
+# 2026-09-05~06에 KBO가 정확히 그랬다 — 게이트가 공동 8위를 거부해
+# 21시간 동안 세 콘텐츠가 통째로 멈췄다.
+#
+# 게이트는 고쳤지만 **다음 번엔 다른 게이트, 다른 소스가 막을 것이다.**
+# 단일 장애점을 그대로 두면 같은 사고가 모양만 바꿔 재발한다.
+#
+# 그래서 **마지막으로 게이트를 통과한 기록을 디스크에 남긴다.** 수집이 실패하면
+# 그것을 되살려 쓴다. 얼마나 묵은 것까지 쓸지는 우리가 정하지 않는다 —
+# `assert_recordbook`의 6시간 상한(RECORD_MAX_AGE_SECONDS)이 그대로 판정한다.
+# 즉 **묵은 순위가 카드에 실릴 일은 구조적으로 없다.** 6시간을 넘으면
+# 되살리기도 게이트에 걸려 지금과 똑같이 '없음'이 된다.
+#
+# **직렬화를 직접 쓴다.** 예전에 여기서 한 번 깨졌다 — RecordBook은 중첩
+# dataclass(record·last10·home·away)와 **tuple 키**(h2h)를 갖고 있어
+# `asdict`+`json`으로는 왕복이 안 된다. 그래서 형태를 손으로 적고,
+# 형태가 바뀌면 버전이 안 맞아 **조용히 썩는 대신 그냥 버려지게** 했다.
+_ARCHIVE_VERSION = 1
+
+
+def _record_archive_path(name: str) -> pathlib.Path:
+    return ROOT / "records" / f"{name}.json"
+
+
+def _wld_out(w):
+    return None if w is None else [w.win, w.loss, w.draw]
+
+
+def _dump_recordbook(rb) -> dict:
+    return {
+        "v": _ARCHIVE_VERSION,
+        "league": rb.league.value, "season": rb.season,
+        "collected_utc": _iso(rb.collected_utc), "source_url": rb.source_url,
+        "standings": [{
+            "league": s.league.value, "season": s.season,
+            "team_code": s.team_code, "rank": s.rank, "games": s.games,
+            "record": _wld_out(s.record), "pct": s.pct,
+            "games_behind": s.games_behind, "last10": _wld_out(s.last10),
+            "streak_kind": s.streak_kind.value, "streak_len": s.streak_len,
+            "home": _wld_out(s.home), "away": _wld_out(s.away),
+            "group": s.group,
+        } for s in rb.standings],
+        # tuple 키는 JSON이 못 담는다 — 목록으로 편다.
+        "h2h": [[a, b, _wld_out(v)] for (a, b), v in rb.h2h.items()],
+        "leaders": {k: [{
+            "category": e.category, "stat_key": e.stat_key, "rank": e.rank,
+            "player_id": e.player_id, "name": e.name,
+            "team_code": e.team_code, "value": e.value,
+        } for e in v] for k, v in rb.leaders.items()},
+    }
+
+
+def _load_recordbook(d: dict):
+    # 이름들은 파일 맨 위에서 이미 들여왔다 — 여기서 또 들이면 정적 검사가
+    # '같은 이름을 두 번 정의'로 잡는다(약점 86: 참고 지적 중 하나가 진짜 사고다).
+    if d.get("v") != _ARCHIVE_VERSION:
+        raise ValueError("보관본 형식이 다릅니다")
+
+    def _wld(x):
+        return None if x is None else WLD(int(x[0]), int(x[1]), int(x[2]))
+
+    return RecordBook(
+        league=League(d["league"]), season=d["season"],
+        collected_utc=datetime.fromisoformat(d["collected_utc"]),
+        source_url=d["source_url"],
+        standings=[Standing(
+            league=League(s["league"]), season=s["season"],
+            team_code=s["team_code"], rank=int(s["rank"]),
+            games=int(s["games"]), record=_wld(s["record"]), pct=s["pct"],
+            games_behind=s["games_behind"], last10=_wld(s.get("last10")),
+            streak_kind=StreakKind(s["streak_kind"]),
+            streak_len=int(s["streak_len"]), home=_wld(s.get("home")),
+            away=_wld(s.get("away")), group=s.get("group"),
+        ) for s in d["standings"]],
+        h2h={(a, b): _wld(v) for a, b, v in d.get("h2h", [])},
+        leaders={k: [LeaderEntry(
+            category=e["category"], stat_key=e["stat_key"], rank=int(e["rank"]),
+            player_id=e["player_id"], name=e["name"],
+            team_code=e["team_code"], value=e["value"],
+        ) for e in v] for k, v in (d.get("leaders") or {}).items()},
+    )
+
+
+def _save_record_archive(name: str, rb) -> None:
+    """보관 실패는 아무것도 망가뜨리지 않는다 — 다음 틱에 다시 시도한다."""
+    try:
+        p = _record_archive_path(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_dump_recordbook(rb), ensure_ascii=False),
+                       encoding="utf-8")
+        tmp.replace(p)
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
+def _load_record_archive(name: str, now: datetime):
+    """되살린 RecordBook 또는 None.
+
+    **게이트를 다시 통과시킨다.** 보관본이라고 봐주지 않는다 — 6시간 상한도,
+    순위 연속성도 그대로 검사한다. 통과 못 하면 없는 것과 같다.
+    """
+    p = _record_archive_path(name)
+    if not p.exists():
+        return None
+    try:
+        rb = _load_recordbook(json.loads(p.read_text(encoding="utf-8")))
+        from contract import assert_recordbook
+        assert_recordbook(rb, now_utc=now)
+        return rb
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _record_jobs() -> dict:
     from adapters.kbo_records import KboRecordAdapter
     from adapters.npb_records import NpbRecordAdapter
@@ -1898,7 +2053,10 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     _write_ledger_mark(led, now)
 
     # 알림은 사람이 봐야 할 것만. 매 틱 시끄러우면 아무도 안 본다.
-    lines = []
+    lines: list[str] = []
+    # **'콘텐츠가 사라진 것'만 따로 모은다 (fix52).** 상태 보고와 섞지 않는다 —
+    # 섞으면 무거운 줄이 가벼운 줄에 묻힌다(2026-09-06에 실제로 21시간 묻혔다).
+    lost: list[str] = []
     for h in hold:
         lines.append(f"🛑 발송 보류 — {h}")
     if errors:
@@ -1960,13 +2118,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                     if i.league and i.league.value in records]
         _due_n = len(_due)
         if _due_n and _n >= _due_n:
-            lines.append(f"⚠️ [{_ct}] 처리 대상 {_due_n}건이 전부 "
-                         f"'만들 내용 없음'이었습니다 — 데이터가 없는 것인지 "
-                         f"렌더가 막힌 것인지 확인이 필요합니다.")
+            lost.append(f"[{_ct}] 처리 대상 {_due_n}건이 전부 "
+                        f"'만들 내용 없음'이었습니다 — 데이터가 없는 것인지 "
+                        f"렌더가 막힌 것인지 확인이 필요합니다.")
     if missed:
         # 지각으로 버린 것은 '아무 일도 없었다'가 아니다. 채널이 조용한 이유다.
         # 시계가 뜸해지면 여기가 먼저 알려준다.
-        lines.append(f"시각을 놓쳐 취소 {len(missed)}건 — " + " · ".join(missed[:2]))
+        # **이건 '상태'가 아니라 '콘텐츠가 사라진 것'이다** → 아래 lost로 올린다.
+        lost.append(f"시각을 놓쳐 취소 {len(missed)}건 — " + " · ".join(missed[:2]))
     if stale_notes:
         lines += [f"묵은 데이터 — {n}" for n in stale_notes[:3]]
     if adapter_notes:
@@ -1976,6 +2135,48 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
     # 커버리지 이상은 '조용한 실패'라 알림이 없으면 며칠 뒤에야 알게 된다
     lines += cov.lines()[:4]
+
+    # ── 기록이 오래 막히면 그것도 '사라진 것'이다 (fix52, 약점 120-③) ──────
+    #
+    # 기록 하나가 막히면 순위표·부문 순위·분석 **세 종류가 함께 죽는다.**
+    # 2026-09-05~06에 KBO가 정확히 그랬고 21시간 몰랐다. 커버리지가
+    # `[record:KBO] 수집이 멈춤 — 마지막 성공 20.9시간 전`을 매 틱 올리고
+    # 있었는데도 그랬다 — **묵은 데이터·리밋 같은 일상 소음과 한 메시지에
+    # 섞여 있었기 때문이다.**
+    #
+    # 그래서 판정 기준을 바꾼다: 오래 막힌 기록은 '상태'가 아니라 '사라진 것'이다.
+    # 콘텐츠 하나가 하루를 통째로 건너뛸 만큼(RECORD_LOST_SECONDS) 막혔으면
+    # 소음과 다른 메시지로, 짧은 유예로 올린다.
+    _flog2 = _fetch_log()
+    for _rname in _record_jobs():
+        _r = _flog2.get(f"record:{_rname}") or {}
+        _last = _r.get("at")
+        if not _last:
+            continue
+        try:
+            _age = (now - datetime.fromisoformat(_last)).total_seconds()
+        except ValueError:
+            continue
+        if _age >= RECORD_LOST_SECONDS:
+            lost.append(f"[{_rname}] 기록이 {_age / 3600:.0f}시간째 막혔습니다 — "
+                        f"순위표·부문 순위·분석이 함께 멈춥니다"
+                        + (f" ({str(_r.get('error'))[:60]})" if _r.get("error") else ""))
+
+    # ── 두 통으로 나눈다 (fix52) ────────────────────────────────
+    #
+    # **'콘텐츠가 실제로 사라진 것'과 '상태 보고'는 다른 무게다.**
+    # 한 메시지에 섞으면 무거운 줄이 가벼운 줄에 묻힌다 — 2026-09-06에
+    # 대표님이 받은 알림 11통 안에 답이 두 번이나 들어 있었는데도
+    # 21시간 아무도 못 봤다. 소음이 감시를 껐다(약점 27·112의 세 번째 재발).
+    #
+    # 사라진 것은 제목부터 다르고, 유예도 짧다(1시간) — 계속 사라지고 있으면
+    # 계속 말해야 한다. 상태 보고는 6시간 유예 그대로다.
+    if lost:
+        try:
+            snd.alert("🔴 콘텐츠가 나가지 못했습니다", lost,
+                      repeat_after=LOST_ALERT_REPEAT_SECONDS)
+        except Exception:                                    # noqa: BLE001
+            print("    (누락 알림 발송도 실패)")
     if lines:
         try:
             snd.alert("시계 점검 필요", lines)

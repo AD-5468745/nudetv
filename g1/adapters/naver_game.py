@@ -138,6 +138,19 @@ def _trim_tail(rows: list) -> list:
     return out
 
 
+def _kst_dt(text):
+    """소스의 `gameDateTime`(한국시각, 시간대 없음) → 인식 가능한 시각. 못 읽으면 None.
+
+    실측: MLB `2026-09-05T03:10:00` = 한국시각 새벽 3시 10분(현지 전날 오후).
+    """
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(str(text)).replace(tzinfo=KST)
+    except (ValueError, TypeError):
+        return None
+
+
 def _num(v):
     """소스는 이닝 점수를 **문자열**로 준다. 9회말을 안 치면 `"-"`가 온다."""
     if v is None:
@@ -199,7 +212,21 @@ class NaverGameAdapter(NoticeMixin):
 
     # ── 그날 경기 목록 → gameId 찾기 ───────────────────────────
     def _schedule(self, league: League, day: str) -> dict:
-        """`{(원정팀명, 홈팀명): gameId}`. 팀명은 **우리 표기로 고쳐서** 담는다."""
+        """`{(원정팀명, 홈팀명): [(시작시각KST, gameId), ...]}`.
+
+        **값이 하나가 아니라 목록이다 (fix54).** 같은 날 같은 대진이 두 번
+        열릴 수 있다 — 더블헤더다. 예전에는 딕셔너리에 하나만 담아
+        **뒤 경기가 앞 경기를 덮어썼고**, 그래서 1차전에 2차전 점수를 맞춰보고
+        안 맞아 보강을 건너뛰었다. 안전장치가 매 틱 울린 것은 옳았다 —
+        틀린 것은 짝을 지어 준 이 함수였다.
+
+        실측 2026-09-05 MLB:
+            20260905DECL1  03:10  디트로이트 6 : 7 클리블랜드
+            20260905DECL2  08:15  디트로이트 3 : 4 클리블랜드
+        (같은 대진 2경기. 그날 MLB 16경기 중 이 대진만 중복이었다.)
+
+        팀명은 **우리 표기로 고쳐서** 담는다.
+        """
         key = (league, day)
         hit = self._sched.get(key)
         if hit and time.time() - hit[0] < SCHEDULE_CACHE_SECONDS:
@@ -209,14 +236,19 @@ class NaverGameAdapter(NoticeMixin):
                                     "fromDate": day, "toDate": day, "size": 100})
         d = self._get(f"/schedule/games?{q}", label=f"naver_game:{league.name}:schedule")
         fix = NAME_FIX.get(league, {})
-        out = {}
+        out: dict = {}
         for g in (d.get("result") or {}).get("games") or []:
             if g.get("categoryId") != cat:
                 continue
             aw = fix.get(g.get("awayTeamName"), g.get("awayTeamName"))
             hm = fix.get(g.get("homeTeamName"), g.get("homeTeamName"))
-            if aw and hm and g.get("gameId"):
-                out[(aw, hm)] = g["gameId"]
+            if not (aw and hm and g.get("gameId")):
+                continue
+            out.setdefault((aw, hm), []).append(
+                (_kst_dt(g.get("gameDateTime")), g["gameId"]))
+        for v in out.values():
+            # 시각을 못 읽은 것은 뒤로 — 시각으로 고를 수 없으니 마지막 수단이다
+            v.sort(key=lambda x: (x[0] is None, x[0]))
         self._sched[key] = (time.time(), out)
         return out
 
@@ -323,6 +355,30 @@ class NaverGameAdapter(NoticeMixin):
         return True
 
     # ── 바깥에서 부르는 것 ────────────────────────────────────
+    # 같은 대진이 하루에 두 번 열리면(더블헤더) 시작 시각으로 고른다.
+    # **모르면 고르지 않는다** — 잘못 고르면 1차전 카드에 2차전 흐름이 실린다.
+    # 그건 '흐름표가 없는 것'보다 나쁘다(FACT_LOCK).
+    DOUBLEHEADER_MATCH_SECONDS = 3 * 3600
+
+    def _pick(self, cands: list, game, aw: str, hm: str):
+        """후보 중 이 경기에 맞는 gameId. 못 고르면 None."""
+        if len(cands) == 1:
+            return cands[0][1]
+        timed = [(dt, gid) for dt, gid in cands if dt is not None]
+        if len(timed) != len(cands):
+            # 시각을 못 읽은 후보가 섞였다 — 순서에 기대면 틀린 짝이 나온다
+            self.note("같은 대진이 여럿인데 시작 시각을 못 읽음", f"{aw} vs {hm}")
+            return None
+        by_gap = sorted(timed, key=lambda x: abs((x[0] - game.start_utc).total_seconds()))
+        best = abs((by_gap[0][0] - game.start_utc).total_seconds())
+        second = abs((by_gap[1][0] - game.start_utc).total_seconds())
+        # 가장 가까운 것이 **확실히** 가까워야 고른다. 비슷하면 찍는 것이다.
+        if best > self.DOUBLEHEADER_MATCH_SECONDS or second - best < 600:
+            self.note("같은 대진이 여럿인데 어느 것인지 못 가림",
+                      f"{aw} vs {hm} (후보 {len(cands)})")
+            return None
+        return by_gap[0][1]
+
     def enrich(self, games: list, league: League, *, limit: int | None = None) -> int:
         """종료된 경기에 흐름을 채운다. 채운 개수를 돌려준다.
 
@@ -347,18 +403,21 @@ class NaverGameAdapter(NoticeMixin):
                     getattr(game.away, "team_code", game.away))
                 hm = TEAM_NAMES.get(league, {}).get(
                     getattr(game.home, "team_code", game.home))
-                gid = sched.get((aw, hm))
-                if not gid:
+                cands = list(sched.get((aw, hm)) or ())
+                if not cands:
                     # 한국 날짜로 못 찾으면 하루 앞뒤를 본다 — 현지 날짜가 다를 수 있다
                     for delta in (-1, 1):
                         d2 = (game.start_utc.astimezone(KST)
                               + timedelta(days=delta)).strftime("%Y-%m-%d")
-                        gid = self._schedule(league, d2).get((aw, hm))
-                        if gid:
+                        cands = list(self._schedule(league, d2).get((aw, hm)) or ())
+                        if cands:
                             break
-                if not gid:
+                if not cands:
                     self.note("소스에서 같은 경기를 못 찾음", f"{aw} vs {hm}")
                     continue
+                gid = self._pick(cands, game, aw, hm)
+                if gid is None:
+                    continue                # 어느 경기인지 모르면 손대지 않는다
                 g = self._game(gid, league)
                 if g.get("statusCode") != "RESULT":
                     continue               # ③ 진행 중이면 손대지 않는다

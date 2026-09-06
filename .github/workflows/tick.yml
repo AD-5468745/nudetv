@@ -186,6 +186,7 @@ jobs:
             state/fetch.json
             state/ticks.json
             state/ledger_mark.json
+            state/records
             g1/cache
           key: data-${{ github.run_id }}
           restore-keys: data-
@@ -388,6 +389,7 @@ jobs:
             state/fetch.json
             state/ticks.json
             state/ledger_mark.json
+            state/records
             g1/cache
           key: data-${{ github.run_id }}
 

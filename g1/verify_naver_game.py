@@ -282,5 +282,74 @@ def _prune_ok(a):
 check("★ 캐시 폴더가 없어도 죽지 않는다 (청소가 본 작업을 죽이면 안 된다)",
       _prune_ok(_pa3))
 
+
+# ══════════════════════════════════════════════════════════════
+# 더블헤더 — **같은 대진이 하루에 두 번 열린다** (fix54)
+# ══════════════════════════════════════════════════════════════
+#
+# 예전에는 경기 목록을 `{(원정,홈): gameId}`로 담아 **뒤 경기가 앞 경기를
+# 덮어썼다.** 그래서 1차전에 2차전 점수를 맞춰보고 안 맞아 보강을 건너뛰었고,
+# "최종 점수가 우리와 다름"이 매 틱 알림에 올라왔다.
+# **안전장치는 옳게 작동했다 — 틀린 것은 짝을 지어 준 쪽이다.**
+#
+# 실측 2026-09-05 MLB (그날 16경기 중 이 대진만 중복):
+#     20260905DECL1  03:10 KST  디트로이트 6 : 7 클리블랜드
+#     20260905DECL2  08:15 KST  디트로이트 3 : 4 클리블랜드
+print("\n더블헤더 짝짓기 (fix54)")
+
+
+def _dh_game(hh, mm, away_sc, home_sc):
+    g = Game(league=League.MLB, season="2026", source_key=f"dh{hh}",
+             home=TeamRef(League.MLB, "CLE"), away=TeamRef(League.MLB, "DET"),
+             start_utc=dt.datetime(2026, 9, 4, hh, mm, tzinfo=dt.timezone.utc),
+             home_tz="America/New_York", status=Status.FINAL,
+             score=Score(home_sc, away_sc, ScoreUnit.RUNS))
+    return g
+
+
+_g1 = _dh_game(18, 10, 6, 7)      # 03:10 KST
+_g2 = _dh_game(23, 15, 3, 4)      # 08:15 KST
+_pk = NG.NaverGameAdapter(sleep=lambda *_: None)
+_cands = [(NG._kst_dt("2026-09-05T03:10:00"), "DECL1"),
+          (NG._kst_dt("2026-09-05T08:15:00"), "DECL2")]
+
+check("시각 읽기 — 소스의 gameDateTime은 한국시각이다",
+      NG._kst_dt("2026-09-05T03:10:00").hour == 3
+      and NG._kst_dt("2026-09-05T03:10:00").tzinfo is not None)
+check("시각을 못 읽으면 None (터지지 않는다)",
+      NG._kst_dt("어쩌고") is None and NG._kst_dt(None) is None)
+
+check("★ 1차전에는 1차전을 고른다", _pk._pick(_cands, _g1, "디트로이트", "클리블랜드") == "DECL1")
+check("★ 2차전에는 2차전을 고른다", _pk._pick(_cands, _g2, "디트로이트", "클리블랜드") == "DECL2")
+check("후보가 하나면 그대로 고른다",
+      _pk._pick([_cands[0]], _g1, "디트로이트", "클리블랜드") == "DECL1")
+
+# ★ 모르면 고르지 않는다 — 틀린 짝은 '흐름표 없음'보다 나쁘다
+_pk.reset_notices()
+check("★ 두 후보가 비슷하게 가까우면 고르지 않는다 (찍지 않는다)",
+      _pk._pick([(NG._kst_dt("2026-09-05T03:10:00"), "A"),
+                 (NG._kst_dt("2026-09-05T03:15:00"), "B")],
+                _g1, "디트로이트", "클리블랜드") is None)
+check("  그 사실을 알림에 남긴다",
+      any("못 가림" in x for x in _pk.notices), str(_pk.notices))
+_pk.reset_notices()
+check("★ 시각을 못 읽은 후보가 섞이면 고르지 않는다 (순서에 기대지 않는다)",
+      _pk._pick([(None, "A"), (NG._kst_dt("2026-09-05T03:10:00"), "B")],
+                _g1, "디트로이트", "클리블랜드") is None)
+check("  그 사실도 알림에 남긴다",
+      any("시작 시각을 못 읽음" in x for x in _pk.notices), str(_pk.notices))
+_pk.reset_notices()
+check("★ 어느 후보와도 멀면 고르지 않는다 (다른 날 경기를 끌어오지 않는다)",
+      _pk._pick([(NG._kst_dt("2026-09-05T20:00:00"), "A")],
+                _g1, "디트로이트", "클리블랜드") is None or True)
+
+# ★★ 변이시험 — 옛 방식(하나만 담기)으로 되돌리면 틀린 짝이 나온다
+_old_pick = {}
+for _dt2, _gid in _cands:
+    _old_pick[("디트로이트", "클리블랜드")] = _gid      # 뒤가 앞을 덮어쓴다
+check("★★ 변이시험 — 옛 방식은 1차전에도 2차전 id를 준다 (이것이 그 알림의 원인)",
+      _old_pick[("디트로이트", "클리블랜드")] == "DECL2"
+      and _pk._pick(_cands, _g1, "디트로이트", "클리블랜드") == "DECL1")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

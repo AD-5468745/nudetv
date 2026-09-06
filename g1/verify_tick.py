@@ -282,6 +282,7 @@ check("sports_day가 없으면 scope를 날짜로 쓰지 않는다",
 
 # ── 6. 대장 ───────────────────────────────────────────────────
 print("\n6. 대장 — 같은 것을 두 번 보내지 않는가")
+import sender as S                                              # noqa: E402
 from sender import Ledger, Pacer, Payload, Sender                # noqa: E402
 
 
@@ -1479,6 +1480,131 @@ _no_raise(lambda: T._enrich_flow("KBO", League.KBO, [], []))
 check("흐름 상한을 넘겨도 어댑터 전역이 바뀌지 않는다",
       _ngmod.MAX_GAMES_PER_TICK == _before_max,
       f"{_before_max} → {_ngmod.MAX_GAMES_PER_TICK}")
+
+
+# ══════════════════════════════════════════════════════════════
+# 기록 보관본 — 기록이 막혀도 세 콘텐츠가 함께 죽지 않는다 (fix53)
+# ══════════════════════════════════════════════════════════════
+print("\n기록 보관본 (fix53)")
+from contract import (LeaderEntry, RecordBook, Standing, StreakKind,
+                      WLD, assert_recordbook)
+from dataclasses import replace as _dcreplace
+
+_ROOT_SAVE = T.ROOT
+T.ROOT = pathlib.Path(tempfile.mkdtemp())
+try:
+    # **표본이 계약을 지켜야 시험이 의미가 있다** (약점 106).
+    # 상대전적 합계가 순위표와 맞아야 하므로, 순위표를 상대전적에서 **계산해** 만든다.
+    # 손으로 적으면 반드시 어긋난다 — 실제로 세 번 어긋나 게이트가 잡았다.
+    _codes = ["OB", "HH", "HT", "KT", "LG", "LT", "NC", "SK", "SS", "WO"]
+    _h2h = {}
+    for _i, _a in enumerate(_codes):
+        for _j, _b in enumerate(_codes):
+            if _i >= _j:
+                continue
+            _w = 8 - _i                      # 위 순위일수록 많이 이긴다
+            _h2h[(_a, _b)] = WLD(_w, 16 - _w, 0)
+            _h2h[(_b, _a)] = WLD(16 - _w, _w, 0)
+    _st = []
+    for _i, _c in enumerate(_codes):
+        _rows = [w for (a, _), w in _h2h.items() if a == _c]
+        _tot = WLD(sum(w.win for w in _rows), sum(w.loss for w in _rows),
+                   sum(w.draw for w in _rows))
+        _g = _tot.win + _tot.loss + _tot.draw
+        _st.append(Standing(
+            league=League.KBO, season="2026", team_code=_c, rank=_i + 1,
+            games=_g, record=_tot, pct=f"{_tot.win / (_tot.win + _tot.loss):.3f}",
+            games_behind=f"{_i * 8.0}", last10=WLD(5, 5, 0),
+            streak_kind=StreakKind.WIN, streak_len=1,
+            home=WLD(_tot.win, 0, 0), away=WLD(0, _tot.loss, _tot.draw), group=None))
+    _st.sort(key=lambda x: -int(round(float(x.pct) * 1000)))
+    for _i, _s2 in enumerate(_st):
+        _st[_i] = _dcreplace(_s2, rank=_i + 1, games_behind=f"{_i * 8.0}")
+    _rb = RecordBook(
+        league=League.KBO, season="2026",
+        collected_utc=datetime(2026, 9, 6, 9, 0, tzinfo=timezone.utc),
+        source_url="https://example.invalid/kbo",
+        standings=_st, h2h=_h2h,
+        leaders={"홈런": [LeaderEntry(category="홈런", stat_key="hr", rank=1,
+                                    player_id="p1", name="최정",
+                                    team_code="SK", value="30")]})
+    assert_recordbook(_rb, now_utc=_rb.collected_utc)      # 표본이 유효한지 먼저
+
+    T._save_record_archive("KBO", _rb)
+    check("★ 게이트를 통과한 기록이 보관된다",
+          T._record_archive_path("KBO").exists())
+
+    _back = T._load_record_archive("KBO", _rb.collected_utc + timedelta(hours=1))
+    check("★ 되살린 기록이 원본과 같다 (중첩 dataclass·tuple 키까지)",
+          _back is not None
+          and [s.team_code for s in _back.standings] == [x.team_code for x in _st]
+          and _back.standings[3].record == _rb.standings[3].record
+          and _back.standings[3].last10 == _rb.standings[3].last10
+          and _back.h2h == _rb.h2h
+          and _back.leaders["홈런"][0].name == "최정"
+          and _back.collected_utc == _rb.collected_utc,
+          "되살리기 실패" if _back is None else "값이 다름")
+
+    # ★ 핵심 — 묵은 것은 되살려도 게이트가 막는다. 보관본이라고 봐주지 않는다.
+    check("★ 6시간을 넘긴 보관본은 되살아나지 않는다 (묵은 순위가 카드에 실릴 일이 없다)",
+          T._load_record_archive("KBO",
+                                 _rb.collected_utc + timedelta(hours=7)) is None)
+    check("6시간 안이면 되살아난다 (그 안에서만 버틴다)",
+          T._load_record_archive("KBO",
+                                 _rb.collected_utc + timedelta(hours=5)) is not None)
+
+    # 형식이 바뀌면 조용히 썩는 대신 버려진다
+    _p = T._record_archive_path("KBO")
+    _d = json.loads(_p.read_text(encoding="utf-8"))
+    _d["v"] = 99
+    _p.write_text(json.dumps(_d, ensure_ascii=False), encoding="utf-8")
+    check("★ 형식이 바뀐 보관본은 버린다 (조용히 썩지 않는다)",
+          T._load_record_archive("KBO", _rb.collected_utc) is None)
+
+    _p.write_text("{망가진", encoding="utf-8")
+    check("깨진 보관본도 죽지 않고 None을 돌려준다",
+          T._load_record_archive("KBO", _rb.collected_utc) is None)
+    check("보관본이 아예 없어도 죽지 않는다",
+          T._load_record_archive("없는리그", _rb.collected_utc) is None)
+
+    # ★ 변이시험 — 보관을 안 하면 되살릴 것이 없다
+    _p.unlink(missing_ok=True)
+    check("★ 변이시험 — 보관하지 않으면 되살리지 못한다 (보관이 진짜 일한다)",
+          T._load_record_archive("KBO", _rb.collected_utc) is None)
+finally:
+    T.ROOT = _ROOT_SAVE
+
+# ★ 제동·백오프 중에도 보관본을 쓴다 — 그래야 매 틱 만들 기회가 생긴다
+_ROOT_SAVE2 = T.ROOT
+T.ROOT = pathlib.Path(tempfile.mkdtemp())
+_flog_save = T.FETCH_LOG
+T.FETCH_LOG = T.ROOT / "fetch.json"
+try:
+    _fresh_rb = _dcreplace(_rb, collected_utc=datetime.now(timezone.utc))
+    T._save_record_archive("KBO", _fresh_rb)
+    _hits = []
+    _real_jobs = T._record_jobs
+    T._record_jobs = lambda: {"KBO": lambda: _hits.append(1) or _fresh_rb}
+    _nowx = datetime.now(timezone.utc)
+    # 방금 성공한 것으로 기록해 제동에 걸리게 한다
+    T._write_fetch_log({"record:KBO": {"at": T._iso(_nowx)}})
+    _n2: list = []
+    _got = T._collect_records(_nowx, _n2)
+    T._record_jobs = _real_jobs
+    check("★ 30분 제동에 걸린 틱에도 보관본으로 기록이 살아난다",
+          "KBO" in _got, f"{sorted(_got)} · {_n2}")
+    check("  그때 소스를 두드리지는 않는다 (제동의 목적은 지킨다)",
+          not _hits, f"{len(_hits)}회 호출")
+finally:
+    T.ROOT = _ROOT_SAVE2
+    T.FETCH_LOG = _flog_save
+
+# ── 누락 알림 상수 ────────────────────────────────────────────
+check("기록이 오래 막히면 '사라진 것'으로 올린다 (상한이 하루보다 짧다)",
+      0 < T.RECORD_LOST_SECONDS <= 6 * 3600, f"{T.RECORD_LOST_SECONDS}초")
+check("★ 누락 알림 유예가 상태 알림보다 짧다 (계속 사라지면 계속 말한다)",
+      T.LOST_ALERT_REPEAT_SECONDS < S.ALERT_REPEAT_SECONDS,
+      f"{T.LOST_ALERT_REPEAT_SECONDS} vs {S.ALERT_REPEAT_SECONDS}")
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)

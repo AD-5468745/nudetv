@@ -116,9 +116,29 @@ for _ct in sorted(C.QUEUED_CONTENT_TYPES, key=lambda c: c.value):
         _report_gap.append(_ct.value)
 check(f"유예를 막 넘긴 항목은 큐에 남아 is_late()가 기록한다 (지나간 항목 {len(_past)}건)",
       not _report_gap, str(_report_gap))
+# ── 예약 '모양'을 보는 검사는 **시각에 기대지 않는다** (fix55, 약점 46 재발) ──
+#
+# 아래 검사들은 "예약이 올바른 시각에 잡히는가"를 본다. 그런데 `q`는
+# **지금** 기준으로 만든 큐라, 그날 그 콘텐츠의 창이 이미 지났으면 0건이 되고
+# `bool(_sa)`가 거짓이라 실패한다. 실제로 그렇게 됐다 —
+# 2026-09-06 09:00 UTC에는 통과하고 09:51 UTC에는 실패했다.
+# **시각에 따라 결과가 달라지는 검증은 통과해도 증거가 못 된다**(약점 46).
+#
+# 그래서 예약 모양은 **데이터에서 뽑은 고정 시각**으로 본다. 그날 첫 경기보다
+# 6시간 앞이면 그날 콘텐츠가 전부 큐에 살아 있다 — 어느 시각에 돌려도 같다.
+# '지금' 기준 큐(`q`)는 위쪽 검사들이 계속 쓴다. 둘은 보는 것이 다르다.
+_fixed_days = sorted({g.sports_day for g in games
+                      if g.status is Status.SCHEDULED} or
+                     {g.sports_day for g in games})
+_fix_day = _fixed_days[len(_fixed_days) // 2]
+_fix_now = min(g.start_utc for g in games
+               if g.sports_day == _fix_day) - timedelta(hours=6)
+qf = P.build_queue(games, _fix_now, "-100test")
+check(f"예약 검사용 고정 큐 {len(qf)}건 ({_fix_day} 첫 경기 -6시간 기준)", bool(qf))
+
 # ③ 시작 알림만 따로 — 그 시간표의 첫 경기보다 리드타임만큼 앞서 잡힌다.
 #    (심야 회피로 더 앞당겨질 수는 있어도 뒤로 밀리지는 않는다.)
-_sa = [i for i in q if i.content_type is ContentType.START_ALERT]
+_sa = [i for i in qf if i.content_type is ContentType.START_ALERT]
 _sa_late = []
 for i in _sa:
     _first = min(g.start_utc for g in games if day_schedule_scope(g) == i.scope)
@@ -138,17 +158,17 @@ check("파이프라인 상수가 약속과 같다 (23시 · 12시 · -3시간)",
       == (_NB_HOUR, _LB_HOUR, _AN_LEAD_H),
       f"{P.NIGHT_BRIEF_HOUR_KST}/{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
 _at_kst = lambda i: i.scheduled_utc.astimezone(KST)
-_nb = [i for i in q if i.content_type is ContentType.NIGHT_BRIEF]
+_nb = [i for i in qf if i.content_type is ContentType.NIGHT_BRIEF]
 check(f"나이트 브리핑은 23:00 KST ({len(_nb)}건)",
       bool(_nb) and all((_at_kst(i).hour, _at_kst(i).minute) == (_NB_HOUR, 0)
                         for i in _nb),
       str([f"{_at_kst(i):%H:%M}" for i in _nb[:3]]))
-_lb = [i for i in q if i.content_type is ContentType.LEADERBOARD]
+_lb = [i for i in qf if i.content_type is ContentType.LEADERBOARD]
 check(f"리더보드는 12:00 KST ({len(_lb)}건)",
       bool(_lb) and all((_at_kst(i).hour, _at_kst(i).minute) == (_LB_HOUR, 0)
                         for i in _lb),
       str([f"{_at_kst(i):%H:%M}" for i in _lb[:3]]))
-_an = [i for i in q if i.content_type is ContentType.ANALYSIS]
+_an = [i for i in qf if i.content_type is ContentType.ANALYSIS]
 _an_bad = []
 for i in _an:
     _t = P.pick_analysis_game([g for g in games if g.sports_day == i.sports_day])
@@ -364,10 +384,13 @@ check("기록이 없는 리그(KBL)에는 순위·리더보드·분석이 큐에
       not [i for i in _qb if i.content_type in _RECORD_ONLY],
       str(sorted({i.content_type.value for i in _qb if i.content_type in _RECORD_ONLY})))
 # 반대 방향도 고정한다 — 위 검사는 '아무것도 안 만들면' 저절로 통과하기 때문이다.
-# (실데이터 KBO 큐 q에는 세 가지가 실제로 올라와 있어야 한다.)
+# **고정 큐로 본다 (fix55).** '지금' 큐로 보면 분석 카드(첫 경기 -3시간)의 창이
+# 지난 저녁에는 0건이 되어, 멀쩡한 코드에서도 실패한다. 실제로 그렇게 됐다.
+# 이 검사가 묻는 것은 '지금 큐에 있나'가 아니라 '기록 리그에는 세 종류가
+# 만들어지나'이므로, 시각과 무관한 큐로 물어야 옳다(약점 46).
 check("기록이 있는 리그(KBO)에는 세 가지가 실제로 오른다",
-      _RECORD_ONLY <= {i.content_type for i in q},
-      str(sorted(c.value for c in (_RECORD_ONLY - {i.content_type for i in q}))))
+      _RECORD_ONLY <= {i.content_type for i in qf},
+      str(sorted(c.value for c in (_RECORD_ONLY - {i.content_type for i in qf}))))
 _ma = [i for i in _qa if i.content_type is ContentType.MORNING]
 _mb = [i for i in _qb if i.content_type is ContentType.MORNING]
 check("같은 날 모닝 브리핑도 리그별로 다른 키",

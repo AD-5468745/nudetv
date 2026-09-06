@@ -575,5 +575,124 @@ check("건수도 자릿수가 바뀌면 다시 알린다 (3건 → 300건)",
 check("지문 정규화가 낱말까지 뭉개지는 않는다",
       _fp_norm("LCK 실패 3건") != _fp_norm("NPB 실패 3건"))
 
+
+# ══════════════════════════════════════════════════════════════
+# 줄 단위 되풀이 방지 — **조합이 바뀌면 지문이 흔들린다** (fix52, 약점 125)
+# ══════════════════════════════════════════════════════════════
+#
+# fix45로 '한 줄 안의 숫자'는 뭉갰는데, **줄의 집합**은 그대로였다.
+# 틱마다 기록 수집(30분)·흐름 보강·LCK 백오프(6시간) 주기가 달라 어떤 줄은
+# 있고 어떤 줄은 없다. 상태가 하나도 안 바뀌어도 조합이 달라 지문이 매번
+# 새것이 되고, 6시간 유예가 **한 번도 안 걸린다.**
+#
+# 실측 2026-09-06 17:00~18:02(62분): 대표님 채널에 알림 11통.
+print("\n줄 단위 되풀이 — 조합이 바뀌어도 같은 말은 접는가 (fix52)")
+_AT4 = _pl.Path(_tf.mkdtemp(prefix="alertline-"))
+_lt = Fake()
+_ls = Sender(_lt, Ledger(_AT4 / "ledger.jsonl"), "-100test",
+             alert_chat_id="777", worker_id="w1")
+_ln = lambda: sum(1 for c in _lt.calls if c[0] == "sendMessage")       # noqa: E731
+
+_A = "묵은 데이터 — INTL_LOL: 스냅샷이 22.3시간 묵었습니다"
+_B = "[record:KBO] 수집이 멈춤 — 마지막 성공 20.9시간 전"
+_C = "일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건"
+_D = "묵은 '예정' 1건 예) LCK 2026-09-05"
+
+check("첫 통은 나간다", _ls.alert("점검", [_A, _B]) and _ln() == 1)
+check("★ 줄이 하나 빠진 조합은 나가지 않는다 (지금까지 여기서 새어 나왔다)",
+      (not _ls.alert("점검", [_A])) and _ln() == 1)
+check("★ 줄이 하나 늘어도 '새 줄'만 나간다",
+      _ls.alert("점검", [_A, _B, _C]) and _ln() == 2)
+_body = [c for c in _lt.calls if c[0] == "sendMessage"][-1][1]["text"]
+check("  그 통에 새 줄만 실린다", "흐름 최종 점수" in _body and "22" not in _body,
+      _body[:120])
+check("  접은 줄 수를 밝힌다 (조용해진 것과 아무 일 없는 것은 다르다)",
+      "접었습니다" in _body, _body[-80:])
+check("★ 순서만 바뀐 같은 줄들은 나가지 않는다",
+      (not _ls.alert("점검", [_C, _B, _A])) and _ln() == 2)
+check("전부 이미 본 줄이면 한 통도 안 나간다",
+      (not _ls.alert("점검", [_A, _B, _C])) and _ln() == 2)
+check("정말 새 줄 하나면 그것만 나간다",
+      _ls.alert("점검", [_A, _B, _C, _D]) and _ln() == 3)
+check("제목이 달라도 줄이 같으면 같은 말이다 (제목은 지문에 안 넣는다)",
+      (not _ls.alert("완전히 다른 제목", [_A, _B])) and _ln() == 3)
+
+# ★★ 대표님이 실제로 받은 11통을 그대로 재생한다.
+_AT5 = _pl.Path(_tf.mkdtemp(prefix="alertreal-"))
+_rt = Fake()
+_rs = Sender(_rt, Ledger(_AT5 / "ledger.jsonl"), "-100test",
+             alert_chat_id="777", worker_id="w1")
+_REAL_LINES = [
+    ["기록 수집 실패 — KBO: GateError 순위 불연속 [1,2,3,4,5,6,7,8,8,10]",
+     "시각을 놓쳐 취소 1건 — start_alert LCK:2026-09-06 (예약보다 120분 늦어 취소)",
+     "묵은 데이터 — LCK: 스냅샷이 36.4시간 묵었습니다",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.3시간 묵었습니다",
+     "묵은 '예정' 1건 예) LCK 2026-09-05",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 20.9시간 전"],
+    ["수집 실패 — LCK: Leaguepedia 리밋 캐시 36.5시간",
+     "일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.4시간 묵었습니다",
+     "묵은 '예정' 1건 예) LCK 2026-09-05",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.0시간 전"],
+    ["묵은 데이터 — INTL_LOL: 스냅샷이 22.5시간 묵었습니다",
+     "묵은 '예정' 1건 예) LCK 2026-09-05",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.1시간 전"],
+    ["기록 수집 실패 — KBO: GateError 순위 불연속 [1,2,3,4,5,6,7,8,8,10]",
+     "일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.6시간 묵었습니다",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.1시간 전"],
+    ["수집 실패 — LCK: Leaguepedia 리밋 캐시 36.8시간",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.7시간 묵었습니다",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.3시간 전"],
+    ["일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.8시간 묵었습니다",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.3시간 전"],
+    ["기록 수집 실패 — KBO: GateError 순위 불연속 [1,2,3,4,5,6,7,8,8,10]",
+     "묵은 데이터 — INTL_LOL: 스냅샷이 22.9시간 묵었습니다",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.4시간 전"],
+    ["일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.5시간 전"],
+    ["묵은 데이터 — INTL_LOL: 스냅샷이 23.0시간 묵었습니다",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.6시간 전"],
+    ["기록 수집 실패 — KBO: GateError 순위 불연속 [1,2,3,4,5,6,7,8,8,10]",
+     "일시적 실패(자동 재시도) — LCK: 캐시로 버팀 0.2시간",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.7시간 전"],
+    ["일시적 실패(자동 재시도) — MLB: 흐름 최종 점수가 우리와 다름 1건",
+     "시각을 놓쳐 취소 1건 — leaderboard KBO:2026-09-06 (예약보다 362분 늦어 취소)",
+     "[record:KBO] 수집이 멈춤 — 마지막 성공 21.9시간 전"],
+]
+for _lines in _REAL_LINES:
+    _rs.alert("시계 점검 필요", _lines)
+_rn = sum(1 for c in _rt.calls if c[0] == "sendMessage")
+check(f"★★ 대표님이 받은 11통이 {_rn}통으로 줄어든다 (62분 · 실제 원문)",
+      _rn <= 5, f"{_rn}통 — 5통 이하여야 한다")
+_last = [c for c in _rt.calls if c[0] == "sendMessage"][-1][1]["text"]
+check("★★ 묻혀 있던 '362분 늦어 취소'가 마지막 통에 드러난다",
+      "362" in _last, _last[:150])
+
+# ★ 변이시험 — 메시지 통째 지문으로 되돌리면 11통이 그대로 나온다
+_mt = Fake()
+_ms = Sender(_mt, Ledger(_pl.Path(_tf.mkdtemp()) / "l.jsonl"), "-100test",
+             alert_chat_id="777", worker_id="w1")
+import hashlib as _hl                                                 # noqa: E402
+
+
+def _old_alert(self, title, lines, *, repeat_after=None):
+    """fix52 이전 방식 — 메시지를 통째로 지문 찍는다."""
+    gap = ALERT_REPEAT_SECONDS if repeat_after is None else repeat_after
+    fp = _hl.sha256(_fp_norm("\n".join([title] + list(lines))).encode()).hexdigest()[:16]
+    if gap > 0 and not self._alert_is_new(fp, gap):
+        return False
+    self.tr.call("sendMessage", {"chat_id": self.alert_chat_id, "text": "x"})
+    self._alert_mark(fp)
+    return True
+
+
+for _lines in _REAL_LINES:
+    _old_alert(_ms, "시계 점검 필요", _lines)
+_mn = sum(1 for c in _mt.calls if c[0] == "sendMessage")
+check(f"★ 변이시험 — 옛 방식으로 되돌리면 {_mn}통이 그대로 나온다 (고침이 진짜 일한다)",
+      _mn >= 10 and _mn > _rn, f"옛 {_mn}통 vs 새 {_rn}통")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

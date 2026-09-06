@@ -1181,18 +1181,48 @@ class Sender:
             # 목적지가 없으면 보내지 않는다. 발행 채널로 폴백하면
             # 구독자가 내부 장애 메시지를 본다.
             return False
-        body = f"⚠️ <b>{esc(title)}</b>\n" + quote([esc(x) for x in lines])
         gap = ALERT_REPEAT_SECONDS if repeat_after is None else repeat_after
-        fp = _hashlib.sha256(
-            _fp_norm("\n".join([title] + list(lines))).encode()).hexdigest()[:16]
-        if gap > 0 and not self._alert_is_new(fp, gap):
-            return False                      # 방금 같은 말을 했다
+
+        # ── 되풀이 방지는 **줄 단위로** 한다 (fix52, 약점 125) ──────────
+        #
+        # 지금까지는 메시지를 통째로 지문 찍었다. 그런데 **틱마다 줄 구성이
+        # 바뀐다** — 기록 수집은 30분마다, 흐름 보강은 또 다른 주기, LCK 재시도는
+        # 6시간 백오프라 어떤 줄은 있고 어떤 줄은 없다. 그래서 상태가 하나도
+        # 안 바뀌어도 **조합이 달라 지문이 매번 새것**이 되고, 6시간 억제가
+        # 한 번도 안 걸린다.
+        #
+        # 실측 2026-09-06 대표님 채널 (17:00~18:02, 62분):
+        #   알림 11통. 4통 표본으로 재현하니 메시지 지문 4개(전부 발송) ·
+        #   줄 지문은 11개뿐 — 같은 말을 계속 하고 있었다.
+        #
+        # 이건 fix45(수를 자릿수로 뭉갠다)와 같은 병의 다른 얼굴이다.
+        # 그때는 **한 줄 안의 숫자**가 지문을 흔들었고, 이번엔 **줄의 집합**이 흔든다.
+        # 그래서 판정 단위를 줄로 내린다: 새 줄만 남기고, 남은 것이 없으면 안 보낸다.
+        #
+        # **제목은 지문에 넣지 않는다.** 제목이 같아도 줄이 새로우면 보내야 하고,
+        # 줄이 같으면 제목이 달라도 같은 말이다.
+        fresh: list[str] = []
+        fps: list[str] = []
+        for line in lines:
+            fp = _hashlib.sha256(_fp_norm(str(line)).encode()).hexdigest()[:16]
+            if gap > 0 and not self._alert_is_new(fp, gap):
+                continue                      # 방금 같은 말을 했다
+            fresh.append(line)
+            fps.append(fp)
+        if not fresh:
+            return False
+        # **몇 줄을 접었는지 밝힌다.** 조용해진 것과 아무 일도 없는 것은 다르다 —
+        # 안 보이면 사람은 '해결됐나 보다'라고 읽는다.
+        folded = len(lines) - len(fresh)
+        body = f"⚠️ <b>{esc(title)}</b>\n" + quote([esc(x) for x in fresh])
+        if folded:
+            body += f"\n<i>(계속되는 알림 {folded}줄은 접었습니다)</i>"
         try:
             self.tr.call("sendMessage", {"chat_id": self.alert_chat_id,
                                          "text": body[:TELEGRAM_TEXT_MAX],
                                          "parse_mode": TELEGRAM_PARSE_MODE,
                                          "disable_web_page_preview": True})
-            self._alert_mark(fp)
+            self._alert_mark(*fps)            # 한 번에 기록한다 (줄마다 쓰면 파일을 N번 연다)
             return True
         except (TelegramError, AmbiguousSend):
             return False      # 알림 실패로 본 작업을 죽이지 않는다
@@ -1219,9 +1249,12 @@ class Sender:
             return True
         return (_time.time() - float(at)) >= gap
 
-    def _alert_mark(self, fp: str) -> None:
+    def _alert_mark(self, *fps: str) -> None:
+        if not fps:
+            return
         log = self._alert_log()
-        log[fp] = _time.time()
+        for fp in fps:
+            log[fp] = _time.time()
         # 오래된 것은 버린다 — 파일이 무한히 자라면 그 자체가 사고다.
         cutoff = _time.time() - max(ALERT_REPEAT_SECONDS * 4, 86400)
         log = {k: v for k, v in log.items() if float(v) >= cutoff}
