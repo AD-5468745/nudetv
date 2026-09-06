@@ -69,6 +69,10 @@ BLOWOUT_MARGIN: dict[League, Optional[int]] = {
 STREAK_NOTABLE = 5
 # 1·2위가 이만큼 붙으면 그것이 그날 순위표의 사건이다.
 TIGHT_RACE_GB = 1.0
+# 1위가 이만큼 벌어지면 그것 자체가 그날의 순위 이야기다("N경기 차 선두").
+# 4.0은 지어낸 값이 아니라 **TIGHT(1.0)와 겹치지 않는 가장 낮은 자리**로 잡았다 —
+# 그 사이(1.0~4.0)는 어느 쪽 서사도 아니어서 ④연속·⑤최근10으로 내려보낸다.
+RUNAWAY_GB = 4.0
 # 최근 10경기가 이만큼 치우치면 사건이다.
 LAST10_HOT = 9
 LAST10_COLD = 1
@@ -232,10 +236,15 @@ BIG_PERIOD_RUNS = 4
 # 모닝 브리핑
 # ══════════════════════════════════════════════════════════════
 
-def for_morning(games: list, league: League, *, kst_times: list[str]
-                ) -> Optional[Headline]:
+def for_morning(games: list, league: League, *, kst_times: list[str],
+                day_word: str = "오늘") -> Optional[Headline]:
     """`kst_times`는 렌더가 이미 만든 한국시각 문자열(예 '18:30'). 여기서 다시 계산하지 않는다 —
-    두 곳에서 계산하면 반드시 어긋난다(약점 104)."""
+    두 곳에서 계산하면 반드시 어긋난다(약점 104).
+
+    `day_word`도 같은 이유로 **받아 쓴다**. MLB 슬레이트는 한국시각 새벽에 열리고
+    유럽 주말은 한국 날짜 둘에 걸치므로 '오늘'이 항상 참이 아니다 —
+    그 판정은 경기 목록과 보내는 시각을 함께 보는 `pipeline.day_word_span`이 한다.
+    """
     playable = [g for g in games
                 if g.status not in (Status.CANCELED, Status.POSTPONED)]
     if not playable or not kst_times:
@@ -244,14 +253,15 @@ def for_morning(games: list, league: League, *, kst_times: list[str]
     if len(uniq) == 1 and len(playable) >= 2:
         return Headline(
             rule="M-SAME-TIME",
-            text=f"오늘 {len(playable)}경기 전부 {uniq[0]} 시작",
-            facts={"count": len(playable), "time": uniq[0]})
+            text=f"{day_word} {len(playable)}경기 전부 {uniq[0]} 시작",
+            facts={"count": len(playable), "time": uniq[0], "day_word": day_word})
     return Headline(
         rule="M-FIRST",
-        text=f"오늘 {len(playable)}경기",
+        text=f"{day_word} {len(playable)}경기",
         sub=f"{uniq[0]} 첫 경기 — {uniq[-1]}까지 이어집니다"
             if len(uniq) > 1 else f"{uniq[0]} 시작",
-        facts={"count": len(playable), "first": uniq[0], "last": uniq[-1]})
+        facts={"count": len(playable), "first": uniq[0], "last": uniq[-1],
+               "day_word": day_word})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -306,7 +316,45 @@ def for_standings(standings: list, league: League, *, group: str | None = None
                    "second": rows[1].team_code,
                    "ranks": [rows[0].rank, rows[1].rank]})
 
-    # ② 연속 — 최장이 하나일 때만
+    # ② 상위권 순위 다툼 — 1·2위가 벌어져 있어도 **어딘가는 붙어 있다**
+    #
+    # 2026-09-06 대표님 결정: *"순위 경쟁을 우선"*.
+    # 그전에는 ①이 1.0경기 차를 못 넘으면 곧장 연속·최근10으로 떨어졌고,
+    # 부진 기록이 호조 기록보다 통계적으로 더 극단적이라 **꼴찌 팀의 부진이
+    # 순위표 카드의 얼굴이 되는 일이 반복**됐다("롯데 최근 10경기 1승").
+    # 순위표는 순위를 말하는 카드다.
+    #
+    # 상위 절반만 본다. "9·10위 0.5경기 차"는 사실이지만 순위 서사가 아니다.
+    # **가을야구 경계라고 주장하지 않는다** — 리그마다 다르고 우리는 모른다.
+    half = max(2, len(rows) // 2)
+    best_pair = None
+    for i in range(len(rows[:half]) - 1):
+        try:
+            d = float(rows[i + 1].games_behind) - float(rows[i].games_behind)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= d <= TIGHT_RACE_GB and (best_pair is None or d < best_pair[0]):
+            best_pair = (d, rows[i], rows[i + 1])
+    if best_pair is not None:
+        d, a, b = best_pair
+        txt = (f"{a.rank}·{b.rank}위 공동" if d == 0
+               else f"{a.rank}·{b.rank}위 {d:g}경기 차")
+        return Headline(
+            rule="S-RACE", text=txt,
+            sub=f"{_nm(league, a.team_code)} · {_nm(league, b.team_code)}",
+            facts={"gap": d, "ranks": [a.rank, b.rank],
+                   "teams": [a.team_code, b.team_code]})
+
+    # ③ 선두 독주 — 위가 전부 벌어졌다면 그것 자체가 그날의 순위 이야기다.
+    if gap is not None and gap >= RUNAWAY_GB:
+        return Headline(
+            rule="S-LEAD",
+            text=f"{_nm(league, rows[0].team_code)} {gap:g}경기 차 선두",
+            sub=f"2위 {_nm(league, rows[1].team_code)}",
+            facts={"gap": gap, "first": rows[0].team_code,
+                   "second": rows[1].team_code})
+
+    # ④ 연속 — 최장이 하나일 때만
     hot = [s for s in rows if s.streak_len >= STREAK_NOTABLE
            and s.streak_kind in (StreakKind.WIN, StreakKind.LOSS)]
     if hot:
@@ -320,7 +368,7 @@ def for_standings(standings: list, league: League, *, group: str | None = None
                 text=f"{_nm(league, s.team_code)} {s.streak_len}{word}",
                 sub="리그 최장", facts={"team": s.team_code, "streak": s.streak_len})
 
-    # ③ 최근 10경기 — 이 값이 있는 리그만(NPB·MLB는 소스에 없다)
+    # ⑤ 최근 10경기 — 이 값이 있는 리그만(NPB·MLB는 소스에 없다)
     ext = [s for s in rows if s.last10 and s.last10.total >= 10]
     for s in ext:
         if s.last10.win >= LAST10_HOT or s.last10.win <= LAST10_COLD:
@@ -446,9 +494,9 @@ def fallback(kind: str, **kw) -> Headline:
                         sub=f"{off}경기 취소·연기" if off else "",
                         facts={"final": n, "off": off})
     if kind == "morning":
-        n = kw.get("count", 0)
-        return Headline(rule="M-COUNT", text=f"오늘 {n}경기",
-                        facts={"count": n})
+        n, w = kw.get("count", 0), kw.get("day_word") or "오늘"
+        return Headline(rule="M-COUNT", text=f"{w} {n}경기",
+                        facts={"count": n, "day_word": w})
     if kind == "standings":
         return Headline(rule="S-RANK", text=kw.get("label") or "현재 순위",
                         facts={"group": kw.get("group")})
@@ -641,7 +689,7 @@ ALL_RULES = frozenset({
     "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-COUNT",
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
     "A-COUNTDOWN",
-    "S-GAP", "S-STREAK", "S-LAST10", "S-RANK",
+    "S-GAP", "S-RACE", "S-LEAD", "S-STREAK", "S-LAST10", "S-RANK",
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
     "N-COUNT",

@@ -104,15 +104,60 @@ def _unit_note(league: League) -> str:
 # 공통 골격 — 모든 카드가 이 함수를 지난다
 # ══════════════════════════════════════════════════════════════
 
+# ── 밀도 (2026-09-06 대표님 결정: "여백판") ───────────────────
+#
+# 대표님이 옛 v4 순위표 카드를 보고 **"내용이 너무 빼곡하게 채워져있다"**고
+# 지적하셨다. 시안 넷을 실데이터로 렌더해 고른 것이 **여백판** — 정보를 하나도
+# 깎지 않고 행 간격만 벌린 안이다.
+#
+# **밀도를 상수가 아니라 층으로 둔다.** 여백을 키우면 카드가 세로로 길어지고,
+# 경기가 많은 날(MLB 16경기)이나 전 리그 통합(나이트)은 높이 2000px·세로비
+# 1.85 상한에 닿을 수 있다. 그때 옛 카드로 통째로 떨어지면 **대표님이 고른
+# 디자인이 가장 정보가 많은 날에만 사라진다** — 정확히 반대로 동작하는 셈이다.
+#
+# 그래서 사다리를 둔다: **여백판 → (넘치면) 조임판 → (그래도 넘치면) 옛 카드.**
+# 조임판은 v5 골격 그대로이고 간격만 원래 값으로 돌린다.
+DENSITY = ("air", "tight")
+
+_DENSITY_CSS = {
+    # 여백판 — 기본값. 대표님이 고른 것.
+    "air": """
+.body{padding:16px 56px 0}
+.lead{font-size:58px}
+.li{padding:27px 0}
+.ix{padding:28px 0}
+.cmp{padding:24px 0}
+.tl{padding:25px 0}
+.fr{padding:26px 0}
+.qr{padding:16px 0}
+""",
+    # 조임판 — 여백판이 상한을 넘을 때만. 골격·정보는 같고 간격만 돌린다.
+    "tight": """
+.body{padding:8px 56px 0}
+.lead{font-size:62px}
+.li{padding:19px 0}
+.ix{padding:22px 0}
+.cmp{padding:18px 0}
+.tl{padding:19px 0}
+.fr{padding:22px 0}
+.qr{padding:12px 0}
+""",
+}
+
+
 def shell(*, kind: str, league: Optional[League], date_label: str,
           head: Headline, body: str, foot_left: str,
-          theme: Optional[str] = None, group_label: str = "") -> str:
+          theme: Optional[str] = None, group_label: str = "",
+          density: str = "air") -> str:
     """머리(라벨·헤드라인) — 본문 — 꼬리. **일곱 종류가 전부 이 골격을 쓴다.**
 
     바뀌는 것은 `kind`(아이콘·라벨)와 `body`(본문 골격)뿐이다.
+    `density`는 여백의 층이다 — 위 `_DENSITY_CSS` 주석을 보라.
     """
     if kind not in KIND_META:
         raise ValueError(f"모르는 카드 종류: {kind}")
+    if density not in _DENSITY_CSS:
+        raise ValueError(f"모르는 밀도: {density}")
     th = THEMES[theme or card_theme(league)]
     label, icon = KIND_META[kind]
     lg = group_label or (LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그")
@@ -256,6 +301,7 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .vd .pick b{{font-size:36px;font-weight:800;letter-spacing:-.03em;color:{th['ink']}}}
 .vd .tag{{margin-top:20px;font-size:21px;font-weight:700;letter-spacing:.08em;
   color:{th['faint']}}}
+/* ── 밀도 ({density}) — 이 블록만 층에 따라 갈린다 ── */{_DENSITY_CSS[density]}
 </style></head><body><div class="card">
   <div class="top">{rail}
     <div class="lab"><svg viewBox="0 0 24 24" fill="none" stroke="{th['accent']}"
@@ -273,10 +319,18 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 # 본문 — 종류마다 골격이 다르다
 # ══════════════════════════════════════════════════════════════
 
-def body_schedule(games: list, league: League, *, with_venue: bool = True) -> str:
-    """모닝·시작 알림이 함께 쓴다 — 시각 + 대진 + 장소."""
+def body_schedule(games: list, league: League, *, with_venue: bool = True,
+                  times: Optional[list] = None) -> str:
+    """모닝·시작 알림이 함께 쓴다 — 시각 + 대진 + 장소.
+
+    `times`는 **부르는 쪽이 이미 만든 시각 표기**이고 정렬된 순서와 같아야 한다.
+    여기서 다시 계산하지 않는다 — 두 곳에서 계산하면 반드시 어긋난다(약점 104).
+    한국 날짜 둘에 걸치는 슬레이트(유럽 주말·일부 MLB)는 요일이 붙은 표기가
+    와야 한다: 요일이 없으면 23:00과 01:00이 같은 날처럼 읽힌다.
+    안 주면 시:분만 쓴다.
+    """
     out = []
-    for g in sorted(games, key=lambda x: x.start_utc):
+    for i, g in enumerate(sorted(games, key=lambda x: x.start_utc)):
         cancel = g.status in (Status.CANCELED, Status.POSTPONED)
         # **원문 그대로 내보내지 않는다.** `Progressive Field`·`京セラD大阪`가
         # 그대로 나가면 못 읽는다(약점 32). 표에 없는 곳은 원문을 유지한다 —
@@ -286,8 +340,8 @@ def body_schedule(games: list, league: League, *, with_venue: bool = True) -> st
         cls = "t2 dim" if cancel else "t2"
         mark = " · 취소" if cancel else ""
         out.append(
-            f'<div class="li" style="grid-template-columns:150px 1fr auto">'
-            f'<span class="t1">{esc(_kst(g.start_utc))}</span>'
+            f'<div class="li" style="grid-template-columns:minmax(150px,auto) 1fr auto">'
+            f'<span class="t1">{esc(times[i] if times else _kst(g.start_utc))}</span>'
             f'<span class="{cls}">{esc(_nm(league, g.away))} vs '
             f'{esc(_nm(league, g.home))}{mark}</span>{tail}</div>')
     return "".join(out)
@@ -317,20 +371,29 @@ def body_scoreboard(games: list, league: League) -> str:
 
 
 def body_standings(rows: list, league: League) -> str:
-    """순위표 — **최근10 열은 값이 하나도 없으면 통째로 뺀다**(약점 94)."""
+    """순위표 — **값이 하나도 없는 열은 통째로 뺀다**(약점 94).
+
+    빈 열이 나란히 있으면 정직해 보이는 게 아니라 **고장난 것처럼 보인다.**
+    최근10에는 이 방어가 있었는데 **연속에는 없었다** — NPB는 소스가 연속을
+    주지 않아 12행 전부 빈 채로 머리글만 서 있었다(2026-09-06 실렌더에서 잡음).
+    같은 결함을 한 열에만 막으면 다른 열에서 반드시 다시 난다.
+    """
     has10 = any(s.last10 and s.last10.total for s in rows)
+    has_st = any(s.streak_len and s.streak_kind in (StreakKind.WIN, StreakKind.LOSS)
+                 for s in rows)
     # **팀명 칸에 최소 폭을 보장한다.** 처음에는 `1fr`로 뒀는데, 고정폭 열들이
     # 968px(본문 폭)을 거의 다 먹어 팀명에 16px만 남았다 — '삼성'이 세로로
     # 두 줄로 쪼개진 채 게이트를 통과했다. `minmax()`로 바닥을 깐다.
     cols = ("56px minmax(150px,1fr) 190px 110px 100px"
-            + (" 140px" if has10 else "") + " 110px")
+            + (" 140px" if has10 else "") + (" 110px" if has_st else ""))
     out = [f'<div class="li" style="grid-template-columns:{cols}">'
            f'<span class="t3">#</span><span class="t3">팀</span>'
            f'<span class="t3" style="text-align:right">승-패-무</span>'
            f'<span class="t3" style="text-align:right">승률</span>'
            f'<span class="t3" style="text-align:right">승차</span>'
            + ('<span class="t3" style="text-align:right">최근10</span>' if has10 else "")
-           + '<span class="t3" style="text-align:right">연속</span></div>']
+           + ('<span class="t3" style="text-align:right">연속</span>' if has_st else "")
+           + '</div>']
     for s in sorted(rows, key=lambda x: x.rank):
         gb = "—" if s.games_behind in ("0", "0.0", "") else s.games_behind
         st = ""
@@ -353,7 +416,10 @@ def body_standings(rows: list, league: League) -> str:
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(rec)}</span>'
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(s.pct)}</span>'
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(gb)}</span>'
-            f'{l10}<span style="text-align:right;font-size:26px">{st}</span></div>')
+            f'{l10}'
+            + (f'<span style="text-align:right;font-size:26px">{st}</span>'
+               if has_st else "")
+            + '</div>')
     return "".join(out)
 
 
@@ -555,6 +621,18 @@ def body_verdict(v, *, note: str = "팀 기록으로 본 예상입니다 · 결�
     ps = "".join(f"<p>{esc(x)}</p>" for x in v.lines)
     tag = f'<div class="tag">{esc(note)}</div>' if note else ""
     return f'<div class="vd">{pick}{ps}{tag}</div>'
+
+
+def relax(html: str) -> Optional[str]:
+    """여백판 카드를 **조임판으로 한 단계만** 내린다. 여백판이 아니면 None.
+
+    바꾸는 것은 밀도 블록 하나뿐이다 — 골격도 정보도 그대로다. 그래서
+    "높이 때문에 카드를 못 냈다"는 일이 안 생긴다(위 DENSITY 주석).
+    """
+    air = _DENSITY_CSS["air"]
+    if air not in html:
+        return None
+    return html.replace(air, _DENSITY_CSS["tight"], 1)
 
 
 WRAP_TOLERANCE = 1.5          # 이 줄 수를 넘으면 접힌 것으로 본다

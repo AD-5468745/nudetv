@@ -1596,9 +1596,43 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     out.mkdir(parents=True, exist_ok=True)
     tag = item.idem_key.replace("|", "_").replace(":", "-")[:80]
 
+    def _try_v5(kind: str, build):
+        """v5 카드를 먼저 시도한다. 못 만들면 None — 부르는 쪽이 옛 카드로 떨어진다.
+
+        **한 곳에만 둔다 (2026-09-06).** 종류마다 같은 여덟 줄을 베끼면 그중
+        하나에서 폴백을 빠뜨리고, 그 종류만 조용히 발송이 멈춘다. 실제로 결과
+        카드 배선 때 리그 없는 항목에서 터지는 구멍이 검증에 걸렸다.
+
+        여기서 삼키는 것은 **카드를 못 그린 것**뿐이다. 발송·대장은 건드리지
+        않으므로, v5가 어떻게 실패하든 구독자는 옛 카드를 받는다.
+        """
+        try:
+            import render_v5 as _R5
+            if not _R5.USE_V5.get(kind):
+                return None
+            made = build(_R5)
+            if not made:
+                return None
+            _html, _parts = made
+            _p = out / f"{tag}.png"
+            _r = _R5.render_png(_html, _p)
+            if not _r:
+                return None
+            return [(_p.name, _p.read_bytes(), _r[0], _r[1])], _parts
+        except Exception as _e:                              # noqa: BLE001
+            print(f"  ⚠️ [v5] {kind} 카드 실패 — 옛 카드로 그립니다: "
+                  f"{_e.__class__.__name__}: {_e}")
+            return None
+
     if item.content_type is ContentType.MORNING:
         # '오늘/내일'은 **보내는 순간** 기준으로 판정해야 한다 — 안 넘기면
         # MLB 모닝 브리핑이 내일 아침 경기를 "오늘"이라고 부른다.
+        _lg = getattr(item, "league", None)
+        _r5 = (_try_v5("morning",
+                       lambda R: R.morning_card(todays, _lg, day, now=_now()))
+               if _lg is not None else None)
+        if _r5:
+            return _r5
         html = P.render_morning(todays, day, now=_now())
         parts = P.caption_morning(todays, day, as_parts=True, now=_now())
     elif item.content_type is ContentType.LEAGUE_RESULT:
@@ -1610,34 +1644,19 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         if not any(g.is_terminal for g in todays):
             return None                     # 아직 아무것도 안 끝났다 — 다음 틱에 다시 본다
         # **새 카드를 먼저 시도하고, 안 되면 옛 카드로 떨어진다 (v1.12).**
-        # 새것이 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야 켜 볼 수 있다.
         # `render_v5.USE_V5['result'] = False` 하나로 즉시 옛 카드로 돌아간다.
-        html = parts = None
-        try:
-            import render_v5 as _R5
-            # **리그가 없으면 새 카드를 시도조차 하지 않는다.** 결과 카드는 늘
-            # 리그가 있지만, 없는 항목이 흘러들어오면 여기서 터져 그 리그의
-            # 결과 발송이 통째로 멈춘다 — 검증이 이것을 잡았다.
-            _lg = getattr(item, "league", None)
-            if _lg is not None and _R5.USE_V5.get("result"):
-                _v5 = _R5.result_card(todays, _lg, day, now=_now())
-                if _v5:
-                    html, parts = _v5
-        except Exception as _e:                              # noqa: BLE001
-            print(f"  ⚠️ [v5] 결과 카드 실패 — 옛 카드로 그립니다: "
-                  f"{_e.__class__.__name__}")
-            html = None
-        if html is not None:
-            # **v5는 자체 경로로 그린다.** 골격이 다르면 검사도 다르다 —
-            # 옛 render_png에 넣으면 그쪽 타이포 검사가 `#card`를 못 찾아 터진다.
-            _p = out / f"{tag}.png"
-            _r = _R5.render_png(html, _p)
-            if _r:
-                return [(_p.name, _p.read_bytes(), _r[0], _r[1])], parts
-            html = None                      # 검사에 걸렸다 — 옛 카드로 떨어진다
-        if html is None:
-            html = P.render_result(todays, day)
-            parts = P.caption_result(todays, day, as_parts=True)
+        #
+        # **리그가 없으면 새 카드를 시도조차 하지 않는다.** 결과 카드는 늘
+        # 리그가 있지만, 없는 항목이 흘러들어오면 거기서 터져 그 리그의
+        # 결과 발송이 통째로 멈춘다 — 검증이 이것을 잡았다.
+        _lg = getattr(item, "league", None)
+        _r5 = (_try_v5("result",
+                       lambda R: R.result_card(todays, _lg, day, now=_now()))
+               if _lg is not None else None)
+        if _r5:
+            return _r5
+        html = P.render_result(todays, day)
+        parts = P.caption_result(todays, day, as_parts=True)
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
         scoped = [g for g in games if day_schedule_scope(g) == item.scope]
@@ -1659,12 +1678,19 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         nights = [g for g in pool if P.night_brief_day(g) == day]
         if not nights:
             return None
+        _r5 = _try_v5("night", lambda R: R.night_card(nights, day))
+        if _r5:
+            return _r5
         html = P.render_night_brief(nights, day)
         parts = P.caption_night_brief(nights, day, as_parts=True)
     elif item.content_type is ContentType.STANDINGS:
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
             return None                     # 기록이 없다 — 빈 카드를 내보내지 않는다
+        _r5 = _try_v5("standings",
+                      lambda R: R.standings_card(rb, item.league, day))
+        if _r5:
+            return _r5
         html = P.render_standings(rb, day)
         parts = P.caption_standings(rb, as_parts=True)
     elif item.content_type is ContentType.LEADERBOARD:
@@ -1673,6 +1699,10 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             return None
         # 세트는 날짜로 돌린다 — 같은 카드를 매일 내보내지 않기 위해서다.
         set_idx = datetime.strptime(day, "%Y-%m-%d").timetuple().tm_yday
+        _r5 = _try_v5("leaders",
+                      lambda R: R.leaders_card(rb, item.league, day, set_idx))
+        if _r5:
+            return _r5
         html = P.render_leaders(rb, day, set_idx)
         parts = P.caption_leaders(rb, set_idx, as_parts=True)
     elif item.content_type is ContentType.ANALYSIS:
@@ -1682,6 +1712,12 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         target = P.pick_analysis_game(todays)
         if target is None:
             return None
+        _r5 = _try_v5("analysis",
+                      lambda R: R.analysis_card(rb, target, item.league, day,
+                                                team_stats=team_stats,
+                                                history=games, now=_now()))
+        if _r5:
+            return _r5
         html = P.render_analysis(rb, target, day, team_stats=team_stats,
                                  history=games, now=_now())
         parts = P.caption_analysis(rb, target, day, team_stats=team_stats,

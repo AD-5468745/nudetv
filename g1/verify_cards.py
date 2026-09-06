@@ -37,6 +37,15 @@ def check(name, cond, detail=""):
         fail += 1; print(f"  FAIL  {name}  {detail}")
 
 
+def _raise(fn) -> bool:
+    """부르면 예외가 나는가. **게이트는 막는 것을 확인해야 게이트다.**"""
+    try:
+        fn()
+    except Exception:                                             # noqa: BLE001
+        return True
+    return False
+
+
 def plain(html: str) -> str:
     import html as _h
     return re.sub(r"\s+", " ", _h.unescape(re.sub(r"<[^>]+>", " ", html))).strip()
@@ -62,6 +71,12 @@ class _G:
         self.meta = _Meta(reason)
         self.start_utc = datetime(2026, 9, 4, hh, 30, tzinfo=timezone.utc)
         self.sports_day = "2026-09-04"
+        # 날짜 표기(`kst_day_label`·`format_kickoff`)가 이 둘을 본다.
+        # 시험용 대역이라도 **계약이 요구하는 것은 다 갖춰야** 검사가 실물을 대변한다 —
+        # 없이 두면 "카드가 안 만들어진다"만 알고 왜인지는 못 본다.
+        from contract import KST as _KST
+        self.start_kst = self.start_utc.astimezone(_KST)
+        self.start_local = self.start_kst        # 국내 리그: 현지 = 한국
 
 
 def _st(code, rank, w, l, d=0, gb="0", streak=(StreakKind.WIN, 1), last10=None,
@@ -405,6 +420,173 @@ try:
 except ImportError:
     skip += 5
     print("  SKIP  흐름표 실렌더 5건 — playwright가 없습니다 (SKIP은 PASS가 아닙니다)")
+
+# ═════════════════════════════════════════════════════════════
+print("\n7. ★★ 6종 배선이 정말 카드를 만드는가 (조용한 폴백 잡기)")
+# ═════════════════════════════════════════════════════════════
+#
+# **이 절이 왜 필요한가.** tick.py의 `_try_v5`는 어떤 예외든 삼키고 옛 카드로
+# 떨어진다 — 그래야 카드 하나가 그 리그 발송을 통째로 멈추지 않는다. 그런데
+# 그 안전장치가 곧 **결함을 숨기는 자리**다. 실제로 분석 카드를 배선할 때
+# `for_analysis(h2h=...)`에 표 전체가 아니라 한 쌍을 넘겨 TypeError가 났는데,
+# 폴백이 그것을 삼켜서 **분석만 조용히 옛 카드로 나갔을 것**이다. 실렌더를
+# 눈으로 보다 우연히 잡았다 — 우연에 기대는 것은 검사가 아니다.
+#
+# 그래서 여기서는 폴백을 거치지 않고 **함수를 직접 부른다.** 예외가 나면 FAIL,
+# None을 돌려줘도 FAIL이다. "안 터진다"가 아니라 **"정말 만든다"**를 본다.
+from datetime import datetime, timedelta, timezone                # noqa: E402
+import render_v5 as R5                                            # noqa: E402
+from contract import RecordBook                                   # noqa: E402
+
+_now5 = datetime(2026, 9, 6, 3, 0, tzinfo=timezone.utc)
+_v5day = "2026-09-06"
+
+
+def _sd(code, rank, w, l, d, gb, l10=None, sk=StreakKind.NONE, sl=0):
+    return Standing(league=League.KBO, season="2026", team_code=code, rank=rank,
+                    games=w + l + d, record=WLD(w, l, d),
+                    pct=f"{w / (w + l):.3f}", games_behind=gb,
+                    last10=l10, streak_kind=sk, streak_len=sl)
+
+
+_v5st = [_sd("SS", 1, 72, 46, 3, "0", WLD(7, 2, 1), StreakKind.WIN, 2),
+         _sd("KT", 2, 69, 46, 3, "1.5", WLD(5, 5, 0), StreakKind.LOSS, 3),
+         _sd("LG", 3, 68, 53, 1, "5.5", WLD(7, 3, 0), StreakKind.LOSS, 2),
+         _sd("HT", 4, 66, 52, 2, "6", WLD(6, 4, 0), StreakKind.WIN, 3)]
+_v5ld = {c: [LeaderEntry(category=c, stat_key=c, rank=i + 1,
+                         player_id=f"{c}{i}", name=f"선수{i}",
+                         team_code=["SS", "KT", "LG", "HT"][i % 4],
+                         value=f"{0.36 - i * 0.01:.3f}")
+             for i in range(5)]
+        for c in ("타율", "홈런", "타점", "도루")}
+_v5rb = RecordBook(league=League.KBO, season="2026", collected_utc=_now5,
+                   source_url="https://example.invalid/rec", standings=_v5st,
+                   h2h={("SS", "KT"): WLD(8, 5, 0), ("KT", "SS"): WLD(5, 8, 0)},
+                   leaders=_v5ld)
+_v5games = [_G("SS", "KT", 5, 3), _G("LG", "HT", 2, 4)]
+for _g in _v5games:
+    _g.league = League.KBO
+    # 시험용 `_G`는 계약의 `Game`이 아니라 이 파일의 최소 대역이다 —
+    # 결과 카드가 보는 `is_terminal`을 여기서 채운다.
+    _g.is_terminal = True
+_v5sched = [_G("SS", "KT", st=Status.SCHEDULED), _G("LG", "HT", st=Status.SCHEDULED)]
+for _g in _v5sched:
+    _g.league = League.KBO
+    _g.is_terminal = False
+_v5ts = {"SS": {"avg": 0.279, "era": 4.13, "hr": 110},
+         "KT": {"avg": 0.271, "era": 4.38, "hr": 90}}
+
+_v5cases = [
+    ("모닝", lambda: R5.morning_card(_v5sched, League.KBO, _v5day)),
+    ("경기 결과", lambda: R5.result_card(_v5games, League.KBO, _v5day)),
+    ("팀 순위", lambda: R5.standings_card(_v5rb, League.KBO, _v5day)),
+    ("부문 순위", lambda: R5.leaders_card(_v5rb, League.KBO, _v5day, 0)),
+    ("경기 분석", lambda: R5.analysis_card(_v5rb, _v5sched[0], League.KBO, _v5day,
+                                        team_stats=_v5ts, history=_v5games)),
+]
+for _name, _fn in _v5cases:
+    try:
+        _made = _fn()
+    except Exception as _e:                                       # noqa: BLE001
+        _made = None
+        check(f"★ {_name} 카드가 예외 없이 만들어진다", False,
+              f"{_e.__class__.__name__}: {_e}")
+    else:
+        check(f"★ {_name} 카드가 예외 없이 만들어진다", bool(_made), "None을 돌려줬다")
+    if _made:
+        _html, _parts = _made
+        check(f"  ↳ {_name}: 골격을 지났다", '<div class="card">' in _html)
+        check(f"  ↳ {_name}: 캡션이 비지 않는다", bool(_parts) and bool(_parts[0].strip()))
+
+# 나이트는 리그가 둘 이상이어야 만들어진다 — 하나면 그날 결과 카드와 같은 말이 된다.
+_nt = list(_v5games)
+_npb = _G("SOF", "HAN", 4, 1)
+_npb.league = League.NPB
+_npb.is_terminal = True
+_nt.append(_npb)
+try:
+    _mn = R5.night_card(_nt, _v5day)
+except Exception as _e:                                           # noqa: BLE001
+    _mn = None
+    check("★ 나이트 카드가 예외 없이 만들어진다", False, f"{_e.__class__.__name__}: {_e}")
+else:
+    check("★ 나이트 카드가 예외 없이 만들어진다", bool(_mn), "None을 돌려줬다")
+check("나이트: 리그가 하나뿐이면 만들지 않는다 (결과 카드와 같은 말이 된다)",
+      R5.night_card(_v5games, _v5day) is None)
+
+# **스위치가 켜져 있는가.** 함수를 다 만들어 놓고 스위치를 안 켜면 아무 일도 안 난다 —
+# 그것이 이번 작업 전의 상태였다(순위표가 옛 카드로 나가고 있었다).
+for _k in ("result", "morning", "standings", "leaders", "analysis", "night"):
+    check(f"USE_V5['{_k}'] 가 켜져 있다", R5.USE_V5.get(_k) is True)
+check("USE_V5['start'] 는 꺼져 있다 (시작 알림은 이미지 카드가 아니다)",
+      R5.USE_V5.get("start") is False)
+
+# ── 날짜·낱말 (MLB 하루 밀림 — 대표님 지적 2026-08-31의 재발 방지) ──
+#
+# `sports_day`는 **홈 현지** 날짜다. 그대로 찍으면 한국시각 새벽에 열리는 MLB
+# 슬레이트가 하루 묵은 카드로 보인다. 그리고 그 카드를 "오늘"이라 부르면
+# 한 번 더 틀린다. 두 가지 모두 옛 카드는 이미 고쳐 놓았던 것이라,
+# **새 카드가 되살릴 위험이 가장 큰 자리**다.
+class _GM(_G):
+    """MLB 대역 — 한국 날짜와 현지 날짜가 갈린다."""
+    def __init__(self):
+        super().__init__("PHI", "ATL", st=Status.SCHEDULED)
+        from contract import KST as _K
+        self.start_utc = datetime(2026, 9, 6, 17, 5, tzinfo=timezone.utc)
+        self.start_kst = self.start_utc.astimezone(_K)          # 9/7 02:05
+        self.start_local = self.start_utc - timedelta(hours=4)  # 9/6 13:05 (현지)
+        self.sports_day = "2026-09-06"
+        self.league = League.MLB
+        self.is_terminal = False
+        self.venue = None
+
+
+_gm = _GM()
+check("★ 날짜는 한국 기준으로 찍는다 (MLB 현지 9.6 → 한국 9.7)",
+      "9.7" in R5._day_label("2026-09-06", [_gm]), R5._day_label("2026-09-06", [_gm]))
+check("  ↳ 현지 날짜는 함께 밝힌다 (묶는 기준을 숨기지 않는다)",
+      "현지 9.6" in R5._day_label("2026-09-06", [_gm]))
+check("경기가 없으면 sports_day를 그대로 쓴다 (순위표·부문 순위)",
+      R5._day_label("2026-09-06") == "9.6 일", R5._day_label("2026-09-06"))
+
+from datetime import datetime as _dtm, timezone as _tz                # noqa: E402
+_mm = R5.morning_card([_gm], League.MLB, "2026-09-06",
+                      now=_dtm(2026, 9, 6, 1, 0, tzinfo=_tz.utc))     # 9/6 10:00 KST
+check("★ 새벽 슬레이트를 '오늘'이라 부르지 않는다 (MLB 하루 착각)",
+      _mm and "오늘" not in _mm[0].split('class="lead"')[1][:80],
+      _mm and _mm[0].split('class="lead"')[1][:60])
+check("  ↳ 대신 '내일 새벽'이라 적는다",
+      _mm and "내일 새벽" in _mm[0], "")
+
+# ── 밀도 사다리 ────────────────────────────────────────────────
+_air = C5.shell(kind="standings", league=League.KBO, date_label="9.6 일",
+                head=H.Headline("T", "머리"), body=C5.body_standings(_v5st, League.KBO),
+                foot_left="4개 구단")
+_tight = C5.relax(_air)
+check("★ 여백판이 기본값이다 (대표님이 고른 안)",
+      C5._DENSITY_CSS["air"] in _air and C5._DENSITY_CSS["tight"] not in _air)
+check("★ relax()가 여백판을 조임판으로 한 단계 내린다",
+      _tight and C5._DENSITY_CSS["tight"] in _tight
+      and C5._DENSITY_CSS["air"] not in _tight)
+check("  ↳ 밀도 말고는 아무것도 안 바뀐다 (골격·정보 그대로)",
+      _tight and (_air.replace(C5._DENSITY_CSS["air"], C5._DENSITY_CSS["tight"])
+                  == _tight))
+check("조임판을 또 내리지는 않는다 (사다리는 한 칸이다)", C5.relax(_tight) is None)
+check("모르는 밀도는 거부한다",
+      _raise(lambda: C5.shell(kind="standings", league=League.KBO, date_label="x",
+                              head=H.Headline("T", "t"), body="", foot_left="",
+                              density="없는밀도")))
+
+# ── 빈 열은 만들지 않는다 (약점 94 — NPB 연속 열) ───────────────
+_no_st = [_sd("A", 1, 70, 44, 3, "0"), _sd("B", 2, 69, 51, 3, "4")]
+_body_no = C5.body_standings(_no_st, League.NPB)
+check("★ 연속 값이 하나도 없으면 '연속' 열을 만들지 않는다 (NPB 실측)",
+      "연속" not in _body_no, _body_no[:120])
+check("  ↳ 값이 하나라도 있으면 열을 남긴다",
+      "연속" in C5.body_standings(_v5st, League.NPB))
+_no10 = [_sd("A", 1, 70, 44, 3, "0"), _sd("B", 2, 69, 51, 3, "4")]
+check("최근10도 마찬가지로 값이 없으면 열을 뺀다",
+      "최근10" not in C5.body_standings(_no10, League.KBO))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)
