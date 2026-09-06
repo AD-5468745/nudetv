@@ -601,6 +601,20 @@ class GameMeta:
     goals: tuple = ()
     highlights: tuple = ()
 
+    # **우리가 이 경기의 종결을 처음 안 시각** (v1.12c, ISO 문자열 또는 None).
+    #
+    # 소스는 종료 시각을 주지 않는다 — 실측으로 확인했다(네이버 경기 원본에
+    # `gameDateTime`(시작)만 있고, `commentInfo.expose.endDateTime`은 종료가
+    # 아니라 댓글창이 닫히는 시각 = 시작+24시간이다). 없는 것을 지어내지 않는다.
+    #
+    # 대신 **우리가 알아챈 시각**을 적는다. 시계가 5분마다 도니 오차는 5분 안이고,
+    # 무엇보다 발송을 결정하는 것은 실제 종료 시각이 아니라 '우리가 안 시각'이다.
+    #
+    # **처음 본 순간 딱 한 번 적고 다시 안 바꾼다.** 매 틱 갱신하면 '방금 끝난 것'이
+    # 영원히 방금이 된다. 그리고 **전환을 실제로 관측했을 때만** 적는다 —
+    # 처음 보는데 이미 종료인 경기는 언제 끝났는지 모르므로 비워 둔다.
+    first_final_at: Optional[str] = None
+
     # v1.9 신설 — 코리안리거·리더보드
     player_lines: list[PlayerLine] = field(default_factory=list)
 

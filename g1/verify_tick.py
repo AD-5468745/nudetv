@@ -1369,6 +1369,37 @@ check("레이트리밋인지 게이트인지 분류가 보인다",
       _h["leagues"]["LCK"]["error_kind"] == "ratelimited"
       and _h["leagues"]["MLB"]["error_kind"] == "gate", str(_h["leagues"]))
 check("정상 리그에는 오류 표시가 없다", "error_kind" not in _h["leagues"]["KBO"])
+
+# ★ 종료 감지 분포가 health.json에 남는가 (v1.12c) — 스냅샷은 캐시로만 나르므로
+#   여기 안 적으면 내일 우리가 읽을 방법이 없다(약점 119).
+_HD = pathlib.Path(tempfile.mkdtemp())
+_os2, _oh = T._snap_path, T.HEALTH_LOG
+T._snap_path = lambda n: _HD / f"{n}.json"
+T.HEALTH_LOG = _HD / "health.json"
+try:
+    _day = T._iso(_HNOW)[:10]
+    (_HD / "KBO.json").write_text(json.dumps([
+        {"league": "KBO", "season": "2026", "source_key": f"x{i}",
+         "home": "HH", "away": "LT", "start_utc": T._iso(_HNOW),
+         "home_tz": "Asia/Seoul", "status": "final", "score": [3, 1, "runs"],
+         "first_final_at": f"{_day}T{12 + i:02d}:3{i}:00+00:00"}
+        for i in range(3)] + [
+        {"league": "KBO", "season": "2026", "source_key": "old",
+         "home": "HH", "away": "LT", "start_utc": T._iso(_HNOW),
+         "home_tz": "Asia/Seoul", "status": "final", "score": [3, 1, "runs"],
+         "first_final_at": "2020-01-01T05:00:00+00:00"}],
+        ensure_ascii=False), encoding="utf-8")
+    _no_raise(lambda: T._write_health(_HNOW, _hflog, [], [], _Cov()))
+    _h2 = json.loads(T.HEALTH_LOG.read_text(encoding="utf-8"))
+    _fu = _h2["leagues"]["KBO"].get("finals_utc")
+    check("★ 종료 감지 시각이 health.json에 남는다 (내일 창 크기를 정할 근거)",
+          _fu == ["12:30", "13:31", "14:32"], str(_fu))
+    check("  다른 날 것은 섞지 않는다", _fu is not None and "05:00" not in _fu)
+    check("  시각만 남긴다 (팀·점수는 여기 있을 이유가 없다)",
+          all(len(x) == 5 and ":" in x for x in (_fu or [])), str(_fu))
+finally:
+    T._snap_path, T.HEALTH_LOG = _os2, _oh
+    shutil.rmtree(_HD, ignore_errors=True)
 # ★ 공개 저장소에 커밋되는 파일이다 — 원문이 새면 배포 전 점검이 못 잡는 자리가 된다
 check("★ 오류 원문이 새지 않는다 (분류만 남긴다)",
       "secret" not in _htxt and "1234567890" not in _htxt and "토큰" not in _htxt,
@@ -1598,6 +1629,75 @@ try:
 finally:
     T.ROOT = _ROOT_SAVE2
     T.FETCH_LOG = _flog_save
+
+# ══════════════════════════════════════════════════════════════
+# 종료 감지 시각 — **전환을 봤을 때만 찍는다** (v1.12c)
+# ══════════════════════════════════════════════════════════════
+print("\n종료 감지 시각 (v1.12c)")
+_FF = pathlib.Path(tempfile.mkdtemp())
+_old_snap2 = T._snap_path
+T._snap_path = lambda n: _FF / f"{n}.json"
+try:
+    def _fg(key, status, score=None):
+        return Game(league=League.KBO, season="2026", source_key=key,
+                    home=TeamRef(League.KBO, "HH"), away=TeamRef(League.KBO, "LT"),
+                    start_utc=datetime(2026, 9, 6, 9, 30, tzinfo=timezone.utc),
+                    home_tz="Asia/Seoul", status=status, score=score)
+
+    _t0 = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    _t1 = _t0 + timedelta(minutes=5)
+    _t2 = _t0 + timedelta(minutes=40)
+
+    # ① 처음 보는데 이미 종료 → 언제 끝났는지 모른다. 안 찍는다.
+    _a = [_fg("g1", Status.FINAL, Score(5, 3, ScoreUnit.RUNS))]
+    T._mark_first_final("ff", _a, _t0)
+    check("★ 처음 봤는데 이미 종료면 안 찍는다 (언제 끝났는지 모른다)",
+          _a[0].meta.first_final_at is None, str(_a[0].meta.first_final_at))
+    T._save_games("ff", _a)
+
+    # ② 예정이던 것이 종료로 바뀌면 그때 찍는다
+    _b = [_fg("g2", Status.SCHEDULED)]
+    T._save_games("ff", _b)
+    _c = [_fg("g2", Status.FINAL, Score(5, 3, ScoreUnit.RUNS))]
+    T._mark_first_final("ff", _c, _t1)
+    check("★ 전환을 실제로 보면 그 시각을 찍는다",
+          _c[0].meta.first_final_at == T._iso(_t1), str(_c[0].meta.first_final_at))
+    T._save_games("ff", _c)
+
+    # ③ 한 번 찍힌 것은 다시 안 바꾼다 — 안 그러면 '방금'이 영원히 '방금'이다
+    _d = [_fg("g2", Status.FINAL, Score(5, 3, ScoreUnit.RUNS))]
+    T._mark_first_final("ff", _d, _t2)
+    check("★ 한 번 찍힌 시각은 다시 안 바뀐다 ('방금'이 영원한 방금이 되지 않는다)",
+          _d[0].meta.first_final_at == T._iso(_t1), str(_d[0].meta.first_final_at))
+
+    # ④ 디스크를 지나도 살아남는다 (어제 세운 게이트가 강제하는 바로 그것)
+    T._save_games("ff", _d)
+    check("★ 감지 시각이 디스크를 지나 살아온다",
+          T._load_games("ff")[0].meta.first_final_at == T._iso(_t1))
+
+    # ⑤ 취소도 종결이다 — 결과 카드가 그것도 싣는다
+    _e0 = [_fg("g3", Status.SCHEDULED)]
+    T._save_games("ff", _e0)
+    _e = [_fg("g3", Status.CANCELED)]
+    T._mark_first_final("ff", _e, _t1)
+    check("취소도 종결로 보고 찍는다 (결과 카드가 취소도 싣는다)",
+          _e[0].meta.first_final_at == T._iso(_t1))
+
+    # ⑥ 옛 스냅샷(필드 없음)에서도 죽지 않는다
+    _p2 = _FF / "old.json"
+    _p2.write_text(json.dumps([{"league": "KBO", "season": "2026",
+                                "source_key": "g9", "home": "HH", "away": "LT",
+                                "start_utc": T._iso(_t0), "home_tz": "Asia/Seoul",
+                                "status": "scheduled", "score": None}],
+                              ensure_ascii=False), encoding="utf-8")
+    _f = [_fg("g9", Status.FINAL, Score(1, 0, ScoreUnit.RUNS))]
+    check("옛 스냅샷(필드 없음)에서도 전환을 알아본다",
+          _no_raise(lambda: T._mark_first_final("old", _f, _t1))
+          and _f[0].meta.first_final_at == T._iso(_t1),
+          str(_f[0].meta.first_final_at))
+finally:
+    T._snap_path = _old_snap2
+    shutil.rmtree(_FF, ignore_errors=True)
 
 # ── 누락 알림 상수 ────────────────────────────────────────────
 check("기록이 오래 막히면 '사라진 것'으로 올린다 (상한이 하루보다 짧다)",

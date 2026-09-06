@@ -41,6 +41,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 import dataclasses
 from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
+                      TERMINAL_STATUSES,
                       RecordBook, Standing, LeaderEntry, StreakKind, WLD,
                       Status, UnknownStatus, assert_home_away,
                       demote_impossible_finals,
@@ -931,6 +932,36 @@ class SnapshotWipe(GateError):
     """멀쩡하던 스냅샷을 0건으로 덮으려 한다 — 소스가 조용히 비었을 가능성이 높다."""
 
 
+def _mark_first_final(name: str, games: list, now: datetime) -> None:
+    """우리가 종결을 처음 안 시각을 찍는다 (v1.12c).
+
+    **전환을 실제로 봤을 때만 찍는다.** 처음 보는데 이미 종료인 경기는 언제
+    끝났는지 모른다 — 배포 첫날 그날 끝난 경기가 전부 '방금 끝남'으로 찍히면
+    그 값으로 잰 분포가 통째로 거짓이 된다.
+
+    한 번 찍힌 것은 다시 안 바꾼다. 매 틱 갱신하면 '방금'이 영원히 '방금'이 된다.
+    """
+    prev_stamp: dict = {}
+    prev_open: set = set()
+    for d in _load_raw(name):
+        k = d.get("source_key")
+        if not k:
+            continue
+        if d.get("first_final_at"):
+            prev_stamp[k] = d["first_final_at"]
+        try:
+            if Status(d["status"]) not in TERMINAL_STATUSES:
+                prev_open.add(k)
+        except (ValueError, KeyError, TypeError):
+            pass                    # 못 읽는 상태는 '전환을 못 봤다'로 다룬다
+    for g in games:
+        old = prev_stamp.get(g.source_key)
+        if old:
+            g.meta.first_final_at = old              # 이미 적힌 것은 그대로
+        elif g.is_terminal and g.source_key in prev_open:
+            g.meta.first_final_at = _iso(now)        # 전환을 지금 봤다
+
+
 def _save_games(name: str, games: list) -> None:
     """스냅샷 저장. **있던 것을 0건으로 덮지 않는다 (v1.11h).**
 
@@ -985,6 +1016,8 @@ def _save_games(name: str, games: list) -> None:
         "goals": ([[x.minute, x.side, x.name, x.own_goal, x.added]
                    for x in g.meta.goals] if g.meta.goals else None),
         "highlights": [list(x) for x in g.meta.highlights] if g.meta.highlights else None,
+        # 우리가 종결을 처음 안 시각 (v1.12c). 한 번 적히면 안 바뀐다.
+        "first_final_at": g.meta.first_final_at,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -1084,7 +1117,8 @@ def _load_games(name: str) -> list:
                                            added=int(x[4]))
                                       for x in (d.get("goals") or [])),
                           highlights=tuple(tuple(x)
-                                           for x in (d.get("highlights") or [])))))
+                                           for x in (d.get("highlights") or [])),
+                          first_final_at=d.get("first_final_at"))))
 
     # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
     # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나
@@ -1152,6 +1186,19 @@ def _write_health(now: datetime, flog: dict, adapter_notes: list,
             row["failed_at"] = rec.get("failed_at")
         # 이 값이 발송 보류(24시간)를 결정한다 — 그래서 계산값도 함께 남긴다
         row["stale_hours"] = round(snapshot_age_seconds(name, flog, now) / 3600, 1)
+        # ── 종료 감지 시각 분포 (v1.12c) ────────────────────────────
+        #
+        # **재지 않고 창 크기를 정하면 그건 지어낸 값이다.** 20분은 첫 추정일 뿐이라
+        # 하루 실측한 뒤 정한다(대표님 결정 2026-09-06: "하루 재고 켠다").
+        #
+        # 스냅샷(state/games)은 캐시로만 나르고 저장소에 없다 — 그래서 여기에
+        # 적지 않으면 **내일 우리가 읽을 방법이 없다**(약점 119).
+        # 시각만 적는다: 팀·점수는 여기 있을 이유가 없다.
+        _fin = sorted(d["first_final_at"][11:16] for d in _load_raw(name)
+                      if d.get("first_final_at")
+                      and d["first_final_at"][:10] == _iso(now)[:10])
+        if _fin:
+            row["finals_utc"] = _fin[-24:]
         leagues[name] = row
     out = {
         "at": _iso(now),
@@ -1256,6 +1303,7 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 수집이 끝난 뒤에 붙인다. 보강이 실패해도 경기 목록은 그대로 저장되고
             # 카드는 흐름표 없이 나간다 — 오늘까지 나가던 것과 같아질 뿐이다.
             _enrich_flow(name, lg, games, soft)
+            _mark_first_final(name, games, now)
             _save_games(name, games)
             dt = _time.monotonic() - t0
             log[name] = {"at": _iso(now), "count": len(games), "error": None,
