@@ -21,6 +21,7 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       GRACE_SECONDS,
                       Status, assert_card_geometry, esc, format_kickoff,
                       START_ALERT_LEAD_MINUTES,
+                      PER_GAME_SENDING, KICKOFF_LEAD_SECONDS,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
@@ -410,6 +411,59 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                               start_rev=max(x.start_rev for x in gs_all)),
             content_type=ContentType.START_ALERT, scope=scope, scheduled_utc=at,
             league=gs[0].league, sports_day=gs[0].sports_day))
+
+    # ── 경기별 2종 (v1.14, 2026-09-07 대표님 결정) ──────────────────
+    #
+    # 대표님: *"한경기당 1개씩 발송 자주되어도 괜찮아, 정확한 시각에 맞춰
+    # 발송이 되기만하면되"*
+    #
+    # **멱등키의 scope에 경기 식별자를 넣는 것이 이 기능의 심장이다.**
+    # `KBO:2026-09-06:20260906OBSS0` 처럼 경기 하나가 키 하나를 갖는다.
+    # 그래서 같은 경기가 두 번 나가는 것이 **구조적으로 불가능**하다 —
+    # 창을 쓰는 설계(카드에 실린 경기 집합을 키에 넣는 방식)보다 훨씬 안전하다.
+    # 되돌릴 수 없는 사고는 중복 발송 하나뿐이므로 거기를 가장 단단하게 만든다.
+    #
+    # **리그 단위 카드(시간표·결과 요약)는 그대로 둔다.** 개별 카드가 창을
+    # 놓쳐도 요약이 그날 전 경기를 반드시 담으므로 누락이 구조적으로 0이 된다.
+    if PER_GAME_SENDING:
+        for g in games:
+            _scope = f"{league.value}:{g.sports_day}:{g.game_id}"
+
+            # ① 킥오프 — 그 경기 시작 10~1분 전.
+            #    예약은 T-10분이고 유예가 9분이라 창이 [T-10, T-1]이다.
+            #    **앞창은 0으로 잠겨 있다**(계약이 검사한다) — 일찍 나가면
+            #    "N분 뒤 시작"이 거짓이 되기 때문이다.
+            if g.status is Status.SCHEDULED:
+                _at = g.start_utc - timedelta(seconds=KICKOFF_LEAD_SECONDS)
+                if _at <= hi and keep_in_queue(_at, now, ContentType.KICKOFF):
+                    items.append(QueueItem(
+                        # **start_rev를 넣는다.** 경기가 순연되면 시작 시각이
+                        # 달라지므로 알림을 새로 열어야 한다(약점 20의 짝).
+                        idem_key=idem_key(channel, ContentType.KICKOFF, _scope,
+                                          start_rev=g.start_rev),
+                        content_type=ContentType.KICKOFF, scope=_scope,
+                        scheduled_utc=_at, league=league,
+                        sports_day=g.sports_day, game_id=g.game_id))
+
+            # ② 결과 속보 — 그 경기 종료를 **우리가 알아챈** 시각 직후.
+            #    소스가 종료 시각을 안 준다(실측: gameDateTime은 시작,
+            #    commentInfo.endDateTime은 댓글창 닫힘 = 시작+24시간).
+            #    지어내지 않고 우리가 만든 값을 쓴다 — 오차는 시계 간격 안이다.
+            _ff = getattr(g.meta, "first_final_at", None) if g.meta else None
+            if _ff:
+                try:
+                    _fat = datetime.fromisoformat(_ff)
+                except (TypeError, ValueError):
+                    _fat = None
+                if _fat is not None and _fat <= hi and keep_in_queue(
+                        _fat, now, ContentType.FINAL_FLASH):
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.FINAL_FLASH,
+                                          _scope),
+                        content_type=ContentType.FINAL_FLASH, scope=_scope,
+                        scheduled_utc=_fat, league=league,
+                        sports_day=g.sports_day, game_id=g.game_id,
+                        render_at_utc=_fat))
 
     # 리그 결과 카드 — sports_day의 미종결 0건일 때. 큐에는 하드 데드라인으로 예약
     by_day: dict[str, list[Game]] = defaultdict(list)

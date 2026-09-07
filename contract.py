@@ -769,6 +769,14 @@ class ContentType(str, Enum):
     ANALYSIS = "analysis"
     START_ALERT = "start_alert"
     INPLAY_BOARD = "inplay_board"          # v1.9: 경기 중 침묵 해소, 경기당 1회
+    # **경기별 발송 2종 (v1.14, 2026-09-07 대표님 결정).**
+    # 대표님: *"한경기당 1개씩 발송 자주되어도 괜찮아, 정확한 시각에 맞춰
+    # 발송이 되기만하면되"* — 어제 정한 '리그별 하루 3장 상한'을 뒤집는 결정이다.
+    #   · KICKOFF     — 그 경기 시작 10~1분 전 (경기마다 1장)
+    #   · FINAL_FLASH — 그 경기 종료를 감지한 직후 (경기마다 1장)
+    # 리그 단위 카드(START_ALERT 시간표 · LEAGUE_RESULT 요약)는 **그대로 둔다** —
+    # 개별 카드가 창을 놓쳐도 요약이 반드시 담으므로 누락이 구조적으로 0이 된다.
+    KICKOFF = "kickoff"
     FINAL_FLASH = "final_flash"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
@@ -790,7 +798,17 @@ GRACE_SECONDS: dict[ContentType, int] = {
     ContentType.START_ALERT: 480,        # v1.9: 180 → 480 (감시 임계보다 크게)
     ContentType.POLL_CLOSE: 480,         # v1.9: 1800 → 480 (열린 투표를 오래 두면 안 된다)
     ContentType.INPLAY_BOARD: 600,
-    ContentType.FINAL_FLASH: 900,
+    # **킥오프는 예약이 T-10분이고 유예가 9분이라 창이 정확히 [T-10, T-1]이다.**
+    # 대표님 규격: "경기 시작 5~10분 전은 괜찮고 경기 시작 이후는 절대 안 된다."
+    # T-1분에서 창이 닫히므로 **경기 시작 이후 발송은 구조적으로 불가능하다.**
+    # 창 9분 < 시계 최대 공백 12.2분이라 하루 8.4분에 시작하는 경기는 놓친다
+    # (적중률 99.41%). 그건 시계 구조라 이 값으로는 못 없앤다.
+    ContentType.KICKOFF: 540,
+    # **경기별 결과 속보.** 대표님 규칙 "종료 후 1시간 이내"를 그대로 유예로 쓴다.
+    # 900초(15분)였는데, 시계 최대 공백 12.2분과 너무 가까워 한 번만 뜸해도
+    # 그 경기 속보가 사라졌다. 늦더라도 나가는 쪽이 낫다 —
+    # 놓쳐도 그날 리그 요약 카드가 반드시 담는다(이중 안전망).
+    ContentType.FINAL_FLASH: 3600,
     ContentType.POLL: 1800,
     # v1.11k: 30분 → 3h. 창 90분이라 240분 시계에서 62%가 사라졌다.
     # 분석 카드는 경기 전 정보라 늦으면 값이 떨어지지만, 경기 시작 전이면 유효하다.
@@ -892,6 +910,8 @@ UNPLANNED_CONTENT = frozenset({ContentType.CORRECTION})
 PACER_PRIORITY: dict[ContentType, int] = {
     ContentType.START_ALERT: 0,
     ContentType.POLL_CLOSE: 0,
+    # 킥오프는 창이 9분뿐이다 — 페이서가 뒤로 미루면 그대로 사라진다.
+    ContentType.KICKOFF: 0,
     ContentType.FINAL_FLASH: 1,
     ContentType.INPLAY_BOARD: 1,
     ContentType.CORRECTION: 2,
@@ -913,7 +933,9 @@ PACER_PRIORITY: dict[ContentType, int] = {
 
 # 실제 전송 시각 기준으로 유예를 재판정하는 콘텐츠 —
 # 문안에 시각이 박혀 있어 페이서 대기가 곧 거짓말이 되는 것들
-REJUDGE_AT_SEND = frozenset({ContentType.START_ALERT, ContentType.POLL_CLOSE})
+# 킥오프는 문안이 "N분 뒤 시작"이라 페이서 대기 몇 분이 곧 거짓말이 된다.
+REJUDGE_AT_SEND = frozenset({ContentType.START_ALERT, ContentType.POLL_CLOSE,
+                             ContentType.KICKOFF})
 
 
 # ── 앞창: 예약보다 얼마나 일찍부터 처리하나 (v1.11d) ──────────────
@@ -1043,6 +1065,19 @@ def cancel_reason_text(raw: Optional[str], status: Optional["Status"] = None,
     return "취소"
 
 
+# ── 경기별 발송 (v1.14, 2026-09-07 대표님 결정) ──────────────────
+#
+# **되돌리는 스위치.** False로 두면 즉시 지금까지의 리그 단위 발송으로 돌아간다.
+# 대장은 멱등키의 scope가 달라(`KBO:2026-09-06` vs `KBO:2026-09-06:20260906OBSS0`)
+# 서로 섞이지 않는다 — 껐다 켜도 같은 경기가 두 번 나가지 않는다.
+PER_GAME_SENDING = True
+
+# 킥오프 알림을 경기 시작 몇 초 전으로 예약할지. 유예(GRACE_SECONDS[KICKOFF])와
+# 짝을 이룬다: 예약 T-10분 + 유예 9분 = 창 [T-10분, T-1분].
+# **이 둘을 따로 고치면 창이 깨진다.** 아래 계약 검사가 그것을 막는다.
+KICKOFF_LEAD_SECONDS = 600
+
+
 # 순위표를 결과 카드보다 얼마나 뒤에 둘지. **앞창과 짝을 이루는 값이다** —
 # 아래 LOOKAHEAD_SECONDS_BY_CONTENT[STANDINGS]가 이 값보다 작으면 순위표는
 # 영원히 발송되지 않는다(v1.11n에서 실제로 그랬다. 아래 주석 참조).
@@ -1058,6 +1093,12 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 대가로 알림이 첫 경기 2~4.5시간 전에 나가지만, 문구가 실제 남은 시간을
     # 그때그때 계산하므로 언제 나가도 내용은 정확하다.
     ContentType.START_ALERT: 9000,
+    # **킥오프는 일찍 보내면 안 된다.** "10분 뒤 시작"이 30분 전에 나가면 거짓이다.
+    # 창은 유예(9분)로만 만든다 — 앞창을 열면 그 즉시 T-10분 규격이 깨진다.
+    ContentType.KICKOFF: 0,
+    # **결과 속보도 일찍 보낼 수 없다.** 예약이 '종료를 감지한 시각'이라
+    # 그보다 이른 시점에는 결과가 존재하지 않는다.
+    ContentType.FINAL_FLASH: 0,
     # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
@@ -1121,14 +1162,43 @@ QUEUED_CONTENT_TYPES: frozenset = frozenset({
     # 계약에 19종이 선언돼 있는데 실제로 나가는 것은 3종뿐이었다.
     ContentType.STANDINGS, ContentType.LEADERBOARD,
     ContentType.NIGHT_BRIEF, ContentType.ANALYSIS,
+    # v1.14 — 경기별 2종. **게이트가 보게 넣는다.** 안 넣으면 창이 좁아져도
+    # 아무 데도 안 나타난다(약점 50: 게이트가 안 보는 콘텐츠는 안전장치가 없다).
+    ContentType.KICKOFF, ContentType.FINAL_FLASH,
 })
 
+
+# ── 창을 못 넓히는 콘텐츠와 그 안전망 (v1.14) ────────────────────
+#
+# 경기별 2종은 창을 넓힐 수 없다. 킥오프는 양쪽이 다 막혀 있고(위 주석),
+# 결과 속보는 예약이 '종료를 알아챈 시각'이라 앞창이 존재할 수 없다.
+# 그래서 시계가 뜸한 날에는 개별 카드가 사라진다 — **그건 알려진 대가다.**
+#
+# **대신 리그 단위 카드가 같은 사실을 반드시 담는다.** 이 표가 그 짝을 못 박는다:
+# 여기 있는 콘텐츠를 '창이 좁다'고 판정할 때는, 짝이 되는 안전망의 창이
+# 최악 간격을 견디는지 함께 확인해야 한다. 안전망 없이 좁은 창을 두면
+# 그건 대가가 아니라 그냥 누락이다.
+SAFETY_NET_FOR: dict["ContentType", "ContentType"] = {
+    ContentType.KICKOFF: ContentType.START_ALERT,      # 그 리그 시간표가 담는다
+    ContentType.FINAL_FLASH: ContentType.LEAGUE_RESULT,  # 그날 결과 요약이 담는다
+}
+NARROW_BY_DESIGN: frozenset = frozenset(SAFETY_NET_FOR)
 
 # 창에 둘 안전 여유. 늦게 나가도 유효한 콘텐츠는 넉넉히, 늦으면 거짓이 되어
 # 뒷창을 늘릴 수 없는 콘텐츠는 "창 ≥ 간격"까지만 요구한다(위 독스트링 참조).
 WINDOW_SAFETY_FACTOR_DEFAULT = 1.5
 WINDOW_SAFETY_FACTOR: dict["ContentType", float] = {
     ContentType.START_ALERT: 1.0,
+    # **킥오프도 창을 못 넓힌다 — 양쪽 다 막혀 있다.**
+    #   뒷창: 경기가 시작된 뒤 "10분 뒤 시작"은 거짓말이다(대표님 규격).
+    #   앞창: 일찍 나가도 같은 이유로 거짓이 된다.
+    # 그래서 창은 9분에 고정이고, 시계가 그보다 뜸한 순간에 시작하는 경기는
+    # 알림을 못 받는다. **이건 결함이 아니라 알려진 대가다** — 실측 24시간에서
+    # 하루 8.4분(적중률 99.41%). 1.5배를 요구하면 이 사실이 매 틱 경고로 뜨는데,
+    # 고칠 방법이 없는 경고는 소음이 되어 진짜 고장을 덮는다(약점 112·113).
+    # 창 ≥ 간격까지만 요구하고, 그마저 못 채우면 그때는 **시계가 실제로 뜸했다**는
+    # 뜻이라 경고할 값어치가 있다.
+    ContentType.KICKOFF: 1.0,
 }
 
 
@@ -1793,6 +1863,43 @@ BURST_MAX_MESSAGES = 60
 BURST_AUTO_RELEASE_S = 1800
 BURST_CANARY_OBSERVE_S = 300     # v1.9: 해제 시 전량 재개 금지 — 1건만 내보내고 관찰
 BURST_MAX_AUTO_RELEASES = 3      # v1.9: 3회 이상이면 수동 해제 전용
+
+# ── 발행에서 뺀 리그 (2026-09-07 대표님 지시: "롤은 빼자") ──────────
+#
+# **수집기·팀표·색은 그대로 남긴다.** 지우지 않는 이유:
+#   ① 되돌리기가 이 한 줄이어야 한다 — 코드를 지우면 되살릴 때 다시 만든다.
+#   ② 이미 쌓인 스냅샷·대장이 이 리그를 참조한다. 표에서 빼면 카드가 코드를 찍는다.
+# 대신 **수집·큐·감시에서 통째로 빠진다** — 켜 두고 안 쓰면 레이트리밋 경고가
+# 매일 올라와 진짜 고장을 덮는다(약점 112·113). 실제로 LCK는 22.5시간째
+# 캐시로 버티며 커버리지 빨간불을 켜고 있었다.
+DISABLED_LEAGUES: frozenset = frozenset({League.LCK, League.INTL_LOL})
+
+
+def league_enabled(league: "League") -> bool:
+    """이 리그를 지금 발행하는가. **한 곳에서만 판정한다** —
+    수집·큐·감시가 제각기 판정하면 그중 하나가 빠져 유령 경고가 남는다."""
+    return league not in DISABLED_LEAGUES
+
+
+# ── 하루 발송 상한 (v1.14에서 폭주 차단기와 분리) ────────────────
+#
+# **두 개는 뜻이 완전히 다른데 v1.13까지 같은 상수를 썼다.**
+#   · `BURST_MAX_MESSAGES` — **10분 창** 상한. "지금 뭔가 미쳤다"를 잡는 값이다.
+#   · `DAILY_MAX_MESSAGES` — **하루** 상한. 정상 운영의 천장이다.
+# 하나를 올리면 다른 하나도 올라가는 구조라, 경기별 발송(v1.14)을 켜자마자
+# 하루 61번째 카드부터 전부 "다음 날 재시도"로 밀릴 뻔했다.
+# 상수를 공유하면 두 안전장치가 하나가 된다 — 그건 안전장치가 아니다.
+#
+# **400은 어디서 왔나 (실측 기반 계산, 2026-09-07).**
+# 지금 켜진 9개 리그의 하루 최대 경기 수:
+#   MLB 18(더블헤더 포함) · NPB 6 · KBO 5 · K리그1 6 · KBL 3 ·
+#   V리그 남 2 · V리그 여 2 · LCK 3 · LoL 국제 3  = 48경기
+# 경기별 2장(킥오프·속보) = 96 + 리그 카드(9리그 × 모닝·시간표·요약 = 27)
+#   + 순위표 2 + 부문 1 + 분석 2 + 나이트 1 = **약 129장/일**
+# 유럽 6개 대회를 켜면 주말에 최대 56경기가 더해져 약 250장이 된다.
+# 400은 그 위에 여유를 둔 값이다 — **천장이지 목표가 아니다.**
+# 여기 닿으면 그건 정상 운영이 아니라 사고이므로, 닿는 순간 알림이 뜬다.
+DAILY_MAX_MESSAGES = 400
 
 
 class SendMethod(str, Enum):
@@ -3195,6 +3302,14 @@ assert set(SEASON_FORMAT_BY_LEAGUE) == set(League), "SEASON_FORMAT_BY_LEAGUE 누
 assert set(ALLOWED_TRANSITIONS) == set(Status), "ALLOWED_TRANSITIONS 누락"
 assert set(SCORE_MAX_BY_UNIT) == set(ScoreUnit), "SCORE_MAX_BY_UNIT 누락"
 assert set(DECIDED_BY_ALLOWED) == set(ScoreUnit), "DECIDED_BY_ALLOWED 누락"
+# **킥오프 창이 '경기 시작 이후'로 새지 않는지 계약이 직접 확인한다.**
+# 예약(T-KICKOFF_LEAD) + 유예(GRACE) < 경기 시작이어야 한다. 규칙만 적어 두면
+# 반드시 어긴다(약점 4) — 둘 중 하나만 고쳐도 여기서 즉시 걸린다.
+assert GRACE_SECONDS[ContentType.KICKOFF] < KICKOFF_LEAD_SECONDS, (
+    "킥오프 유예가 리드타임 이상이면 경기 시작 이후에도 알림이 나간다 "
+    f"(유예 {GRACE_SECONDS[ContentType.KICKOFF]}초 ≥ 리드 {KICKOFF_LEAD_SECONDS}초)")
+assert LOOKAHEAD_SECONDS_BY_CONTENT.get(ContentType.KICKOFF) == 0, (
+    "킥오프에 앞창을 열면 'N분 뒤 시작'이 거짓이 된다")
 assert set(GRACE_SECONDS) == set(ContentType), "GRACE_SECONDS 누락"
 assert set(LEASE_SECONDS) == set(ContentType), "LEASE_SECONDS 누락"
 assert set(PACER_PRIORITY) == set(ContentType), "PACER_PRIORITY 누락"

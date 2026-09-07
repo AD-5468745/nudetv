@@ -100,14 +100,20 @@ LEAD = {c: [LeaderEntry(category=c, stat_key=c, rank=i + 1, player_id=f"{c}{i}",
         for c in ("타율", "홈런", "타점", "도루", "안타", "득점")}
 
 # ═════════════════════════════════════════════════════════════
-print("\n1. 일곱 종류가 구분되는가 (대표님 불만 ④)")
+print("\n1. 여덟 종류가 구분되는가 (대표님 불만 ④)")
 # ═════════════════════════════════════════════════════════════
-check("일곱 종류가 전부 등록돼 있다", len(C5.KIND_META) == 7, str(list(C5.KIND_META)))
+# **개수를 손으로 적지 않는다.** v1.14에서 kickoff이 늘자 '일곱'이라 박아 둔
+# 검사 셋이 한꺼번에 실패했다 — 검사가 옳게 잡았지만, 세는 일은 코드가 해야 한다.
+_KINDS = len(C5.KIND_META)
+check(f"등록된 종류가 {_KINDS}개이고 전부 라벨·아이콘을 갖는다",
+      _KINDS >= 8 and all(len(v) == 2 and v[0] and v[1]
+                          for v in C5.KIND_META.values()), str(list(C5.KIND_META)))
 _labels = [v[0] for v in C5.KIND_META.values()]
-check("종류 이름이 서로 다르다", len(set(_labels)) == 7)
+check("종류 이름이 서로 다르다", len(set(_labels)) == _KINDS,
+      str([x for x in _labels if _labels.count(x) > 1]))
 _icons = [v[1] for v in C5.KIND_META.values()]
 check("★ 종류마다 아이콘 도형이 다르다 (색만으로는 안 갈린다)",
-      len(set(_icons)) == 7, f"{len(set(_icons))}개")
+      len(set(_icons)) == _KINDS, f"{len(set(_icons))}/{_KINDS}개")
 
 # 같은 종류는 리그가 달라도 같은 골격, 다른 종류는 같은 리그여도 다른 골격
 _head = H.fallback("result", final=3, off=1)
@@ -511,8 +517,13 @@ except Exception as _e:                                           # noqa: BLE001
     check("★ 나이트 카드가 예외 없이 만들어진다", False, f"{_e.__class__.__name__}: {_e}")
 else:
     check("★ 나이트 카드가 예외 없이 만들어진다", bool(_mn), "None을 돌려줬다")
-check("나이트: 리그가 하나뿐이면 만들지 않는다 (결과 카드와 같은 말이 된다)",
-      R5.night_card(_v5games, _v5day) is None)
+# **리그가 하나뿐인 날에도 만든다 (v1.14 수정).** 안 만들면 부르는 쪽이
+# 옛 카드로 떨어져서, '안 함'이 '옛것으로 함'이 된다 — 실제로 월요일에
+# 옛 v4 나이트가 나갔다. 종료 경기가 0건일 때만 만들지 않는다.
+check("★ 나이트: 리그가 하나뿐인 날에도 만든다 (옛 카드로 떨어지면 안 된다)",
+      R5.night_card(_v5games, _v5day) is not None)
+check("나이트: 담을 경기가 없으면 만들지 않는다",
+      R5.night_card([], _v5day) is None)
 
 # **스위치가 켜져 있는가.** 함수를 다 만들어 놓고 스위치를 안 켜면 아무 일도 안 난다 —
 # 그것이 이번 작업 전의 상태였다(순위표가 옛 카드로 나가고 있었다).

@@ -46,6 +46,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       Status, UnknownStatus, assert_home_away,
                       demote_impossible_finals,
                       assert_send_windows, assert_team_names_cover,
+                      league_enabled,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
@@ -869,11 +870,20 @@ def _jobs() -> dict[str, tuple[League, callable]]:
                 lambda: _use("NPB", NpbAdapter(), lambda a: a.fetch(y, months))),
     }
 
+    # **발행에서 뺀 리그를 여기서 한 번에 거른다** (contract.DISABLED_LEAGUES).
+    # 등록한 뒤 거르는 것이 아니라 **등록 자체를 안 한다** — 등록해 두면
+    # 수집이 돌고, 실패 기록이 쌓이고, 커버리지가 빨간불을 켠다.
+    jobs = {n: v for n, v in jobs.items() if league_enabled(v[0])}
+
     # LCK·국제는 Leaguepedia 쿼터가 빡빡하다.
+    # (2026-09-07 대표님 지시로 발행에서 뺐다 — `DISABLED_LEAGUES`.
+    #  아래 등록 자체를 건너뛰므로 수집도 안 한다.)
     # **운영의 긴 재시도(최대 6분)를 시계에서 그대로 쓰면 틱 하나가 그것만으로 끝난다.**
     # 시계는 자주 깨어나는 것이 안전장치이므로, 여기서는 한 번만 더 시도하고
     # 안 되면 캐시로 버틴다(캐시도 없으면 그 리그만 이번 틱을 건너뛴다).
     try:
+        if not league_enabled(League.LCK):
+            raise _SkipLeague
         import adapters.lck as _lck
         from adapters.lck import LckAdapter
         _lck._RATELIMIT_WAITS = (15,)
@@ -886,6 +896,8 @@ def _jobs() -> dict[str, tuple[League, callable]]:
             "LCK", LckAdapter(League.LCK), lambda a: a.fetch(since)))
         jobs["INTL_LOL"] = (League.INTL_LOL, lambda: _use(
             "INTL_LOL", LckAdapter(League.INTL_LOL), lambda a: a.fetch(since)))
+    except _SkipLeague:
+        pass                                                 # 발행에서 뺀 리그
     except Exception:                                        # noqa: BLE001
         pass
 
@@ -896,6 +908,8 @@ def _jobs() -> dict[str, tuple[League, callable]]:
         d0 = (today - timedelta(days=3)).strftime("%Y-%m-%d")
         d1 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
         for code, lg in COMPETITION.items():
+            if not league_enabled(lg):
+                continue
             jobs[lg.value] = (lg, (lambda _lg=lg: _use(
                 _lg.value, FootballDataAdapter(_lg), lambda a: a.fetch(d0, d1))))
     return jobs
@@ -1244,6 +1258,10 @@ def _is_transient(exc: BaseException) -> bool:
         if cls.__name__ in TRANSIENT_ERROR_NAMES:
             return True
     return False
+
+
+class _SkipLeague(Exception):
+    """발행에서 뺀 리그 — 등록을 건너뛴다는 표시. 오류가 아니다."""
 
 
 def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[str]]:
@@ -1657,6 +1675,26 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             return _r5
         html = P.render_result(todays, day)
         parts = P.caption_result(todays, day, as_parts=True)
+    # ── 경기별 2종 (v1.14) ──────────────────────────────────────
+    #
+    # **경기 하나를 game_id로 집는다.** 리그·날짜만으로 고르면 같은 대진이
+    # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
+    # 한 번 당한 병이다(약점 127).
+    elif item.content_type in (ContentType.KICKOFF, ContentType.FINAL_FLASH):
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _one is None or _lg is None:
+            return None                     # 스냅샷에서 사라진 경기 — 만들지 않는다
+        if item.content_type is ContentType.KICKOFF:
+            _r5 = _try_v5("kickoff",
+                          lambda R: R.kickoff_card(_one, _lg, now=_now()))
+        else:
+            _r5 = _try_v5("flash", lambda R: R.flash_card(_one, _lg, now=_now()))
+        # **옛 카드로 떨어지지 않는다.** 이 두 종류는 v5에만 있고 대응물이 없다 —
+        # 못 만들면 안 보내는 것이 맞다(빈 카드나 엉뚱한 카드보다 낫다).
+        # 놓친 경기는 그날 리그 요약 카드가 반드시 담는다.
+        return _r5
+
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
         scoped = [g for g in games if day_schedule_scope(g) == item.scope]

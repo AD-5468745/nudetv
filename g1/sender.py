@@ -37,6 +37,7 @@ from contract import (BURST_AUTO_RELEASE_S, BURST_CANARY_OBSERVE_S,
                       BURST_MAX_AUTO_RELEASES, BURST_MAX_MESSAGES,
                       BURST_WINDOW_S, channel_ref,
                       CORRECTION_DAILY_MAX, CORRECTION_MAX_PER_SCOPE,
+                      DAILY_MAX_MESSAGES,
                       CORRECTION_MIN_INTERVAL_SECONDS, CORRECTION_WINDOW_SECONDS,
                       CorrectionDecision, CorrectionSkip,
                       ContentType, GateError, KST, LEASE_SECONDS,
@@ -688,7 +689,9 @@ class SendOutcome:
 class Sender:
     def __init__(self, transport, ledger: Ledger, chat_id: str, *,
                  worker_id: Optional[str] = None,
-                 daily_max: int = BURST_MAX_MESSAGES,
+                 # **폭주 차단기(10분 창)와 다른 상수다.** v1.13까지 같은 값을
+                 # 썼고, 경기별 발송을 켜면 하루 61번째부터 전부 밀렸을 것이다.
+                 daily_max: int = DAILY_MAX_MESSAGES,
                  correction_daily_max: int = CORRECTION_DAILY_MAX,
                  pacer: Optional[Pacer] = None,
                  alert_chat_id: Optional[str] = None,

@@ -122,7 +122,15 @@ else:
 # LCK·국제는 Leaguepedia 시간당 쿼터에 걸릴 수 있다.
 # 리밋은 '검증 못 함'이지 '깨짐'이 아니므로 SKIP으로 가른다 — 둘을 섞으면
 # 진짜 결함이 리밋 소음에 묻힌다.
+from contract import DISABLED_LEAGUES, league_enabled                  # noqa: E402
 for tag, lg in (("LCK", League.LCK), ("LoL 국제", League.INTL_LOL)):
+    # **발행에서 뺀 리그는 검증도 하지 않는다** (2026-09-07 대표님: "롤은 빼자").
+    # 안 쓰는 소스를 계속 검증하면 그쪽 리밋·묵은 캐시가 빨간불을 켜서
+    # 진짜 결함을 덮는다 — 실제로 "LCK 묵은 '예정' 0건"이 그렇게 실패했다.
+    if not league_enabled(lg):
+        skip += 1
+        print(f"    SKIP  {tag} — 발행 대상에서 제외됨(DISABLED_LEAGUES)")
+        continue
     a = LckAdapter(lg)
     try:
         gs = a.fetch("2026-01-01")

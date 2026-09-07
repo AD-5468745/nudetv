@@ -41,7 +41,10 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
 # 새 카드가 실서비스에서 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야
 # 켜 볼 수 있다. 종류별로 나눈 이유도 같다 — 하나가 잘못돼도 나머지는 산다.
 USE_V5 = {
-    "result": True,          # 경기 결과 — 흐름표가 들어가는 자리
+    "result": True,          # 리그 결과 요약 — 하루를 닫는 한 장
+    # 경기별 2종 (v1.14) — 애초에 v5로만 만든다. 옛 카드에 대응물이 없다.
+    "kickoff": True,         # 그 경기 시작 10~1분 전
+    "flash": True,           # 그 경기 종료 직후 — 흐름표가 실제로 보이는 자리
     "morning": True,         # 2026-09-06 대표님: "모든 이미지 카드와 정보는 v5"
     "standings": True,       #   ↳ 그날 지적하신 카드가 이것이다
     "leaders": True,
@@ -156,7 +159,20 @@ def result_card(games: list, league: League, day: str, *,
         parts = [_flow_body(g, league) for g in sorted(todays, key=lambda x: x.start_utc)]
         if all(parts):
             flow = "".join(parts)
-    body = flow or C5.body_scoreboard(todays, league)
+    if flow:
+        body = flow
+    elif len(todays) == 1:
+        # 한 경기인데 흐름표가 없다 — 스코어보드는 머리말과 같은 말이다.
+        _g = todays[0]
+        _k, _loc = format_kickoff(_g)
+        _ex = []
+        if _g.status in (Status.CANCELED, Status.POSTPONED):
+            _ex.append(("상태", (_g.meta.cancel_reason if _g.meta else "") or "취소"))
+        body = C5.body_gameinfo(
+            kst=_k, local=_loc or "",
+            venue=(venue_name(_g.venue) or "") if _g.venue else "", extra=_ex)
+    else:
+        body = C5.body_scoreboard(todays, league)
 
     foot = _foot(todays, league)
     html = C5.shell(kind="result", league=league, date_label=date_label,
@@ -274,7 +290,14 @@ def night_card(games: list, day: str) -> tuple[str, list[str]] | None:
     by_lg: dict = {}
     for g in games:
         by_lg.setdefault(g.league, []).append(g)
-    if len(by_lg) < 2:
+    # **리그가 하나뿐인 날에도 만든다 (2026-09-07 수정).**
+    # 어제 여기에 `len(by_lg) < 2`를 두었다 — "리그가 하나면 그날 결과 카드와
+    # 같은 말이 된다"는 이유였고, 의도는 맞았다. 그런데 **"안 만든다"가
+    # "옛 카드로 나간다"가 됐다** — 부르는 쪽이 None을 받으면 옛 렌더로
+    # 떨어지기 때문이다. 월요일(국내 리그 전부 휴식, MLB만 열림)에 실제로
+    # 옛 v4 나이트 카드가 나갔다. 약점 133과 같은 뿌리:
+    # **폴백이 있는 자리에서 'None'은 '안 함'이 아니라 '옛것으로 함'이다.**
+    if not by_lg:
         return None
     rows = []
     for lg, gs in sorted(by_lg.items(), key=lambda kv: kv[0].value):
@@ -403,6 +426,48 @@ def analysis_card(rb, game, league: League, day: str, *,
     return html, list(C5.caption(kind="analysis", league=league, head=head,
                                  date_label=lab))
 
+
+
+# ══════════════════════════════════════════════════════════════
+# 경기별 2종 (v1.14 — 대표님: "한경기당 1개씩")
+# ══════════════════════════════════════════════════════════════
+
+def kickoff_card(game, league: League, *, now: datetime) -> tuple[str, list[str]] | None:
+    """경기 시작 10~1분 전 알림. 경기 하나당 한 장.
+
+    **남은 시간은 지금 기준으로 계산한다.** 큐에 담긴 예약 시각이 아니라
+    부르는 순간의 `now`를 쓴다 — 페이서가 몇 분 미루면 예약 기준 값은 곧
+    거짓이 된다(약점 104, `REJUDGE_AT_SEND`).
+    """
+    if game.status is not Status.SCHEDULED:
+        return None                        # 이미 시작했거나 취소됐다 — 알릴 것이 없다
+    left = (game.start_utc - now).total_seconds()
+    if left <= 0:
+        return None                        # **경기 시작 이후에는 절대 안 만든다**
+    head = H.for_kickoff(round(left / 60))
+    kst, loc = format_kickoff(game)
+    body = C5.body_matchup(
+        away_name=C5._nm(league, game.away), home_name=C5._nm(league, game.home),
+        kst=kst, local=loc or "",
+        venue=(venue_name(game.venue) or "") if game.venue else "")
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="kickoff", league=league, date_label=lab,
+                    head=head, body=body, foot_left=C5.LEAGUE_LABEL.get(league, ""))
+    return html, list(C5.caption(kind="kickoff", league=league, head=head,
+                                 date_label=lab))
+
+
+def flash_card(game, league: League, *, now: datetime | None = None
+               ) -> tuple[str, list[str]] | None:
+    """경기 종료 직후 결과 속보. 경기 하나당 한 장.
+
+    **결과 카드와 같은 골격을 쓴다** — 경기가 하나뿐이라 `result_card`가
+    이미 그 경기의 이야기(흐름표 + 한 경기용 머리말)를 그린다. 여기서 골격을
+    새로 짜면 같은 것이 두 벌이 되고, 한쪽만 고치는 사고가 난다(약점 45·110).
+    """
+    if not game.is_terminal:
+        return None
+    return result_card([game], league, game.sports_day, now=now)
 
 
 def _date_label(game, now: datetime | None) -> str:

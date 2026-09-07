@@ -52,6 +52,9 @@ KIND_META = {
     "morning":  ("모닝 브리핑", "M4 17h16M6.5 17a5.5 5.5 0 0 1 11 0M12 4.5v2"
                               "M5 8l1.4 1.4M19 8l-1.4 1.4M2.5 13h2M19.5 13h2"),
     "start":    ("시작 알림", "M12 5v8l5 3"),
+    # 킥오프는 시간표(start)와 **다른 아이콘**을 쓴다 — 하루에 가장 많이 나가는
+    # 카드라 시간표와 구분이 안 되면 둘 다 소음이 된다(대표님 불만 ④).
+    "kickoff":  ("경기 시작", "M5 3l14 9-14 9z"),
     "result":   ("경기 결과", "M4 12.5l5 5L20 6.5"),
     "standings": ("팀 순위", "M3 20h5v-6H3zM9.5 20h5V4h-5zM16 20h5v-9h-5z"),
     "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
@@ -439,6 +442,50 @@ def body_leaders(leaders: dict, league: League, categories: list[str]) -> str:
     return f'<div class="quad">{"".join(out)}</div>' if out else ""
 
 
+def body_matchup(*, away_name: str, home_name: str, kst: str,
+                 venue: str = "", note: str = "", local: str = "") -> str:
+    """한 경기짜리 카드의 본문 — **킥오프 알림** (v1.14).
+
+    경기가 하나뿐이니 표가 아니라 **그 경기 자체**를 크게 보여준다.
+    리그 시간표 카드(여러 경기)와 눈에 띄게 달라야 한다 — 하루에 가장 많이
+    나가는 카드라, 시간표와 헷갈리면 그 순간 두 카드가 다 소음이 된다.
+
+    `note`는 카드가 **주장하지 않는 것만** 담는다(예: "선발 정보 없음"이 아니라
+    빈 문자열). 없는 것을 쓰지 않는다 — 그 자리에 넣을 사실이 없으면 안 넣는다.
+    """
+    when = esc(kst) + (f' <em>· 현지 {esc(local)}</em>' if local else "")
+    tail = "".join(
+        f'<div class="bar"><span class="k">{esc(k)}</span>'
+        f'<span class="v">{esc(v)}</span></div>'
+        for k, v in (("경기장", venue), ("", note)) if v)
+    return (f'<div class="duo"><div><div class="n">{esc(away_name)}</div>'
+            f'<div class="p">원정</div></div><div class="x">VS</div>'
+            f'<div><div class="n r">{esc(home_name)}</div>'
+            f'<div class="p r">홈</div></div></div>'
+            f'<div class="bar"><span class="k">시작</span>'
+            f'<span class="v">{when}</span></div>' + tail)
+
+
+def body_gameinfo(*, kst: str, local: str = "", venue: str = "",
+                  extra: Optional[list] = None) -> str:
+    """한 경기 결과 카드에 **흐름표를 못 만들 때** 쓰는 본문 (v1.14).
+
+    **점수를 다시 쓰지 않는다.** 머리말이 이미 "밀워키 8 : 12 신시내티"라고
+    말했는데 본문이 같은 줄을 또 그리면, 카드 한 장이 한 가지 사실만 두 번
+    말하는 셈이다(실렌더에서 435px짜리 그런 카드가 나왔다).
+
+    대신 **머리말이 말하지 않은 것**을 적는다 — 언제, 어디서. 그것뿐이라도
+    "몇 시에 어디서 있었던 경기인가"는 점수만큼 자주 궁금한 사실이다.
+    """
+    when = esc(kst) + (f' <em>· 현지 {esc(local)}</em>' if local else "")
+    rows = [("시작", when)] + [(k, esc(v)) for k, v in (extra or []) if v]
+    if venue:
+        rows.append(("경기장", esc(venue)))
+    return "".join(
+        f'<div class="bar"><span class="k">{esc(k)}</span>'
+        f'<span class="v">{v}</span></div>' for k, v in rows)
+
+
 def body_compare(rows: list[tuple], away_name: str, home_name: str,
                  away_sub: str, home_sub: str, footer: tuple | None = None) -> str:
     """분석 — 좌우 대비. `rows`는 (왼값, 이름, 오른값, 어느쪽이_앞서나) 이다.
@@ -763,7 +810,8 @@ async def audit(page, html: str) -> list[str]:
 CAPTION_MAX = 1024
 FOLLOW_MAX = 4096
 
-KIND_EMOJI = {"morning": "📋", "start": "⏰", "result": "✅", "standings": "📊",
+KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
+              "standings": "📊",
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 

@@ -694,5 +694,88 @@ _mn = sum(1 for c in _mt.calls if c[0] == "sendMessage")
 check(f"★ 변이시험 — 옛 방식으로 되돌리면 {_mn}통이 그대로 나온다 (고침이 진짜 일한다)",
       _mn >= 10 and _mn > _rn, f"옛 {_mn}통 vs 새 {_rn}통")
 
+# ═════════════════════════════════════════════════════════════
+print("\n★★ 발송량이 늘어도 견디는가 (v1.14 — 대표님: \"늘어도 문제없도록 시스템만 갖추자\")")
+# ═════════════════════════════════════════════════════════════
+#
+# 경기별 발송으로 하루 14건 → 130건이 된다(유럽까지 켜면 250건).
+# **늘어난 양이 부딪히는 벽이 넷 있다.** 하나씩 실측값으로 확인한다.
+import contract as _C                                            # noqa: E402
+
+# ── 벽 ① 하루 상한 ────────────────────────────────────────────
+#
+# v1.13까지 하루 상한이 폭주 차단기와 **같은 상수**(60)였다. 그대로 켰으면
+# 61번째 카드부터 전부 "다음 날 재시도"로 밀렸을 것이다 — 오류도 안 나고,
+# 로그에는 조용히 건너뜀만 쌓인다(약점 34와 같은 얼굴).
+_LEAGUE_MAX_GAMES = {          # 지금 켜진 9개 리그의 하루 최대 경기 수(실측·상한)
+    "MLB": 18, "NPB": 6, "KBO": 5, "KL1": 6, "KBL": 3,
+    "VLEAGUE_M": 2, "VLEAGUE_W": 2, "LCK": 3, "INTL_LOL": 3,
+}
+_games = sum(_LEAGUE_MAX_GAMES.values())
+_per_game = _games * 2                       # 킥오프 + 속보
+_per_league = len(_LEAGUE_MAX_GAMES) * 3     # 모닝 + 시간표 + 결과 요약
+_worst_day = _per_game + _per_league + 2 + 1 + 2 + 1   # 순위표·부문·분석·나이트
+check(f"★★ 하루 상한({_C.DAILY_MAX_MESSAGES})이 최악 발송량({_worst_day}장)보다 크다",
+      _C.DAILY_MAX_MESSAGES > _worst_day,
+      f"경기 {_games}개 → 경기별 {_per_game} + 리그 {_per_league} + 기타 6")
+check("★ 하루 상한과 폭주 차단기 상한이 서로 다른 상수다 (하나를 올릴 때 다른 하나가 딸려오면 안 된다)",
+      _C.DAILY_MAX_MESSAGES != _C.BURST_MAX_MESSAGES,
+      f"하루 {_C.DAILY_MAX_MESSAGES} · 10분 {_C.BURST_MAX_MESSAGES}")
+_, _snd_cap = fresh(tempfile.mkdtemp(), "cap")
+check("발송기가 실제로 그 하루 상한을 쓴다 (상수만 고치고 배선을 잊으면 소용없다)",
+      _snd_cap.daily_max == _C.DAILY_MAX_MESSAGES, str(_snd_cap.daily_max))
+
+# ── 벽 ② 10분 창 (폭주 차단기) ────────────────────────────────
+#
+# 최악은 **국내 리그가 한꺼번에 끝나는 순간**이다. 2026-09-06 실측:
+# KBO 5경기 종료가 전부 한 틱(20:44)에 몰렸다. 겨울 시즌이 겹치면 더 몰린다.
+_burst_worst = (5 + 6 + 3 + 2 + 2)      # KBO·NPB·KBL·V남·V여 속보가 동시에
+_burst_worst += 5                        # 그 리그들의 결과 요약
+_burst_worst += 2                        # 순위표
+check(f"★ 가장 몰리는 10분({_burst_worst}건)이 폭주 차단기({_C.BURST_MAX_MESSAGES}건) 안이다",
+      _burst_worst < _C.BURST_MAX_MESSAGES, f"{_burst_worst} vs {_C.BURST_MAX_MESSAGES}")
+
+# ── 벽 ③ 페이서 (텔레그램 속도 제한) ──────────────────────────
+#
+# 분당 상한이 있으므로, 한꺼번에 몰리면 뒤쪽 카드가 몇 분씩 기다린다.
+# **킥오프는 창이 9분뿐이라 그 대기가 곧 유실이다.** 그래서 두 가지를 본다:
+#   ⓐ 킥오프가 페이서 우선순위 최상위인가
+#   ⓑ 창 9분 안에 페이서가 소화할 수 있는 양이 최악 동시 킥오프보다 많은가
+check("★★ 킥오프가 페이서 최우선이다 (뒤로 밀리면 창 9분을 넘겨 그대로 사라진다)",
+      _C.PACER_PRIORITY[ContentType.KICKOFF]
+      == min(_C.PACER_PRIORITY.values()),
+      str(_C.PACER_PRIORITY[ContentType.KICKOFF]))
+_window_min = _C.GRACE_SECONDS[ContentType.KICKOFF] / 60
+_pacer_capacity = int(_window_min * _C.PACER_MSG_PER_MINUTE)
+_kick_worst = 5 + 3 + 2 + 2              # KBO·KBL·V 남녀가 같은 시각에 시작
+check(f"★ 킥오프 창({_window_min:.0f}분)에 페이서가 {_pacer_capacity}건을 소화한다 — "
+      f"최악 동시 킥오프 {_kick_worst}건보다 많다",
+      _pacer_capacity > _kick_worst, f"{_pacer_capacity} vs {_kick_worst}")
+
+# ── 벽 ④ 한 틱 안에 다 그리고 보내는가 ────────────────────────
+#
+# 카드 렌더 실측 **1.05초/장**(2026-09-07, 킥오프·속보 각 6회·1회 측정).
+# 한 틱에 몰린 건수 × (렌더 + 발송)이 틱 간격을 넘으면 시계가 밀리고,
+# 밀린 틱이 다음 창을 또 놓치는 연쇄가 된다.
+_RENDER_SEC = 1.05
+_SEND_SEC = 1.0 / _C.PACER_MSG_PER_SECOND
+_tick_worst_sec = _burst_worst * (_RENDER_SEC + _SEND_SEC)
+_tick_worst_sec = max(_tick_worst_sec,
+                      _burst_worst / _C.PACER_MSG_PER_MINUTE * 60)   # 분당 상한
+check(f"★ 가장 몰리는 틱을 처리하는 데 {_tick_worst_sec / 60:.1f}분 — 틱 간격(5분)보다 짧다",
+      _tick_worst_sec < 5 * 60, f"{_tick_worst_sec:.0f}초")
+
+# ── 전 리그에 적용되는가 (대표님: "모든 스포츠리그 각 경기마다") ──
+#
+# 경기별 발송에 **리그 예외를 두지 않는다.** 리그별 분기를 만들면 그 순간
+# "리그마다 따로 논다"가 되살아난다(대표님 불만 ③).
+import pipeline as _P                                             # noqa: E402
+import inspect as _insp                                           # noqa: E402
+_src = _insp.getsource(_P.build_queue)
+_pg = _src.split("경기별 2종", 1)[-1].split("리그 결과 카드", 1)[0]
+check("★★ 경기별 발송에 리그 예외가 없다 (모든 리그가 같은 규칙을 지난다)",
+      "League." not in _pg and "RECORD_SOURCE_LEAGUES" not in _pg,
+      "리그 이름이 경기별 블록 안에 나타난다")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

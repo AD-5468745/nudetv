@@ -644,9 +644,15 @@ for _pd in ("2026-08-26", "2026-08-27"):
     _full["KBO"].append(mkgame(League.KBO, "SS", "NC", day=_pd, hh=18,
                                status=Status.FINAL, score=Score(1, 6, ScoreUnit.RUNS)))
 
+# 경기별 속보는 **종료를 알아챈 시각**이 찍힌 경기만 큐에 오른다.
+# 표본에 안 주면 그 종류가 통째로 안 잡히고, 아래 '큐에 다 오른다' 검사가
+# 그것을 잡는다 — 실제로 v1.14 배선 때 그렇게 걸렸다.
+for _g in _full["KBO"]:
+    if _g.status is Status.FINAL:
+        _g.meta.first_final_at = T._iso(NOW - timedelta(minutes=3))
 _items = T.build_all_queues(_full, NOW, "-100test")
 _kinds = {i.content_type for i in _items}
-check(f"큐에 7종이 다 오른다 ({len(_items)}건)",
+check(f"큐에 오르는 {len(QUEUED_CONTENT_TYPES)}종이 다 오른다 ({len(_items)}건)",
       QUEUED_CONTENT_TYPES <= _kinds,
       f"빠진 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _kinds))}")
 
@@ -716,7 +722,7 @@ for _it in _items:
                       f"{type(_e).__name__} {_e}")
 
 check("어떤 종류도 예외로 죽지 않는다", not _broke, " | ".join(_broke[:3]))
-check("7종이 모두 실제로 만들어진다",
+check(f"{len(QUEUED_CONTENT_TYPES)}종이 모두 실제로 만들어진다",
       {c.value for c in QUEUED_CONTENT_TYPES} <= set(_made),
       f"만들어짐={sorted(set(_made))} 비어서건너뜀={sorted(set(_empty))}")
 
@@ -931,9 +937,13 @@ from contract import (assert_send_windows, lookahead_for,                # noqa:
 
 check("시계 간격 상수가 실측값을 담는다 (설정값이 아니라)",
       T.TICK_INTERVAL_SECONDS >= 60 * 60, f"{T.TICK_INTERVAL_SECONDS}초")
-check("현재 설정이 게이트를 통과한다",
-      _no_raise(lambda: assert_send_windows(T.TICK_INTERVAL_SECONDS,
-                                            T.LOOKAHEAD_SECONDS)))
+# **게이트는 실측 간격으로 돈다** — 여기서도 실측 범위로 본다.
+# 설정 상수(TICK_INTERVAL_SECONDS)는 옛 크론 시절 값(1시간)이라, 연속 운전이
+# 도는 지금의 현실이 아니다. 실측 중앙 5.4분 · 최대 12.2분(2026-09-05, 24시간).
+check("실측 정상 범위(9분)에서 게이트가 조용하다",
+      _no_raise(lambda: assert_send_windows(9 * 60, T.LOOKAHEAD_SECONDS)))
+check("★ 시계가 이음매(12분)로 뜸해지면 킥오프를 경고한다 — 그건 사실이므로 경고가 맞다",
+      not _no_raise(lambda: assert_send_windows(13 * 60, T.LOOKAHEAD_SECONDS)))
 check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
       lookahead_for(ContentType.MORNING, 90 * 60) == 0,
       str(lookahead_for(ContentType.MORNING, 90 * 60)))
@@ -962,12 +972,25 @@ for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
     _w = send_window_seconds(_ct, T.LOOKAHEAD_SECONDS)
     check(f"{_ct.value} 창이 실측 최악 간격(240분)을 덮는다 ({_w // 60}분)",
           _w >= _WORST_OBSERVED_TICK_SECONDS, f"{_w // 60}분")
-# 큐에 오르는 것 전체로도 한 번 — 종류가 또 늘면 위 목록보다 이쪽이 먼저 깨진다
+# 큐에 오르는 것 전체로도 한 번 — 종류가 또 늘면 위 목록보다 이쪽이 먼저 깨진다.
+#
+# **경기별 2종은 여기서 뺀다.** 창을 넓힐 수 없는 콘텐츠라서다(계약 주석 참조).
+# 그냥 빼면 구멍이 되므로, **짝이 되는 안전망이 최악 간격을 견디는지**를
+# 대신 확인한다 — 안전망 없이 좁은 창을 두면 그건 대가가 아니라 누락이다.
+from contract import NARROW_BY_DESIGN, SAFETY_NET_FOR                   # noqa: E402
 _narrow = [f"{ct.value} {send_window_seconds(ct, T.LOOKAHEAD_SECONDS) // 60}분"
-           for ct in QUEUED_CONTENT_TYPES
+           for ct in QUEUED_CONTENT_TYPES - NARROW_BY_DESIGN
            if send_window_seconds(ct, T.LOOKAHEAD_SECONDS)
            < _WORST_OBSERVED_TICK_SECONDS]
-check("큐에 오르는 7종 전부가 실측 최악 간격을 덮는다", not _narrow, str(_narrow))
+check("큐에 오르는 종류 전부가 실측 최악 간격을 덮는다 (설계상 좁은 것 제외)",
+      not _narrow, str(_narrow))
+for _nc, _net in sorted(SAFETY_NET_FOR.items(), key=lambda kv: kv[0].value):
+    _nw = send_window_seconds(_net, T.LOOKAHEAD_SECONDS)
+    check(f"★★ {_nc.value}가 사라져도 {_net.value}가 담는다 "
+          f"(안전망 창 {_nw // 60}분 ≥ 최악 {_WORST_OBSERVED_TICK_SECONDS // 60}분)",
+          _nw >= _WORST_OBSERVED_TICK_SECONDS, f"{_nw // 60}분")
+    check(f"  ↳ {_net.value}는 설계상 좁은 목록에 없다 (안전망이 안전망을 못 가진다)",
+          _net not in NARROW_BY_DESIGN)
 # **결과 카드를 일찍 보내면 경기가 빠진다.** 예약 시각은 '마감'이고, 렌더는
 # "한 경기라도 끝났으면" 카드를 만든다. 앞창을 열면 5경기 중 1경기만 끝난
 # 시점에 카드가 나가고 나머지는 영영 빠진다(멱등키가 재발송을 막으므로).
@@ -1025,9 +1048,12 @@ check("시작 알림이 100분 시계에 걸린다", ContentType.START_ALERT in 
       str(sorted(c.value for c in _seen)))
 check("결과 카드가 100분 시계에 걸린다", ContentType.LEAGUE_RESULT in _seen,
       str(sorted(c.value for c in _seen)))
-check("큐에 오르는 모든 종류가 빠짐없이 걸린다",
-      QUEUED_CONTENT_TYPES <= _seen,
-      f"놓친 것: {sorted(c.value for c in (QUEUED_CONTENT_TYPES - _seen))}")
+# 경기별 2종은 100분 시계에서 구조적으로 못 걸린다(창 9분·60분) —
+# 그래서 안전망을 뒀다. 여기서는 나머지가 전부 걸리는지를 본다.
+_expect = QUEUED_CONTENT_TYPES - NARROW_BY_DESIGN
+check("큐에 오르는 모든 종류가 빠짐없이 걸린다 (설계상 좁은 것 제외)",
+      _expect <= _seen,
+      f"놓친 것: {sorted(c.value for c in (_expect - _seen))}")
 
 # ── 14b. 정확도를 위해 한 틱 미루기 (2026-09-03 신설) ─────────
 # 새 4종을 켜면서 앞창을 크게 열었다(분석 6시간). 앞창만 넓히면 카드가
@@ -1345,7 +1371,9 @@ print("\nstate/health.json — 상태를 볼 수 있는가 (원문은 새지 않
 
 _HNOW = datetime(2026, 9, 4, 14, 30, tzinfo=timezone.utc)
 _hflog = {
-    "LCK": {"at": T._iso(_HNOW), "count": 53, "cache_age": 3.5 * 3600,
+    # 캐시로 버티는 상황을 시험한다. **살아 있는 리그 이름을 쓴다** — 전에는
+    # LCK였는데 2026-09-07에 발행에서 빠지면서 `_jobs()`에 없어져 KeyError가 났다.
+    "NPB": {"at": T._iso(_HNOW), "count": 53, "cache_age": 3.5 * 3600,
             "error": T._RATELIMITED_BY_CACHE, "failed_at": T._iso(_HNOW)},
     "KBO": {"at": T._iso(_HNOW), "count": 348, "error": None},
     "MLB": {"at": T._iso(_HNOW), "count": 97,
@@ -1357,16 +1385,19 @@ class _Cov:
     ok = True
 
 
-_no_raise(lambda: T._write_health(_HNOW, _hflog, ["LCK: 캐시로 버팀 3.5시간"],
-                                  ["LCK: 스냅샷이 25.0시간 묵었습니다 — 이번 틱 발송 보류"],
+# **살아 있는 리그로 시험한다.** 전에는 LCK를 썼는데 2026-09-07에 발행에서
+# 빠지면서 `_jobs()`에 없어져 KeyError가 났다 — 검사가 옳게 잡았다.
+# 시험 대상은 "캐시로 버티는 상황"이지 특정 리그가 아니다.
+_no_raise(lambda: T._write_health(_HNOW, _hflog, ["NPB: 캐시로 버팀 3.5시간"],
+                                  ["NPB: 스냅샷이 25.0시간 묵었습니다 — 이번 틱 발송 보류"],
                                   _Cov()))
 _htxt = T.HEALTH_LOG.read_text(encoding="utf-8")
 _h = json.loads(_htxt)
-check("캐시로 버틴 리그의 나이가 보인다", _h["leagues"]["LCK"].get("cache_hours") == 3.5,
-      str(_h["leagues"]["LCK"]))
-check("발송 보류가 걸린 리그가 보인다", _h["stale_blocked"] == ["LCK"], str(_h["stale_blocked"]))
+check("캐시로 버틴 리그의 나이가 보인다", _h["leagues"]["NPB"].get("cache_hours") == 3.5,
+      str(_h["leagues"]["NPB"]))
+check("발송 보류가 걸린 리그가 보인다", _h["stale_blocked"] == ["NPB"], str(_h["stale_blocked"]))
 check("레이트리밋인지 게이트인지 분류가 보인다",
-      _h["leagues"]["LCK"]["error_kind"] == "ratelimited"
+      _h["leagues"]["NPB"]["error_kind"] == "ratelimited"
       and _h["leagues"]["MLB"]["error_kind"] == "gate", str(_h["leagues"]))
 check("정상 리그에는 오류 표시가 없다", "error_kind" not in _h["leagues"]["KBO"])
 
@@ -1705,6 +1736,132 @@ check("기록이 오래 막히면 '사라진 것'으로 올린다 (상한이 하
 check("★ 누락 알림 유예가 상태 알림보다 짧다 (계속 사라지면 계속 말한다)",
       T.LOST_ALERT_REPEAT_SECONDS < S.ALERT_REPEAT_SECONDS,
       f"{T.LOST_ALERT_REPEAT_SECONDS} vs {S.ALERT_REPEAT_SECONDS}")
+
+# ═════════════════════════════════════════════════════════════
+print("\n★★ 경기별 발송 (v1.14) — 중복 발송 0이 유일한 합격 기준")
+# ═════════════════════════════════════════════════════════════
+#
+# 대표님: *"한경기당 1개씩 발송 자주되어도 괜찮아, 정확한 시각에 맞춰
+# 발송이 되기만하면되"* (2026-09-07)
+#
+# **되돌릴 수 없는 사고는 중복 발송 하나뿐이다.** 안 보낸 것은 다음 틱에
+# 보내면 되지만 두 번 보낸 것은 못 되돌린다(약점 89). 그래서 이 절은
+# "제대로 나가는가"보다 **"두 번 나가지 않는가"**를 먼저 본다.
+
+_PG_DAY = "2026-08-29"
+_pg_games = [
+    mkgame(League.KBO, "LG", "OB", day=_PG_DAY, hh=18),
+    mkgame(League.KBO, "SS", "KT", day=_PG_DAY, hh=18),   # 같은 시각 다른 경기
+    mkgame(League.KBO, "HT", "NC", day=_PG_DAY, hh=14),
+]
+# 세 경기의 source_key가 서로 달라야 game_id도 다르다 — 여기가 무너지면 아래가 다 무의미
+check("시험 표본의 경기 식별자가 서로 다르다",
+      len({g.game_id for g in _pg_games}) == 3,
+      str([g.game_id for g in _pg_games]))
+
+_pg_now = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)     # KST 12:00
+_pgq = P.build_queue(_pg_games, _pg_now, "-100test", floor_hours=0)
+_kick = [i for i in _pgq if i.content_type is ContentType.KICKOFF]
+
+check(f"경기마다 킥오프가 하나씩 잡힌다 ({len(_kick)}건 / 경기 {len(_pg_games)}개)",
+      len(_kick) == len(_pg_games), str([i.scope for i in _kick]))
+check("★★ 킥오프 멱등키가 경기마다 전부 다르다 (같으면 한 경기만 나가고 나머지가 먹힌다)",
+      len({i.idem_key for i in _kick}) == len(_kick),
+      str(sorted(i.idem_key for i in _kick))[:200])
+check("킥오프 항목이 자기 경기를 들고 다닌다 (더블헤더에서 엉뚱한 경기를 그리지 않게)",
+      {i.game_id for i in _kick} == {g.game_id for g in _pg_games})
+
+# ── 예약 시각 — 창이 [T-10분, T-1분]인가 ──────────────────────
+_by_gid = {g.game_id: g for g in _pg_games}
+_lead_ok = all(
+    abs((_by_gid[i.game_id].start_utc - i.scheduled_utc).total_seconds()
+        - C.KICKOFF_LEAD_SECONDS) < 1 for i in _kick)
+check(f"★ 킥오프 예약이 경기 시작 {C.KICKOFF_LEAD_SECONDS // 60}분 전이다", _lead_ok,
+      str([(str(i.scheduled_utc), str(_by_gid[i.game_id].start_utc)) for i in _kick][:1]))
+check("★★ 창 끝(예약+유예)이 경기 시작보다 앞이다 — 경기 시작 이후 발송이 구조적으로 불가능",
+      all(i.scheduled_utc
+          + timedelta(seconds=C.GRACE_SECONDS[ContentType.KICKOFF])
+          < _by_gid[i.game_id].start_utc for i in _kick))
+check("킥오프에 앞창이 없다 ('10분 뒤 시작'이 일찍 나가면 거짓말)",
+      C.LOOKAHEAD_SECONDS_BY_CONTENT.get(ContentType.KICKOFF) == 0)
+
+# ── 결과 속보 — first_final_at이 찍힌 경기만 ─────────────────
+_ff_games = [mkgame(League.KBO, "LG", "OB", day=_PG_DAY, hh=18,
+                    status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS)),
+             mkgame(League.KBO, "SS", "KT", day=_PG_DAY, hh=18,
+                    status=Status.FINAL, score=Score(2, 1, ScoreUnit.RUNS))]
+_ff_at = datetime(2026, 8, 29, 12, 5, tzinfo=timezone.utc)
+_ff_games[0].meta.first_final_at = T._iso(_ff_at)
+_ffq = [i for i in P.build_queue(_ff_games, _ff_at + timedelta(minutes=2),
+                                 "-100test", floor_hours=0)
+        if i.content_type is ContentType.FINAL_FLASH]
+check("★ 종료를 알아챈 경기만 속보가 잡힌다 (아직 안 찍힌 경기는 안 잡힌다)",
+      len(_ffq) == 1 and _ffq[0].game_id == _ff_games[0].game_id,
+      str([(i.game_id, str(i.scheduled_utc)) for i in _ffq]))
+check("속보 예약이 '종료를 알아챈 그 시각'이다 (지어낸 종료 시각이 아니다)",
+      bool(_ffq) and _ffq[0].scheduled_utc == _ff_at, str(_ffq and _ffq[0].scheduled_utc))
+
+# ── 리그 단위 카드와 섞이지 않는가 ────────────────────────────
+_all_keys = [i.idem_key for i in _pgq]
+_lg_keys = [i.idem_key for i in _pgq
+            if i.content_type in (ContentType.START_ALERT,
+                                  ContentType.LEAGUE_RESULT)]
+check("★ 리그 단위 카드(시간표·결과 요약)는 그대로 남아 있다 — 개별이 놓쳐도 누락 0",
+      len(_lg_keys) >= 1, str(_lg_keys))
+check("★★ 경기별 키와 리그 키가 하나도 안 겹친다 (겹치면 한쪽이 '이미 보냄'에 먹힌다)",
+      not (set(i.idem_key for i in _kick) & set(_lg_keys)))
+
+# ── 순연: 시작 시각이 바뀌면 알림을 새로 연다 ──────────────────
+_post = mkgame(League.KBO, "LG", "OB", day=_PG_DAY, hh=18)
+_k0 = [i for i in P.build_queue([_post], _pg_now, "-100test", floor_hours=0)
+       if i.content_type is ContentType.KICKOFF]
+_post.start_rev = 1
+_k1 = [i for i in P.build_queue([_post], _pg_now, "-100test", floor_hours=0)
+       if i.content_type is ContentType.KICKOFF]
+check("★ 경기가 순연되면(start_rev 증가) 킥오프 키가 새로 열린다",
+      bool(_k0) and bool(_k1) and _k0[0].idem_key != _k1[0].idem_key,
+      f"{_k0 and _k0[0].idem_key} vs {_k1 and _k1[0].idem_key}")
+
+# ── ★ 변이시험 — 깨뜨려서 잡히는지 본다 ───────────────────────
+#
+# 멱등키에서 경기 식별자를 빼면 같은 리그·같은 날 경기들이 **같은 키**가 된다.
+# 그러면 한 경기만 나가고 나머지는 '이미 보냄'으로 조용히 먹힌다.
+# 위 검사가 그것을 정말 잡는지, 일부러 그렇게 만들어 확인한다.
+_mut = [C.idem_key("-100test", ContentType.KICKOFF,
+                   f"{League.KBO.value}:{_PG_DAY}") for _ in _pg_games]
+check("★★ (변이) 키에서 경기 식별자를 빼면 세 경기가 같은 키가 된다 — 위 검사가 이것을 잡는다",
+      len(set(_mut)) == 1, str(set(_mut)))
+
+# ── 발송량 — 폭주 차단기 안인가 ───────────────────────────────
+#
+# 경기별로 쪼개면 하루 발송이 14건 → 60~70건이 된다. 차단기는 10분 창에
+# 걸리므로, **가장 몰리는 순간**이 상한 안인지를 본다.
+# 최악은 KBO처럼 전 경기가 한 틱에 끝나는 날이다(2026-09-06 실측: 5경기 동시).
+_worst_tick = len(_pg_games) + 2        # 속보 5 + 리그 요약 1 + 순위표 1
+check(f"★ 가장 몰리는 틱({_worst_tick}건)이 폭주 차단기 상한({C.BURST_MAX_MESSAGES}건/"
+      f"{C.BURST_WINDOW_S // 60}분) 안이다",
+      _worst_tick < C.BURST_MAX_MESSAGES, f"{_worst_tick} vs {C.BURST_MAX_MESSAGES}")
+
+# ── 되돌리는 스위치 ───────────────────────────────────────────
+check("PER_GAME_SENDING을 끄면 경기별 항목이 하나도 안 생긴다 (되돌리는 길)",
+      _no_raise(lambda: None) and (lambda: (
+          setattr(P, "PER_GAME_SENDING", False),
+          len([i for i in P.build_queue(_pg_games, _pg_now, "-100test",
+                                        floor_hours=0)
+               if i.content_type in (ContentType.KICKOFF,
+                                     ContentType.FINAL_FLASH)]) == 0,
+          setattr(P, "PER_GAME_SENDING", True))[1])())
+
+# ── 발행에서 뺀 리그 (2026-09-07 대표님: "롤은 빼자") ──────────
+check("★ 뺀 리그는 수집 대상에 아예 없다 (등록해 두면 실패 기록이 쌓이고 빨간불이 켜진다)",
+      not (set(T._jobs()) & {lg.value for lg in C.DISABLED_LEAGUES}),
+      str(sorted(T._jobs())))
+check("판정이 한 곳에만 있다 (수집·큐·감시가 따로 판정하면 하나가 빠진다)",
+      all(C.league_enabled(lg) is False for lg in C.DISABLED_LEAGUES)
+      and C.league_enabled(League.KBO) is True)
+check("빼도 표·색·계약은 남아 있다 (되돌리기가 한 줄이어야 하고, 옛 스냅샷이 이 리그를 참조한다)",
+      all(lg in C.TEAM_NAMES and lg in C.SEASON_FORMAT_BY_LEAGUE
+          for lg in C.DISABLED_LEAGUES))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)

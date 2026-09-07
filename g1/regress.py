@@ -182,10 +182,20 @@ check(f"분석 카드는 주목 경기 시작 -{_AN_LEAD_H}시간 ({len(_an)}건
 # 실측 최악 간격은 240분(깃허브 자동 시계)이다.
 _WORST_TICK_SECONDS = 240 * 60
 _DEFAULT_LOOKAHEAD = 60 * 60                   # tick.LOOKAHEAD_SECONDS 기본값
+# **경기별 2종(킥오프·결과 속보)은 창을 못 넓혀 여기서 뺀다.**
+# 대신 짝이 되는 안전망이 최악 간격을 견디는지 바로 아래에서 확인한다 —
+# 그 확인이 없으면 이 예외는 그냥 구멍이다.
 _narrow = [f"{ct.value} {C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) // 60}분"
-           for ct in sorted(C.QUEUED_CONTENT_TYPES, key=lambda c: c.value)
+           for ct in sorted(C.QUEUED_CONTENT_TYPES - C.NARROW_BY_DESIGN,
+                            key=lambda c: c.value)
            if C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) < _WORST_TICK_SECONDS]
-check("큐에 오르는 7종 전부가 실측 최악 간격(240분)을 견딘다", not _narrow, str(_narrow))
+check("큐에 오르는 종류 전부가 실측 최악 간격(240분)을 견딘다 (설계상 좁은 것 제외)",
+      not _narrow, str(_narrow))
+check("★★ 설계상 좁은 종류마다 안전망이 있고, 그 안전망은 240분을 견딘다",
+      all(C.send_window_seconds(net, _DEFAULT_LOOKAHEAD) >= _WORST_TICK_SECONDS
+          and net not in C.NARROW_BY_DESIGN
+          for net in C.SAFETY_NET_FOR.values()),
+      str({k.value: v.value for k, v in C.SAFETY_NET_FOR.items()}))
 check("새로 켠 4종도 예외가 아니다",
       all(C.send_window_seconds(ct, _DEFAULT_LOOKAHEAD) >= _WORST_TICK_SECONDS
           for ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,

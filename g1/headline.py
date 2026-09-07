@@ -289,6 +289,20 @@ def for_start_alert(minutes_left: int, first_label: str) -> Headline:
                     facts={"minutes": m, "hours": h, "rest_minutes": mm})
 
 
+def for_kickoff(minutes_left: int) -> Headline:
+    """경기별 킥오프 알림 (v1.14). **'곧'이라고 쓰지 않는다** — 108의 규칙.
+
+    창이 [T-10분, T-1분]이라 남은 시간은 항상 1~10분이다. 그 숫자를 그대로 쓴다.
+    대진은 본문(`body_matchup`)이 크게 말하므로 **여기서 되풀이하지 않는다.**
+
+    이 문장은 **보내는 순간에 다시 계산된다**(`REJUDGE_AT_SEND`) — 페이서가
+    몇 분 미루면 "10분 뒤"가 그 즉시 거짓이 되기 때문이다.
+    """
+    m = max(1, int(minutes_left))
+    return Headline(rule="K-COUNTDOWN", text=f"{m}분 뒤 시작",
+                    facts={"minutes": m})
+
+
 # ══════════════════════════════════════════════════════════════
 # 팀 순위표
 # ══════════════════════════════════════════════════════════════
@@ -688,7 +702,7 @@ def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick):
 ALL_RULES = frozenset({
     "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-COUNT",
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
-    "A-COUNTDOWN",
+    "A-COUNTDOWN", "K-COUNTDOWN",
     "S-GAP", "S-RACE", "S-LEAD", "S-STREAK", "S-LAST10", "S-RANK",
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
