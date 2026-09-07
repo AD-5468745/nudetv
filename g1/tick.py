@@ -1874,6 +1874,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                            for ct, w, n in _narrow[:5]))
     _record_tick(now)
 
+    # **유럽 팀 목록을 저장소에 남긴다 (v1.14b).** 키가 없으면 아무 일도 안 한다.
+    # 한글 표기표를 만들려면 소스가 쓰는 세 글자 코드를 알아야 하는데,
+    # 그 코드는 어댑터를 통해서만 받을 수 있고 어댑터는 표기표가 없으면 막힌다 —
+    # 서로가 서로를 막는 고리를 여기서 끊는다(g1/dump_eu_teams.py 참조).
+    try:
+        from dump_eu_teams import maybe_dump as _eu_dump
+        _eu_line = _eu_dump(now)
+        if _eu_line:
+            print(f"  [유럽] {_eu_line}")
+    except Exception as _e:                                  # noqa: BLE001
+        # 자료 수집일 뿐이다 — 실패해도 시계를 죽이지 않는다.
+        print(f"  [유럽] 팀 목록 갱신 실패(무시): {_e.__class__.__name__}")
+
     counts, errors, soft = collect(now, force=force_fetch)
     print("  [수집] " + " · ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     for e in errors:
