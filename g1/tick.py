@@ -53,7 +53,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
-                      DUTY_ALERT_ENABLED, unqueued_kickoffs,
+                      DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
                       DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
@@ -2600,6 +2600,29 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 + " · ".join(sorted(_unqueued)[:3])
                 + " · 경기는 편성돼 있는데 발행 항목이 만들어지지 않았습니다"
                   "(2026-09-08 KBO와 같은 유형)")
+
+        # ── 경기별 2종도 같은 눈으로 본다 (v1.19b) ────────────────────
+        #
+        # **킥오프에서 찾은 병이 나머지 둘에도 있는지 미리 본다** (대표님 지시).
+        # 침묵의 모양이 다르다: 이 둘은 예약 시각이 데이터에서 나오므로,
+        # 그 데이터가 없으면 큐가 아예 만들어지지 않는다.
+        #   · 종료 속보 — `first_final_at`은 "이전에 열려 있던 것을 봤을 때"만 찍힌다.
+        #     처음 볼 때 이미 종료면 안 찍히고, 그 경기 속보는 영영 안 나간다.
+        #     **정리판이 결과를 담으므로 정보는 안 사라진다** — 그래도 센다.
+        #     세지 않으면 얼마나 자주 일어나는지 영원히 모른다.
+        #   · 선발 라인업 — 명단은 받았는데 `lineup_seen_at`이 없으면 같은 일이 난다.
+        for _ct in (ContentType.FINAL_FLASH, ContentType.LINEUP):
+            if _ct in DISABLED_CONTENT_TYPES:
+                continue
+            if _ct is ContentType.LINEUP and not LINEUP_ENABLED:
+                continue
+            _pg = unqueued_per_game(_ct, _pool, led.idem_keys(), now)
+            if not _pg:
+                continue
+            _label = "종료 속보" if _ct is ContentType.FINAL_FLASH else "선발 라인업"
+            lost.append(
+                f"★★ 큐에조차 들어오지 못한 {_label} {len(_pg)}건 — "
+                + " · ".join(f"{_s} ({_w})" for _s, _w in _pg[:3]))
     if _ghost:
         lost.append(
             f"★ 창이 지났는데 대장에 흔적조차 없는 항목 {len(_ghost)}건 — "

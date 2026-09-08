@@ -2224,6 +2224,113 @@ check("  ↳ 옛 규격 키를 만드는 함수가 계약에 있다 (두 곳에�
       C.legacy_kickoff_scope(_uq_old[0])
       == f"{League.MLB.value}:2026-09-07:MLB:2026:823175")
 
+# ── ★★★ 경기별 2종의 침묵 (v1.19b — 대표님: "응 미리 확인해두자") ────
+#
+# 킥오프에서 찾은 병이 종료 속보·선발 라인업에도 있는지 미리 본다.
+# **침묵의 모양이 다르다** — 이 둘은 예약 시각이 데이터에서 나온다:
+#   · 종료 속보  `meta.first_final_at` — "이전 스냅샷에서 열려 있던 것"을 봤을 때만 찍힌다
+#   · 선발 라인업 `meta.lineup_seen_at` — 명단을 처음 본 시각
+# 그 값이 없으면 큐가 아예 안 만들어지고, 흔적도 안 남는다.
+
+
+class _PgMeta:
+    def __init__(self, ffa=None, lineup=None, seen=None):
+        self.first_final_at = ffa
+        self.lineup = lineup
+        self.lineup_seen_at = seen
+
+
+class _PgG:
+    """의무 계산에 필요한 최소 계약. **가짜를 계약보다 좁게 만들지 않는다**(약점 172)."""
+
+    def __init__(self, gid, start_utc, status, meta=None, league=League.NPB,
+                 day="2026-09-08"):
+        self.game_id = gid
+        self.league = league
+        self.sports_day = day
+        self.status = status
+        self.start_utc = start_utc
+        self.start_kst = start_utc.astimezone(C.KST)
+        self.meta = meta or _PgMeta()
+
+    @property
+    def is_terminal(self):
+        return self.status in C.TERMINAL_STATUSES
+
+
+_PG_START = datetime.fromisoformat("2026-09-08T18:00:00+09:00")
+_PG_GRACE = C.GRACE_SECONDS[ContentType.FINAL_FLASH]
+_pg_fin = [_PgG(f"n{i}", _PG_START, Status.FINAL) for i in range(5)]
+_pg_soon = _PG_START + timedelta(seconds=_PG_GRACE - 60)     # 아직 유예 안
+_pg_late = _PG_START + timedelta(seconds=_PG_GRACE + 60)     # 유예 지남
+
+check("★★★ 예약 시각이 없어도 **경기 시작 + 유예** 전에는 조용하다 (실측 오탐 유형)",
+      C.unqueued_per_game(ContentType.FINAL_FLASH, _pg_fin, [], _pg_soon) == [],
+      str(C.unqueued_per_game(ContentType.FINAL_FLASH, _pg_fin, [], _pg_soon)))
+check("  ↳ 그 뒤에도 속보가 안 나갔으면 신고한다 (예약 시각이 없어 큐에 못 들어간 것)",
+      len(C.unqueued_per_game(ContentType.FINAL_FLASH, _pg_fin, [], _pg_late)) == 5)
+check("  ↳ 대장에 속보가 있으면 조용하다",
+      C.unqueued_per_game(
+          ContentType.FINAL_FLASH, _pg_fin,
+          [C.idem_key("-100test", ContentType.FINAL_FLASH, C.game_scope(g))
+           for g in _pg_fin], _pg_late) == [])
+check("  ↳ 아직 안 끝난 경기에는 속보 의무가 없다",
+      C.unqueued_per_game(
+          ContentType.FINAL_FLASH,
+          [_PgG("live", _PG_START, Status.LIVE)], [], _pg_late) == [])
+check("  ↳ 취소된 경기에도 속보 의무가 없다",
+      C.unqueued_per_game(
+          ContentType.FINAL_FLASH,
+          [_PgG("c", _PG_START, Status.CANCELED)], [], _pg_late) == [])
+
+# 예약 시각이 **있는** 경우는 킥오프와 같은 꼴 — 창으로 판정한다.
+_pg_st = _PgG("s", _PG_START, Status.FINAL,
+              _PgMeta(ffa=(_PG_START + timedelta(hours=3)).isoformat()))
+_pg_in = _PG_START + timedelta(hours=3, seconds=60)
+_pg_out = _PG_START + timedelta(hours=3, seconds=_PG_GRACE + 60)
+check("★ 예약이 있으면 창 안에서는 조용하다",
+      C.unqueued_per_game(ContentType.FINAL_FLASH, [_pg_st], [], _pg_in) == [])
+check("  ↳ 창이 지나면 신고한다",
+      len(C.unqueued_per_game(ContentType.FINAL_FLASH, [_pg_st], [],
+                              _pg_out)) == 1)
+
+# 선발 라인업 — 명단이 없으면 **의무 자체가 없다**(재료가 세상에 없다 · 약점 142).
+check("★ 명단을 못 본 경기에는 라인업 의무가 없다 ('모른다'와 '아니다'를 뭉개지 않는다)",
+      C.unqueued_per_game(
+          ContentType.LINEUP,
+          [_PgG("l0", _PG_START, Status.SCHEDULED)], [], _pg_late) == [])
+check("★★ 명단은 받았는데 본 시각이 없으면 라인업이 조용히 사라진다 — 잡는다",
+      len(C.unqueued_per_game(
+          ContentType.LINEUP,
+          [_PgG("l1", _PG_START, Status.SCHEDULED,
+                _PgMeta(lineup={"home": {}, "away": {}}))],
+          [], _PG_START + timedelta(
+              seconds=C.GRACE_SECONDS[ContentType.LINEUP] + 60))) == 1)
+
+check(f"★ 되짚기 창({C.DUTY_LOOKBACK_SECONDS // 3600}시간) 밖의 옛 경기는 세지 않는다 "
+      f"(리그를 새로 붙인 날의 도입분을 사고로 세지 않는다)",
+      C.unqueued_per_game(
+          ContentType.FINAL_FLASH, _pg_fin, [],
+          _PG_START + timedelta(seconds=C.DUTY_LOOKBACK_SECONDS + 60)) == [])
+check("★ 의무를 만들 수 없는 콘텐츠는 조용히 통과시키지 않고 막는다",
+      _raises(C.GateError,
+              lambda: C.unqueued_per_game(ContentType.MORNING, [], [],
+                                          _pg_late)))
+
+# ── ★ 변이시험 — '경기 시작 + 유예' 조건을 빼면 오탐이 난다 ──────────
+#
+# 이 조건이 없으면 **끝난 지 얼마 안 된 정상 경기가 전부 신고된다.**
+# 실제로 그렇게 만들었다가 실데이터(NPB 5경기)에서 잡았다 — 그때 그 경기들은
+# 유예 6시간이 넉넉히 남아 있었다.
+check("★★ (변이) 시작+유예 조건을 빼면 아직 나갈 시간이 남은 경기가 신고된다",
+      C.unqueued_per_game(ContentType.FINAL_FLASH, _pg_fin, [], _pg_soon,
+                          ) == []
+      and len(C.unqueued_per_game(ContentType.FINAL_FLASH, _pg_fin, [],
+                                  _pg_soon, lookback_seconds=999999)) == 0,
+      "되짚기를 넓혀도 유예 안이면 조용해야 한다")
+check("  ↳ scope를 만드는 함수가 한 곳뿐이다 (두 곳에서 각자 만들면 어긋난다 — 약점 45)",
+      C.game_scope(_pg_fin[0]) == C.legacy_kickoff_scope(_pg_fin[0]))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

@@ -1479,6 +1479,91 @@ def kickoff_duty_groups(games: list, *, lead_seconds: Optional[int] = None
             for k, v in duties.items()}
 
 
+def unqueued_per_game(content_type: "ContentType", games: list, idem_keys,
+                      now_utc: datetime, *,
+                      lookback_seconds: Optional[int] = None
+                      ) -> list[tuple[str, str]]:
+    """경기별 콘텐츠(종료 속보·선발 라인업)가 **조용히 사라진 것** — [(scope, 이유)].
+
+    킥오프와 같은 병을 나머지 두 종류에서도 찾는다(약점 181). 다만 침묵의
+    모양이 다르다 — 이 둘은 **예약 시각 자체가 데이터에서 나오기 때문이다.**
+
+      · 종료 속보 예약 = `meta.first_final_at` (우리가 종료를 처음 본 시각)
+      · 선발 라인업 예약 = `meta.lineup_seen_at` (명단을 처음 본 시각)
+
+    그래서 침묵이 두 갈래다:
+
+      ① **예약 시각이 아예 없다.** 종료 속보의 스탬프는 "이전 스냅샷에서 그
+         경기가 열려 있었을 때"만 찍힌다(`tick._stamp_finals`). 처음 볼 때
+         이미 종료면 영영 안 찍히고 → 큐에 안 담기고 → 흔적도 없다.
+         **이건 설계된 보수성이다**(모르는 것을 지어내지 않는다). 정리판이
+         결과를 담으므로 정보는 사라지지 않는다. 그러나 **얼마나 자주
+         일어나는지 아무도 모르는 것**은 별개 문제다 — 그래서 센다.
+      ② **예약은 있는데 창이 지나도록 대장에 아무 결과가 없다.** 킥오프와
+         같은 꼴이다.
+
+    과거 경기는 보지 않는다(`lookback_seconds`). 리그를 새로 붙인 날에는
+    이미 끝난 옛 경기가 무더기로 ①에 걸리는데, 그건 사고가 아니라 도입이다.
+    """
+    if content_type is ContentType.FINAL_FLASH:
+        stamp, need = "first_final_at", "terminal"
+    elif content_type is ContentType.LINEUP:
+        stamp, need = "lineup_seen_at", "lineup"
+    else:
+        raise GateError(f"경기별 의무를 만들 수 없는 콘텐츠: {content_type}")
+
+    back = DUTY_LOOKBACK_SECONDS if lookback_seconds is None else lookback_seconds
+    seen = {p[2] for p in (str(k).split(IDEM_SEP) for k in idem_keys)
+            if len(p) >= 3 and p[1] == content_type.value}
+    out: list[tuple[str, str]] = []
+    for g in games:
+        if (now_utc - g.start_utc).total_seconds() > back:
+            continue                      # 옛 경기 — 도입분을 사고로 세지 않는다
+        meta = getattr(g, "meta", None)
+        if need == "terminal":
+            if not getattr(g, "is_terminal", False):
+                continue                  # 아직 안 끝났다 — 의무가 없다
+            if getattr(getattr(g, "status", None), "value", None) \
+                    in DUTY_EXEMPT_STATUSES:
+                continue                  # 취소·연기에는 속보 의무가 없다
+        else:
+            if not (meta and getattr(meta, "lineup", None)):
+                continue                  # 명단이 세상에 없다 — 의무가 없다
+        sc = game_scope(g)
+        if sc in seen:
+            continue                      # 대장에 결과가 있다
+        raw = getattr(meta, stamp, None) if meta else None
+        if not raw:
+            # **예약 시각이 없으면 창을 계산할 수 없다.** 그렇다고 즉시 신고하면
+            # 아직 나갈 시간이 남은 것까지 사고로 센다 — 실측으로 확인했다
+            # (2026-09-08 22:10 KST에 NPB 5경기가 걸렸는데, 그 경기들은 18:00
+            # 시작이라 유예 6시간이 아직 넉넉히 남아 있었다).
+            # 그래서 **경기 시작 + 유예**를 대신 쓴다. 어떤 종목도 그 안에 끝난다
+            # (야구 3~4시간 · 축구 2시간). 보수적으로 늦게 신고하는 쪽을 고른다 —
+            # **오탐 하나가 감시를 통째로 꺼뜨린다**(약점 112·126·182).
+            if (now_utc - g.start_utc).total_seconds() <= GRACE_SECONDS[content_type]:
+                continue
+            out.append((sc, "예약 시각이 없어 큐에 들어가지 못했습니다"))
+            continue
+        try:
+            at = datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            out.append((sc, f"예약 시각을 읽을 수 없습니다({raw!r})"))
+            continue
+        if is_late(at, now_utc, content_type):
+            out.append((sc, f"창이 지났는데 대장에 흔적이 없습니다"
+                            f"(예약 {at.astimezone(KST):%H:%M})"))
+    return sorted(out)
+
+
+def game_scope(game) -> str:
+    """경기 하나를 가리키는 scope — `pipeline.build_queue`가 쓰는 것과 같은 형식.
+
+    **두 곳에서 각자 만들면 반드시 어긋난다**(약점 45). 여기 한 곳만 둔다.
+    """
+    return f"{game.league.value}:{game.sports_day}:{game.game_id}"
+
+
 def legacy_kickoff_scope(game) -> str:
     """v1.15b 이전의 킥오프 scope — **경기마다 한 장**이던 시절의 키.
 
@@ -1488,8 +1573,11 @@ def legacy_kickoff_scope(game) -> str:
     11건이 전부 '큐에조차 안 들어옴'으로 신고된다** — 실데이터로 확인했다.
 
     오탐 하나가 감시를 통째로 꺼뜨린다(약점 112·126). 그래서 옛 키도 결과로 센다.
+
+    형식은 `game_scope`와 같다 — 옛 킥오프 규격이 곧 '경기 하나' 키였기 때문이다.
+    이름을 따로 두는 것은 **부르는 자리의 뜻이 다르기 때문**이다(옛 규격 대조 vs 현행 scope).
     """
-    return f"{game.league.value}:{game.sports_day}:{game.game_id}"
+    return game_scope(game)
 
 
 def kickoff_scopes_in_ledger(idem_keys) -> set:
