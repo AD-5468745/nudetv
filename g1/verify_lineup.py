@@ -499,5 +499,43 @@ check("변이: 표에서 이름을 빼면 못 잡는다 (표가 실제 판정 �
       _bad is False, "표에 없는데도 잡았다 — 이름으로 추정하고 있다")
 check("  ↳ 변이 뒤 표가 원래대로 돌아왔다", "이강인" in NF.KOREAN_PLAYERS)
 
+# ── 9-B. "표에 적었다"와 "실제로 잡는다"는 다르다 (v1.17d) ──────
+#
+# 소스에 **선수단 명단 경로가 없다**(실측 2026-09-08: 후보 10경로 전부 실패).
+# 그래서 표기가 우리 표와 다른지는 **그 선수가 선발로 나오는 날에야** 알 수 있다.
+# 그때까지 아무 데도 안 나타나면 우리는 '안 뛰는 것'과 '표기가 틀려 못 잡는 것'을
+# 영영 구분하지 못한다. → 마지막으로 본 날짜를 `health.json`에 남긴다.
+print("\n9-B. 잡고 있는지를 운영 중에 알 수 있는가")
+import tick as _T                                             # noqa: E402
+import tempfile as _tmp, pathlib as _pl, json as _json        # noqa: E402
+
+_snapdir = _pl.Path(_tmp.mkdtemp())
+_orig_dir, _T.SNAP_DIR = _T.SNAP_DIR, _snapdir
+_orig_jobs = _T._jobs
+try:
+    _T._jobs = lambda: {"EPL": None}
+    _snapdir.joinpath("EPL.json").write_text(_json.dumps([
+        {"source_key": "a", "start_utc": "2026-09-05T18:00:00+00:00",
+         "lineup": {"korean": [{"name": "이강인"}]}},
+        {"source_key": "b", "start_utc": "2026-09-01T18:00:00+00:00",
+         "lineup": {"korean": [{"name": "이강인"}, {"name": "김민재"}]}},
+        {"source_key": "c", "start_utc": "2026-09-07T18:00:00+00:00",
+         "lineup": None},
+    ], ensure_ascii=False), encoding="utf-8")
+    _seen = _T._korean_seen(NOW)
+    check("★★ 스냅샷에서 '언제 봤는지'를 읽어 온다", _seen.get("이강인") == "2026-09-05",
+          str(_seen))
+    check("  ↳ 가장 최근 관측을 남긴다 (오래된 것으로 덮지 않는다)",
+          _seen.get("이강인") == "2026-09-05" and _seen.get("김민재") == "2026-09-01",
+          str(_seen))
+    check("  ↳ 명단이 없는 경기는 세지 않는다", len(_seen) == 2, str(_seen))
+    check("★ 표에 있어도 못 만난 이름은 여기 없다 (있는 척하지 않는다)",
+          "황희찬" not in _seen, str(_seen))
+finally:
+    _T.SNAP_DIR = _orig_dir
+    _T._jobs = _orig_jobs
+check("★ 의심 기간이 로테이션보다 넉넉하다 (부상·벤치를 표기 오류로 몰지 않는다)",
+      _T.KOREAN_UNSEEN_DAYS >= 21, str(_T.KOREAN_UNSEEN_DAYS))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

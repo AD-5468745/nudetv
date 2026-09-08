@@ -1333,6 +1333,33 @@ def _error_kind(err) -> str:
     return "other"
 
 
+# 표에 적어 두고 이 기간 넘게 명단에서 못 본 이름은 **표기를 의심한다** (v1.17d).
+# 유럽 리그는 주 1~2경기라 부상·로테이션으로 3주까지는 흔히 안 나온다.
+# 30일은 그보다 넉넉해서, 여기 걸리면 '안 뛴다'보다 '표기가 다르다'가 더 그럴듯하다.
+KOREAN_UNSEEN_DAYS = 30
+
+
+def _korean_seen(now: datetime) -> dict:
+    """{한국 선수 이름: 마지막으로 명단에서 본 날짜}.
+
+    스냅샷에 저장된 라인업(`lineup["korean"]`)에서 센다 — 별도 상태 파일을
+    만들지 않으려는 것이다. 스냅샷은 리그당 며칠치를 담으므로 최근 관측이
+    그대로 남아 있고, `health.json`은 매 틱 커밋되므로 **어제 값은 저장소
+    이력에 남는다**(약점 119: 스냅샷은 캐시로만 나르므로 내일 못 읽는다).
+    """
+    seen: dict = {}
+    for name in _jobs():
+        for d in _load_raw(name):
+            for k in ((d.get("lineup") or {}).get("korean") or []):
+                nm = k.get("name")
+                if not nm:
+                    continue
+                day = (d.get("start_utc") or "")[:10]
+                if day and day > seen.get(nm, ""):
+                    seen[nm] = day
+    return dict(sorted(seen.items()))
+
+
 def _write_health(now: datetime, flog: dict, adapter_notes: list,
                   stale_notes: list, cov) -> None:
     """`state/health.json` — 사람이 열어 보고 상태를 판단할 수 있는 최소한.
@@ -1374,6 +1401,19 @@ def _write_health(now: datetime, flog: dict, adapter_notes: list,
     out = {
         "at": _iso(now),
         "leagues": leagues,
+        # ── 한국 선수를 실제로 잡고 있는가 (v1.17d, 2026-09-08) ──────
+        #
+        # **표에 이름을 적는 것과 그 이름으로 실제 잡는 것은 다르다.**
+        # 소스에 선수단 명단 경로가 없어서(실측: 후보 10경로 전부 실패),
+        # 표기가 우리 표와 다른지는 **그 선수가 선발로 나오는 날에야** 알 수 있다.
+        # 그때까지 표기가 틀렸다는 사실이 아무 데도 안 나타나면, 우리는
+        # "안 뛰는 것"과 "표기가 틀려 못 잡는 것"을 영영 구분하지 못한다.
+        #
+        # 그래서 **마지막으로 본 날짜**를 여기 남긴다. 오래 안 보이는 이름은
+        # 표기를 의심할 자리다(아래 `korean_unseen`이 그 판정을 돕는다).
+        # 오탐이 0이라는 것이 이 방식의 값이다 — 이름을 추정하지 않고,
+        # 우리가 적어 둔 이름을 실제로 만났는지만 센다.
+        "korean_players": _korean_seen(now),
         "alert_lines": len(adapter_notes) + len(stale_notes),
         "stale_blocked": [n.split(":")[0] for n in stale_notes if "발송 보류" in n],
         "coverage_ok": bool(getattr(cov, "ok", True)),
@@ -2519,6 +2559,25 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines += [f"새 디자인 대신 옛 카드가 나갔습니다 — {n}" for n in _fb[:3]]
         if len(_fb) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_fb)}건")
+    # ── 표에 적었는데 오래 못 만난 한국 선수 (v1.17d) ────────────
+    #
+    # **'안 뛰는 것'과 '표기가 달라 못 잡는 것'을 구분할 수 없다** — 소스에
+    # 선수단 명단 경로가 없기 때문이다(실측: 후보 10경로 전부 실패).
+    # 그래서 구분을 포기하는 대신 **오래 안 보인다는 사실 자체를 알린다.**
+    # 사람이 경기 하나만 확인하면 어느 쪽인지 바로 안다.
+    # 하루 한 번(모닝 시간대)만 올린다 — 매 틱 올리면 소음이 된다.
+    try:
+        if now.astimezone(KST).hour == 9:
+            from adapters.naver_football import KOREAN_PLAYERS as _KP
+            _seen = _korean_seen(now)
+            _cut = (now - timedelta(days=KOREAN_UNSEEN_DAYS)).strftime("%Y-%m-%d")
+            _un = [n for n in _KP if _seen.get(n, "") < _cut]
+            if _un:
+                lines.append(
+                    f"한국 선수 {len(_un)}명을 {KOREAN_UNSEEN_DAYS}일째 명단에서 "
+                    f"못 봤습니다 (표기가 다를 수 있습니다) — {' · '.join(_un[:6])}")
+    except Exception:                                        # noqa: BLE001
+        pass                                                 # 알림 하나가 틱을 죽이지 않는다
     if stale:
         ex = stale[0]
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
