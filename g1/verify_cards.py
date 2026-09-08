@@ -1039,5 +1039,34 @@ finally:
     C5.ACCENT_MODE = _mode
 check("  ↳ 시험 뒤 모드가 대표님이 고른 값으로 돌아왔다", C5.ACCENT_MODE == "full")
 
+# ── ★★★ 한자·일본어가 카드에 새지 않는다 (2026-09-08 대표님 지시) ──────
+#
+# 대표님: *"이미지카드에 한자, 일본어 들어가지 않도록 해"*
+# 실제로 나갔다 — 결과 카드에 `히로시마 中止 한신`.
+# `cancel_reason_text()`(번역표)가 그것을 막으려고 만들어졌는데
+# **v5 카드 세 곳이 소스 원문을 그대로 썼다**(약점 132의 재발).
+_fs = _CT.foreign_script_chars
+
+check("★★★ 취소 사유가 일본어 원문이어도 카드에는 한자가 안 나온다 (실제 사고 재현)",
+      _fs(C5.body_scoreboard([_G("한신", "히로시마", st=Status.CANCELED,
+                             reason="中止")], League.NPB)) == [],
+      str(_fs(C5.body_scoreboard([_G("한신", "히로시마", st=Status.CANCELED,
+                                 reason="中止")], League.NPB))))
+check("  ↳ 번역표에 **없는** 원문도 새지 않는다 (표는 언제나 불완전하다)",
+      _fs(C5.body_scoreboard([_G("한신", "히로시마", st=Status.CANCELED,
+                             reason="猛暑のため中止")], League.NPB)) == [])
+check("  ↳ 가타카나(ノーゲーム)도 새지 않는다",
+      _fs(C5.body_scoreboard([_G("한신", "히로시마", st=Status.CANCELED,
+                             reason="ノーゲーム")], League.NPB)) == [])
+check("  ↳ 한글 사유는 그대로 쓴다 (우천취소를 '취소'로 뭉개지 않는다)",
+      "우천취소" in C5.body_scoreboard([_G("LG", "두산", st=Status.CANCELED,
+                                     reason="우천취소")], League.KBO))
+
+# ★ 변이시험 — 번역표를 건너뛰면 실제로 샌다. 위 검사가 그것을 잡는다.
+check("★★ (변이) 원문을 그대로 쓰면 한자가 카드에 남는다 — 이것이 그날 나간 카드다",
+      _fs('<span class="off">中止</span>') == ["中", "止"])
+check("  ↳ 검출기는 태그·CSS를 세지 않는다 (독자가 보는 텍스트만 본다)",
+      _fs('<style>font-family:"Noto Sans CJK KR"</style><b>LG 5:3 두산</b>') == [])
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

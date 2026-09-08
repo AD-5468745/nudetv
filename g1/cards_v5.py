@@ -31,7 +31,7 @@ from typing import Optional
 
 from contract import (fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
                       Status, StreakKind, TEAM_NAMES, card_theme, league_accent,
-                      venue_name)
+                      venue_name, cancel_reason_text, is_readable_ko)
 
 from headline import Headline
 
@@ -638,7 +638,12 @@ def body_scoreboard(games: list, league: League, *,
     for g in sorted(games, key=lambda x: x.start_utc):
         _n += 1
         if g.status in (Status.CANCELED, Status.POSTPONED):
-            why = (g.meta.cancel_reason if g.meta else "") or "취소"
+            # **번역표를 반드시 거친다.** 원문을 그대로 쓰면 일본어가 그대로
+            # 인쇄된다 — 2026-09-08 채널에 `히로시마 中止 한신`이 나갔다.
+            # `cancel_reason_text`가 그것을 막으려고 만들어졌는데 **v5만 안 썼다**
+            # (약점 132: 새 경로는 옛 경로가 고쳐 온 것을 되살린다).
+            why = cancel_reason_text(
+                g.meta.cancel_reason if g.meta else None, g.status, short=True)
             mid = f'<span class="off">{esc(why)}</span>'
             lc = rc = "t2 dim"
         elif g.score:
@@ -957,7 +962,8 @@ def compact_result(g, league: League) -> str:
     """
     aw, hm = _nm(league, g.away), _nm(league, g.home)
     if g.status in (Status.CANCELED, Status.POSTPONED):
-        why = (g.meta.cancel_reason if g.meta else "") or "취소"
+        why = cancel_reason_text(
+            g.meta.cancel_reason if g.meta else None, g.status, short=True)
         return (f'<span class="cg"><span class="dimt">{esc(aw)}</span> '
                 f'<i>{esc(why)}</i> <span class="dimt">{esc(hm)}</span></span>')
     if not g.score:

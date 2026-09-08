@@ -35,6 +35,7 @@ import headline as H
 from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, assert_card_geometry, format_kickoff,
                       kst_day_label, morning_label, venue_name,
+                      cancel_reason_text, foreign_script_chars,
                       LINEUP_ENABLED)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
@@ -172,7 +173,9 @@ def result_card(games: list, league: League, day: str, *,
         _k, _loc = format_kickoff(_g)
         _ex = []
         if _g.status in (Status.CANCELED, Status.POSTPONED):
-            _ex.append(("상태", (_g.meta.cancel_reason if _g.meta else "") or "취소"))
+            # 원문이 아니라 번역표를 거친 문구를 쓴다(일본어 유출 방지).
+            _ex.append(("상태", cancel_reason_text(
+                _g.meta.cancel_reason if _g.meta else None, _g.status)))
         body = C5.body_gameinfo(
             kst=_k, local=_loc or "",
             venue=(venue_name(_g.venue) or "") if _g.venue else "", extra=_ex)
@@ -953,6 +956,23 @@ def render_png(card_html: str, out: pathlib.Path,
     40줄이 되어 어떤 밀도로도 안 담긴다. 그때 리그별 요약으로 내려간다 —
     **옛 카드로 통째로 떨어지는 것보다 한 단 낮은 v5가 낫다**(약점 134).
     """
+    # ── ★ 외국 문자 유출 감시 (2026-09-08 대표님 지시) ────────────────
+    #
+    # 대표님: *"이미지카드에 한자, 일본어 들어가지 않도록 해"*
+    # 실제로 나갔다 — `히로시마 中止 한신`. 원인은 v5 카드 세 곳이
+    # `cancel_reason_text()`(번역표)를 건너뛰고 소스 원문을 그대로 쓴 것이었다
+    # (약점 132: 새 경로가 옛 경로의 수정을 되살린다).
+    #
+    # 세 곳은 고쳤다. 이건 **다음에 또 새 경로가 생겼을 때** 잡는 그물이다.
+    # **막지는 않는다** — 결과 카드 한 장에 그날 여섯 경기가 들어 있어서,
+    # 한 글자 때문에 카드를 버리면 그날 결과가 통째로 사라진다. 대신 알린다.
+    # (검증 `verify_cards`에서는 같은 검사를 실패로 처리한다.)
+    _cjk = foreign_script_chars(card_html)
+    if _cjk:
+        note_fallback(f"카드에 한자·일본어가 섞였습니다 — {' '.join(_cjk[:6])}"
+                      f"{f' 외 {len(_cjk) - 6}자' if len(_cjk) > 6 else ''}"
+                      " (번역표를 안 거친 자리가 있습니다)")
+
     # `shorter_html`은 하나일 수도, **점점 짧아지는 여러 판**일 수도 있다.
     # 나이트가 둘을 준다(빽빽판 → 건수만). 각 판마다 여백판·조임판을 다 시도한다.
     _shorter = ([] if shorter_html is None

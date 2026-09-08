@@ -3723,6 +3723,35 @@ def venue_name(venue: "str | None") -> str:
 # 한글 표기표가 생기면 그때 켠다.
 # ─────────────────────────────────────────────────────────────────────
 
+def foreign_script_chars(html_or_text: "str | None") -> list:
+    """카드에 섞인 **한자·히라가나·가타카나**를 뽑는다 (중복 제거·등장 순).
+
+    대표님 지시(2026-09-08): *"이미지카드에 한자, 일본어 들어가지 않도록 해"*
+    실제로 나갔다 — `히로시마 中止 한신`. 원인은 v5 카드가 번역표
+    (`cancel_reason_text`)를 건너뛰고 소스 원문을 그대로 쓴 것이었다.
+
+    **HTML 태그와 CSS는 세지 않는다** — `<style>` 안의 글꼴 이름에 CJK가 있을 수
+    있고(예: Noto Sans CJK KR — 여긴 라틴자지만 규칙을 못 박는다), 태그 이름·속성은
+    독자가 보지 않는다. 사람이 읽는 텍스트만 본다.
+    """
+    t = html_or_text or ""
+    t = re.sub(r"<style[^>]*>.*?</style>", " ", t, flags=re.S | re.I)
+    t = re.sub(r"<script[^>]*>.*?</script>", " ", t, flags=re.S | re.I)
+    t = re.sub(r"<[^>]+>", " ", t)                    # 태그 제거 → 텍스트만
+    out, seen = [], set()
+    for ch in t:
+        o = ord(ch)
+        if (0x3040 <= o <= 0x309F        # 히라가나
+                or 0x30A0 <= o <= 0x30FF  # 가타카나
+                or 0x4E00 <= o <= 0x9FFF  # CJK 통합한자
+                or 0x3400 <= o <= 0x4DBF  # CJK 확장 A
+                or 0xF900 <= o <= 0xFAFF):  # CJK 호환한자
+            if ch not in seen:
+                seen.add(ch)
+                out.append(ch)
+    return out
+
+
 def is_readable_ko(text: "str | None") -> bool:
     """한국 구독자가 읽을 수 있는 표기인가 — 한글·라틴·숫자·기호만이면 참.
 
