@@ -1138,6 +1138,32 @@ check("★★★ 창이 좁은 콘텐츠는 안전망을 갖거나 놓쳤을 때
 check("  ↳ 킥오프가 그 목록에 있다 (안전망이 없으므로 알림이 유일한 방어다)",
       ContentType.KICKOFF in MUST_ALERT_ON_MISS)
 
+# ── ★★★ 정보 체인 — 시계가 4시간 죽어도 그 경기가 사라지지 않는가 (v1.18b) ──
+#
+# 대표님: *"한계는 항상 해결 가능해. 방법 찾아서 처리해"*
+# 앞서 "240분 공백은 어떤 창으로도 못 덮는다"고 적었는데 **범위가 틀렸다.**
+# 못 덮는 것은 **임박 알림 한 장**뿐이고, 그 경기의 존재·결과는 덮을 수 있다.
+_WORST = 240 * 60
+for _ct in (ContentType.MORNING, ContentType.ANALYSIS,
+            ContentType.FINAL_FLASH, ContentType.LEAGUE_RESULT):
+    _w = send_window_seconds(_ct, T.LOOKAHEAD_SECONDS)
+    check(f"★★★ {_ct.value}가 최악 공백(240분)을 덮는다 "
+          f"— 시계가 4시간 죽어도 이 카드는 나간다",
+          _w >= _WORST, f"{_w // 60}분")
+check("★ 임박 알림만 못 덮는다는 사실이 계약에 적혀 있다 "
+      "(원리적 한계이므로 숨기지 않고 알림으로 방어한다)",
+      send_window_seconds(ContentType.KICKOFF, T.LOOKAHEAD_SECONDS) < _WORST
+      and ContentType.KICKOFF in MUST_ALERT_ON_MISS)
+# **변이시험** — 종료 속보 창을 되돌리면 이 검사가 잡는가
+_orig_grace = _GS[ContentType.FINAL_FLASH]
+try:
+    _GS[ContentType.FINAL_FLASH] = 3600
+    _broke = send_window_seconds(ContentType.FINAL_FLASH, T.LOOKAHEAD_SECONDS) >= _WORST
+finally:
+    _GS[ContentType.FINAL_FLASH] = _orig_grace
+check("  ↳ 변이: 종료 속보 창을 옛 값(60분)으로 되돌리면 잡힌다",
+      _broke is False, "깨뜨렸는데도 통과했다")
+
 check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
       lookahead_for(ContentType.MORNING, 90 * 60) == 0,
       str(lookahead_for(ContentType.MORNING, 90 * 60)))
