@@ -50,7 +50,9 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
-                      defer_for_precision)
+                      defer_for_precision,
+                      BUTTON_CONTENT_TYPES, brand_button,
+                      LINEUP_ENABLED)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
@@ -326,30 +328,66 @@ TEAM_STAT_RENAME = {"avg": "bat_avg", "era": "pit_era", "hr": "bat_hr",
 
 
 def _team_stats_for(name: str, notes: list):
-    """분석 카드 ②블록(팀 컨디션)용 팀 기록. 없으면 None — 그 블록만 빠진다."""
-    if name != "KBO":
-        return None
+    """분석 카드의 팀 지표. 없으면 None — 그 블록만 빠진다.
+
+    **v1.16까지 KBO 하나뿐이었다** (2026-09-07 대표님: *"모든리그 기록수집을
+    정확하게"*). 이제 네 리그가 채운다:
+
+        KBO   공식 기록 어댑터(`kbo_teamstats`) — 이미 검증된 경로라 그대로 둔다
+        MLB · NPB · K리그   `naver_stats.fetch_team_stats`
+
+    **KBO를 새 경로로 옮기지 않는다.** 도는 것을 굳이 바꾸면 얻는 것 없이
+    회귀 위험만 생긴다. 두 경로가 생기지만 소스가 다르므로 자연스럽다.
+    """
     try:
-        from adapters.kbo_teamstats import KboTeamStatsAdapter
-        raw = KboTeamStatsAdapter().fetch()
+        lg = League(name)
+    except ValueError:
+        return None
+    if lg is League.KBO:
+        try:
+            from adapters.kbo_teamstats import KboTeamStatsAdapter
+            raw = KboTeamStatsAdapter().fetch()
+        except Exception as e:                               # noqa: BLE001
+            notes.append(f"팀 기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:60]}")
+            return None
+        if not raw:
+            return None
+        out, missing = {}, set()
+        for code, stats in raw.items():
+            row = {}
+            for short, long in TEAM_STAT_RENAME.items():
+                if long in stats:
+                    row[short] = stats[long]
+                else:
+                    missing.add(long)
+            out[code] = row
+        if missing:
+            notes.append(f"팀 기록 지표 이름 불일치 — {name}: {', '.join(sorted(missing))} "
+                         f"(카드의 '팀 컨디션' 블록에서 그만큼 빠집니다)")
+        return out
+
+    # ── 나머지 리그 — 네이버 팀 지표 ──────────────────────────
+    from adapters.naver_stats import STATS_CATEGORY, NaverStatsAdapter
+    if lg not in STATS_CATEGORY:
+        return None                       # 지원하지 않는 리그 — 조용히 없는 대로
+    try:
+        ad = NaverStatsAdapter(lg)
+        raw = ad.fetch_team_stats(_season_year())
     except Exception as e:                                   # noqa: BLE001
         notes.append(f"팀 기록 수집 실패 — {name}: {type(e).__name__} {str(e)[:60]}")
         return None
-    if not raw:
-        return None
-    out, missing = {}, set()
-    for code, stats in raw.items():
-        row = {}
-        for short, long in TEAM_STAT_RENAME.items():
-            if long in stats:
-                row[short] = stats[long]
-            else:
-                missing.add(long)
-        out[code] = row
-    if missing:
-        notes.append(f"팀 기록 지표 이름 불일치 — {name}: {', '.join(sorted(missing))} "
-                     f"(카드의 '팀 컨디션' 블록에서 그만큼 빠집니다)")
-    return out
+    # 어댑터가 남긴 메모를 그대로 싣는다 — 이름이 통일돼 있어 여기서 새로 짜지 않는다.
+    for ln in (ad.notices or [])[:2]:
+        notes.append(f"[{name}] {ln}")
+    return raw or None
+
+
+def _season_year() -> int:
+    """기록을 받을 시즌 연도. **오늘의 한국 연도**를 쓴다.
+
+    시즌 코드를 손으로 적으면 새해 첫날 전 리그가 조용히 0건이 된다.
+    """
+    return _now().astimezone(KST).year
 
 
 def _next_tick_estimate(now: datetime) -> tuple[int, int]:
@@ -830,10 +868,23 @@ def _load_record_archive(name: str, now: datetime):
 
 
 def _record_jobs() -> dict:
+    """기록(순위·부문)을 받을 리그.
+
+    **v1.16까지 KBO·NPB 둘뿐이었다** (2026-09-07 대표님: *"모든리그 기록수집을
+    정확하게"*). 이제 MLB·K리그가 더해져 넷이다.
+
+    ⚠️ **여기 있다고 순위표 카드가 나가는 것은 아니다.** 카드로 나가는 리그는
+    `pipeline.RECORD_SOURCE_LEAGUES`가 따로 정한다 — MLB는 지구가 6개라
+    순위표 카드를 그대로 켜면 하루 6장이 된다. 기록은 **분석 카드가 먼저 쓴다.**
+    """
     from adapters.kbo_records import KboRecordAdapter
     from adapters.npb_records import NpbRecordAdapter
+    from adapters.naver_stats import NaverStatsAdapter
+    _y = _season_year()
     return {"KBO": lambda: KboRecordAdapter().fetch(),
-            "NPB": lambda: NpbRecordAdapter().fetch()}
+            "NPB": lambda: NpbRecordAdapter().fetch(),
+            "MLB": lambda: NaverStatsAdapter(League.MLB).fetch(_y),
+            "KL1": lambda: NaverStatsAdapter(League.KL1).fetch(_y)}
 
 
 
@@ -901,12 +952,44 @@ def _jobs() -> dict[str, tuple[League, callable]]:
     except Exception:                                        # noqa: BLE001
         pass
 
-    # 유럽 6개 — 키가 있을 때만 켜진다. 없으면 조용히 빠지는 게 아니라 아예 등록되지 않는다
-    # (조용히 0건을 반환하면 '오늘 유럽 경기가 없다'로 오해된다).
-    if os.environ.get("FOOTBALL_DATA_TOKEN", "").strip():
+    # ── 유럽 축구 7개 (v1.15) ─────────────────────────────────
+    #
+    # **1차 네이버 · 2차 football-data.** 대표님 판단(2026-09-07):
+    # *"네이버에서 긁어올수있으면 긁어오자"* — 위험(robots.txt가 자동 수집을
+    # 전면 금지한다는 사실)을 먼저 보고드렸고, 그 위에서 내린 결정이다.
+    #
+    # 그래서 이 자리에서 할 일은 '막을까 말까'가 아니라 **막혔을 때 안 죽는 것**이다.
+    #   · 1차가 막히면 5대리그+챔스 여섯은 **2차로 자동 전환**된다
+    #     (유로파는 무료 등급 밖이라 그동안 쉰다 — 6개는 계속 돈다)
+    #   · 차단 확률 자체를 낮춘다: 카테고리를 지정해 리그당 요청 1회,
+    #     요청 간격 1.2초, 캐시 2.2시간
+    #
+    # **2차가 실제로 일하려면 `FOOTBALL_DATA_TOKEN`이 있어야 한다.**
+    # 없어도 1차는 돈다 — 다만 그날 네이버가 막히면 유럽이 통째로 쉰다.
+    _eu_primary_ok = False
+    try:
+        from adapters.naver_football import CATEGORY as _NF_CAT
+        from adapters.naver_football import NaverFootballAdapter
+        for _lg in _NF_CAT:
+            if not league_enabled(_lg):
+                continue
+            jobs[_lg.value] = (_lg, (lambda __lg=_lg: _use(
+                __lg.value, NaverFootballAdapter(__lg), lambda a: a.fetch())))
+        _eu_primary_ok = True
+    except Exception as _e:                                  # noqa: BLE001
+        # 등록 자체가 실패하면 **조용히 넘어가지 않는다** — 유럽이 통째로
+        # 빠진 것을 '오늘 경기가 없다'로 오해하면 안 된다(약점 7).
+        print(f"  ⚠️ [유럽축구] 1차 소스 등록 실패: {type(_e).__name__}: {_e}")
+
+    # 2차 — 1차가 등록되지 못한 경우에만 그 자리를 메운다.
+    # **1차가 살아 있으면 켜지 않는다.** 두 소스를 동시에 돌리면 같은 경기가
+    # 두 스냅샷으로 들어와 어느 쪽이 진실인지 판정할 곳이 없어진다.
+    if not _eu_primary_ok and os.environ.get("FOOTBALL_DATA_TOKEN", "").strip():
         from adapters.football_data import COMPETITION, FootballDataAdapter
         d0 = (today - timedelta(days=3)).strftime("%Y-%m-%d")
         d1 = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+        print("  ↩️ [유럽축구] 2차 소스(football-data)로 전환합니다 "
+              "— 유로파는 무료 등급 밖이라 이번엔 빠집니다")
         for code, lg in COMPETITION.items():
             if not league_enabled(lg):
                 continue
@@ -944,6 +1027,55 @@ def _snap_path(name: str) -> pathlib.Path:
 
 class SnapshotWipe(GateError):
     """멀쩡하던 스냅샷을 0건으로 덮으려 한다 — 소스가 조용히 비었을 가능성이 높다."""
+
+
+def _enrich_lineup(name: str, league, games: list, now: datetime,
+                   soft: list) -> None:
+    """선발 라인업과 득점자를 얹는다 (v1.17, 유럽 축구 전용).
+
+    순서가 곧 기능이다 — 셋을 이 차례로 한다:
+      ① **이전 스냅샷에서 되살린다.** 안 하면 매 틱 22명을 전부 다시 조회한다.
+         `fetch()`는 새 Game을 만들어 오므로 meta가 언제나 비어 있다.
+      ② 아직 없는 것만 조회한다 (어댑터가 창·상한을 지킨다).
+      ③ **명단이 다 찬 것을 처음 본 시각**을 찍는다 — 이 값이 카드의 예약 시각이다.
+
+    `_enrich_flow`와 같은 규칙: **실패해도 아무 일도 일어나지 않는다.**
+    여기서 예외를 내보내면 그 리그가 그 틱을 통째로 건너뛴다 — 원래 사고보다 나쁘다.
+    """
+    if not LINEUP_ENABLED:
+        return
+    try:
+        ad = _ADAPTERS.get(name)
+        if ad is None or not hasattr(ad, "fill_lineups"):
+            return                        # 2차 소스(football-data)는 라인업이 없다
+        # ① 되살리기 — source_key로 맞춘다(이름 매칭이 유럽에서 실패한 그 실수를 피한다)
+        prev: dict = {}
+        for d in _load_raw(name):
+            k = d.get("source_key")
+            if k and (d.get("lineup") or d.get("lineup_seen_at")):
+                prev[k] = d
+        for g in games:
+            old = prev.get(g.source_key)
+            if not old:
+                continue
+            if old.get("lineup") and not g.meta.lineup:
+                g.meta.lineup = old["lineup"]
+            if old.get("lineup_seen_at"):
+                g.meta.lineup_seen_at = old["lineup_seen_at"]   # 한 번 적히면 안 바뀐다
+        # ② 조회
+        ad.reset_notices()
+        n_lu = ad.fill_lineups(games, now)
+        n_go = ad.fill_goals(games)
+        if n_lu or n_go:
+            print(f"  [라인업] {name} 명단 {n_lu}건 · 득점 {n_go}건")
+        for line in ad.notices:
+            soft.append(f"{name}: 라인업 {line}")
+        # ③ 처음 본 시각
+        for g in games:
+            if g.meta.lineup and not g.meta.lineup_seen_at:
+                g.meta.lineup_seen_at = _iso(now)
+    except Exception as e:                                   # noqa: BLE001
+        soft.append(f"{name}: 라인업 보강을 건너뜀 ({e.__class__.__name__})")
 
 
 def _mark_first_final(name: str, games: list, now: datetime) -> None:
@@ -1032,6 +1164,13 @@ def _save_games(name: str, games: list) -> None:
         "highlights": [list(x) for x in g.meta.highlights] if g.meta.highlights else None,
         # 우리가 종결을 처음 안 시각 (v1.12c). 한 번 적히면 안 바뀐다.
         "first_final_at": g.meta.first_final_at,
+        # **선발 라인업 (v1.17).** 담아야 하는 이유가 `line_score`(fix49)와 똑같다:
+        # 카드는 메모리가 아니라 **되읽은 스냅샷**으로 그린다. 여기 없으면
+        # 라인업 카드가 언제나 빈 명단이 되고, 다음 틱은 '아직 없음'으로 보고
+        # 이미 받은 명단을 처음부터 다시 조회한다.
+        # 선발 명단은 발표되면 안 바뀌므로 저장해도 '지난 값이 살아나는' 문제가 없다.
+        "lineup": g.meta.lineup,
+        "lineup_seen_at": g.meta.lineup_seen_at,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -1132,7 +1271,10 @@ def _load_games(name: str) -> list:
                                       for x in (d.get("goals") or [])),
                           highlights=tuple(tuple(x)
                                            for x in (d.get("highlights") or [])),
-                          first_final_at=d.get("first_final_at"))))
+                          first_final_at=d.get("first_final_at"),
+                          # v1.17 — 없으면 None이라 옛 스냅샷도 그냥 읽힌다.
+                          lineup=d.get("lineup") or None,
+                          lineup_seen_at=d.get("lineup_seen_at"))))
 
     # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
     # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나
@@ -1220,6 +1362,17 @@ def _write_health(now: datetime, flog: dict, adapter_notes: list,
         "alert_lines": len(adapter_notes) + len(stale_notes),
         "stale_blocked": [n.split(":")[0] for n in stale_notes if "발송 보류" in n],
         "coverage_ok": bool(getattr(cov, "ok", True)),
+        # ⚠️ **왜 실패했는지도 같이 적는다 (2026-09-07 신설).**
+        # 이 파일에 `coverage_ok: false`만 있던 동안, 저장소를 아무리 뒤져도
+        # 무엇이 걸렸는지 알 방법이 없었다. 커버리지 판정에 쓰인 스냅샷
+        # (`state/games/`)은 캐시로만 나르고 저장소에 없기 때문이다.
+        # **고친 사람이 자기 수정을 확인할 수 없으면 그 수정은 '했다'로 끝난다**
+        # (약점 119·124). 사유 없는 빨간불은 빨간불이 아니라 소음이다.
+        #
+        # 팀·점수는 넣지 않는다 — 진단에 필요한 것은 '어느 리그가 무엇 때문에'뿐이고,
+        # 이 파일은 공개 저장소에 커밋된다.
+        "coverage_findings": [str(x) for x in getattr(cov, "lines", list)()][:20]
+        if not bool(getattr(cov, "ok", True)) else [],
     }
     ROOT.mkdir(parents=True, exist_ok=True)
     HEALTH_LOG.write_text(json.dumps(out, ensure_ascii=False, indent=1),
@@ -1321,6 +1474,11 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 수집이 끝난 뒤에 붙인다. 보강이 실패해도 경기 목록은 그대로 저장되고
             # 카드는 흐름표 없이 나간다 — 오늘까지 나가던 것과 같아질 뿐이다.
             _enrich_flow(name, lg, games, soft)
+            # **라인업·득점은 흐름 뒤에 얹는다** (v1.17). 유럽은 흐름 경로가
+            # 골을 못 채운다 — `naver_game`이 팀 **이름**으로 경기를 맞추는데
+            # 유럽은 이름표가 비어 `None vs None`이 되어 매칭이 언제나 실패했다.
+            # 여기서 gameId로 직접 받아 그 구멍을 메운다.
+            _enrich_lineup(name, lg, games, now, soft)
             _mark_first_final(name, games, now)
             _save_games(name, games)
             dt = _time.monotonic() - t0
@@ -1631,9 +1789,16 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             made = build(_R5)
             if not made:
                 return None
-            _html, _parts = made
+            # **나이트만 세 값을 준다** — (카드, 짧은판, 캡션).
+            # 그 카드만 길이를 미리 알 수 없어서다(`render_v5.night_card` 주석).
+            # 길이로 가른다: 인자 이름을 보고 분기하면 새 카드가 늘 때 또 고쳐야 한다.
+            if len(made) == 3:
+                _html, _short, _parts = made
+            else:
+                _html, _parts = made
+                _short = None
             _p = out / f"{tag}.png"
-            _r = _R5.render_png(_html, _p)
+            _r = _R5.render_png(_html, _p, _short)
             if not _r:
                 return None
             return [(_p.name, _p.read_bytes(), _r[0], _r[1])], _parts
@@ -1643,8 +1808,24 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             return None
 
     if item.content_type is ContentType.MORNING:
+        # ── **그 시간대 덩어리만 싣는다** (2026-09-07) ────────────
+        # 예고는 하루가 아니라 시간대 묶음마다 한 장이다(대표님: "시간대별로
+        # 쪼갠다"). scope 뒤의 `#키`가 어느 덩어리인지 말한다.
+        # 키를 못 찾으면 **그날 전체로 떨어지지 않는다** — 그러면 같은 날
+        # 두 예고가 같은 내용을 싣게 된다. 만들지 않는 편이 낫다.
+        _bkey = item.scope.split("#", 1)[1] if "#" in item.scope else ""
+        if _bkey:
+            from contract import preview_buckets as _pvb
+            _found = [g for k, g in _pvb(
+                todays, lead_seconds=P.PREVIEW_BEFORE_FIRST_SECONDS)
+                if k == _bkey]
+            if not _found:
+                print(f"  ⚠️ [예고] 시간대 묶음 '{_bkey}'을 찾지 못했습니다 "
+                      f"— 편성이 바뀐 것 같습니다. 이번 장은 건너뜁니다.")
+                return None
+            todays = _found[0]
         # '오늘/내일'은 **보내는 순간** 기준으로 판정해야 한다 — 안 넘기면
-        # MLB 모닝 브리핑이 내일 아침 경기를 "오늘"이라고 부른다.
+        # MLB 예고가 내일 아침 경기를 "오늘"이라고 부른다.
         _lg = getattr(item, "league", None)
         _r5 = (_try_v5("morning",
                        lambda R: R.morning_card(todays, _lg, day, now=_now()))
@@ -1680,15 +1861,35 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # **경기 하나를 game_id로 집는다.** 리그·날짜만으로 고르면 같은 대진이
     # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
     # 한 번 당한 병이다(약점 127).
-    elif item.content_type in (ContentType.KICKOFF, ContentType.FINAL_FLASH):
+    elif item.content_type in (ContentType.KICKOFF, ContentType.FINAL_FLASH,
+                               ContentType.LINEUP):
         _lg = getattr(item, "league", None)
-        _one = next((g for g in games if g.game_id == item.game_id), None)
-        if _one is None or _lg is None:
-            return None                     # 스냅샷에서 사라진 경기 — 만들지 않는다
-        if item.content_type is ContentType.KICKOFF:
+        if _lg is None:
+            return None
+        if item.content_type is ContentType.LINEUP:
+            # **선발 라인업 (v1.17)** — 경기 하나. 킥오프와 달리 묶지 않는다:
+            # 22명이 들어가는 카드라 두 경기만 합쳐도 카드가 무너지고, 명단은
+            # 경기마다 발표 시각이 달라 애초에 같은 순간에 모이지 않는다.
+            _one = next((g for g in games if g.game_id == item.game_id), None)
+            if _one is None:
+                return None
+            _r5 = _try_v5("lineup",
+                          lambda R: R.lineup_card(_one, _lg, now=_now()))
+        elif item.content_type is ContentType.KICKOFF:
+            # **같은 시각에 시작하는 경기를 한 장에 담는다** (2026-09-07 대표님).
+            # scope가 곧 시각 버킷 키다 — 스냅샷에서 그 키를 가진 경기를 다시 모은다.
+            # (큐 항목의 `game_id`는 사람이 읽을 대표 경기일 뿐이다.)
+            from contract import start_alert_bucket as _bk
+            _same = [g for g in games
+                     if g.status is Status.SCHEDULED and _bk(g) == item.scope]
+            if not _same:
+                return None                 # 전부 시작했거나 취소됐다 — 알릴 것이 없다
             _r5 = _try_v5("kickoff",
-                          lambda R: R.kickoff_card(_one, _lg, now=_now()))
+                          lambda R: R.kickoff_card(_same, _lg, now=_now()))
         else:
+            _one = next((g for g in games if g.game_id == item.game_id), None)
+            if _one is None:
+                return None                 # 스냅샷에서 사라진 경기 — 만들지 않는다
             _r5 = _try_v5("flash", lambda R: R.flash_card(_one, _lg, now=_now()))
         # **옛 카드로 떨어지지 않는다.** 이 두 종류는 v5에만 있고 대응물이 없다 —
         # 못 만들면 안 보내는 것이 맞다(빈 카드나 엉뚱한 카드보다 낫다).
@@ -1711,8 +1912,12 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
 
     # ── v1.11k에서 되살린 콘텐츠 4종 ────────────────────────────
     elif item.content_type is ContentType.NIGHT_BRIEF:
-        # 전 리그 통합 1장. `games`(리그별)로는 만들 수 없다.
-        pool = all_games if all_games is not None else games
+        # **리그마다 한 장** (2026-09-07 대표님 결정). 예전에는 전 리그 통합
+        # 1장이라 `all_games`를 뒤져야 했다 — 이제는 이 리그 것만 고른다.
+        # 날짜 기준은 여전히 **한국 날짜**(`night_brief_day`)다:
+        # MLB 현지 9/1 슬레이트는 한국시각 9/2 오전에 열리고, 23:00 KST 카드가
+        # '오늘의 결과'라고 말하려면 기준이 한국 날짜여야 한다.
+        pool = games if games else (all_games or [])
         nights = [g for g in pool if P.night_brief_day(g) == day]
         if not nights:
             return None
@@ -1747,15 +1952,27 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
             return None
-        target = P.pick_analysis_game(todays)
-        if target is None:
-            return None
+        # ── **묶음 번호는 scope가 갖는다** (v1.15f) ──────────────
+        # 큐가 `{리그}:{날짜}#{묶음}`으로 올리고 여기서 그 묶음만 그린다.
+        # 큐와 렌더가 **같은 함수**(`P.analysis_batches`)로 나누므로 어긋날 수 없다.
+        _bi = 0
+        if "#" in item.scope:
+            try:
+                _bi = int(item.scope.rsplit("#", 1)[1])
+            except ValueError:
+                _bi = 0
         _r5 = _try_v5("analysis",
-                      lambda R: R.analysis_card(rb, target, item.league, day,
-                                                team_stats=team_stats,
-                                                history=games, now=_now()))
+                      lambda R: R.analysis_cards(rb, todays, item.league, day,
+                                                 batch=_bi, team_stats=team_stats,
+                                                 history=games, now=_now()))
         if _r5:
             return _r5
+        # **옛 카드는 한 경기짜리다.** 묶음의 첫 경기로 떨어진다 —
+        # 전 경기를 담지는 못하지만 아무것도 안 나가는 것보다 낫다.
+        _bt = P.analysis_batches(todays)
+        target = _bt[_bi][0] if _bi < len(_bt) and _bt[_bi] else None
+        if target is None:
+            return None
         html = P.render_analysis(rb, target, day, team_stats=team_stats,
                                  history=games, now=_now())
         parts = P.caption_analysis(rb, target, day, team_stats=team_stats,
@@ -2101,6 +2318,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             photos, parts = made
             payload = (Payload.from_parts(photos, parts) if photos
                        else Payload(text=parts[0]))
+
+            # ── 브랜드 버튼 (v1.15d — 대표님 지시) ──────────────────
+            # *"경기시작 알림글에는 버튼을 하나 붙여서 발송하자. 버튼에 URL을 연결."*
+            # 어느 콘텐츠에 다는지는 **계약이 정한다**(`BUTTON_CONTENT_TYPES`) —
+            # 여기 조건을 박아 두면 늘릴 때 이 파일을 다시 찾아야 한다.
+            if item.content_type.value in BUTTON_CONTENT_TYPES:
+                payload.buttons = brand_button()
 
             # ── 점수 외부 대조 (v1.11j — 대표님 승인) ────────────────
             # **한 소스만 믿는 구조가 09-01 사고의 뿌리다.** KBO 일정 페이지 하나를

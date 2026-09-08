@@ -20,17 +20,19 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       QueueItem, SEND_JPEG_QUALITY, SEND_JPEG_SUBSAMPLING,
                       GRACE_SECONDS,
                       Status, assert_card_geometry, esc, format_kickoff,
-                      START_ALERT_LEAD_MINUTES,
+                      START_ALERT_LEAD_MINUTES, DISABLED_CONTENT_TYPES,
                       PER_GAME_SENDING, KICKOFF_LEAD_SECONDS,
+                      LINEUP_ENABLED, LINEUP_CARD_MIN_LEAD_SECONDS,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
                       day_schedule_scope, start_alert_bucket,
                       start_alert_at, start_alert_notice, venue_name,
                       is_readable_ko, player_names_localized,
                       LEADER_TEAM_LABEL_MAX, pct_text,
-                      assert_result_deadline, kst_day_label, result_deadline,
+                      assert_result_deadline, game_duration_for,
+                      kst_day_label, result_deadline,
                       SCORE_UNIT_BY_LEAGUE, ScoreUnit,
-                      shift_out_of_quiet_hours,
+                      shift_out_of_quiet_hours, preview_buckets,
                       # v1.11i — 문안 사실성 헬퍼. 조사·사유 표기·모닝 이름·큐 잔류는
                       # 계약이 한 번만 정한다. 렌더마다 다시 지으면 반드시 갈라진다.
                       KBL_SEASON_CATEGORY_ALLOW, needs_local_time,
@@ -277,6 +279,18 @@ CSS = pathlib.Path(__file__).resolve().parents[1] / "cards" / "v4.html"
 # 두 리그(센트럴·퍼시픽)를 (승−패) 기준으로 합쳐 12팀 하나로 만든다 —
 # 승률순으로 합치면 소화 경기 수가 벌어질 때 게임차가 역전해 게이트에 걸린다.
 RECORD_SOURCE_LEAGUES = frozenset({League.KBO, League.NPB})
+"""**순위표·리더보드 카드**가 나가는 리그. 기록을 받는 리그와 다르다."""
+
+# ── 분석 카드가 나가는 리그 (v1.16, 2026-09-07 대표님 지시) ────────
+#
+# *"모든리그 기록수집을 정확하게 하고, 모든리그 분석 ... 상세하게"*
+#
+# **순위표와 나눈 이유.** MLB는 지구가 6개라 순위표 카드를 그대로 켜면 하루
+# 6장이 되고, K리그는 부문 순위를 소스가 주지 않는다. 분석은 그 둘이 없어도
+# 만들어진다 — 필요한 것은 **순위와 팀 지표**뿐이다.
+# 기록을 실제로 받는 리그는 `tick._record_jobs()`가 정한다. 여기 넣기 전에
+# 그쪽에 있는지 확인한다(없으면 큐만 쌓이고 카드는 안 나온다).
+ANALYSIS_LEAGUES = frozenset({League.KBO, League.NPB, League.MLB, League.KL1})
 
 # 순위표는 결과 카드 **직후**다. 같은 틱에 둘 다 처리되면 페이서가 순서를 정하는데,
 # 순위표(PACER_PRIORITY 6)와 결과 카드(6)가 같은 값이라 예약 시각이 순서를 정한다.
@@ -287,8 +301,44 @@ RECORD_SOURCE_LEAGUES = frozenset({League.KBO, League.NPB})
 from contract import STANDINGS_AFTER_RESULT_SECONDS      # noqa: E402,F401
 
 LEADERBOARD_HOUR_KST = 12                 # 점심 리그 리더보드
-NIGHT_BRIEF_HOUR_KST = 23                 # 하루를 닫는 카드
+NIGHT_BRIEF_HOUR_KST = 23                 # (더 이상 쓰지 않는다 — 아래 참고)
+
+# 리그 정리판을 **마지막 경기 종료 감지로부터** 얼마 뒤에 낼 것인가.
+# 2026-09-07 대표님 확정: *"마지막경기 경기결과 카드가 나간 30분 후"*.
+RESULT_AFTER_LAST_FLASH_SECONDS = 30 * 60
+
+# ── 나이트 브리핑을 끈다 (2026-09-07) ─────────────────────────────
+#
+# **역할이 사라져서다.** 원래 나이트는 23:00에 나가는 **전 리그 통합 1장**이었고,
+# 리그별 정리는 결과 카드가 맡았다. 오늘 대표님이 나이트를 리그별로 나누라고
+# 하시면서 두 카드가 같은 자리에 서게 됐다 — 같은 리그, 같은 날, 같은 경기 목록.
+# 대표님이 그린 흐름에도 리그 단위 카드는 **정리판 하나**다.
+#
+# 그래서 **결과 카드(LEAGUE_RESULT)를 정리판으로 삼고** 나이트를 끈다.
+# 이름도 그쪽이 맞다("경기 결과" vs 리그별이 된 "나이트 브리핑").
+# 나이트가 갖고 있던 것(번호·시각·오늘의 경기)은 정리판으로 옮겼다.
+#
+# **코드는 지우지 않는다.** 되돌리는 길이 이 한 줄이어야 하고, 전 리그 통합
+# 카드가 다시 필요해질 수 있다(예: 주간 요약).
+NIGHT_BRIEF_ENABLED = False
 ANALYSIS_LEAD_HOURS = 3                   # 주목 경기 시작 T-3시간
+
+# ── 경기 예고를 첫 경기 몇 분 전에 낼 것인가 ─────────────────────
+#
+# **처음에 30분으로 뒀다가 대표님이 바로잡았다 (2026-09-07):**
+#   *"첫경기 30분전은 너무 타이트하지 않을까? 경기시작전에는 빨리 정보를
+#     확인하고싶고 경기종료후에는 빨리 결과를 확인하고 싶어하니까"*
+#
+# 맞는 지적이다. 나는 "종료 흐름과 같은 모양"을 **같은 숫자**로 옮겼는데,
+# 같아야 하는 것은 **구조**(리그 단위 한 장 + 경기별 여러 장)이지 간격이 아니었다.
+# 앞뒤는 보는 사람의 마음이 반대다:
+#   · 경기 **전** — 미리 알고 싶다 → 예고는 **일찍**
+#   · 경기 **후** — 빨리 알고 싶다 → 결과는 **바로** (경기별 속보가 즉시 나간다)
+# 그래서 예고 120분 · 정리판 30분으로 **일부러 비대칭**이다.
+#
+# 120분은 옛 시작 알림이 쓰던 값이다 — 그 카드가 지금 이 자리를 맡았으니
+# 검증된 간격을 그대로 이어받는다.
+PREVIEW_BEFORE_FIRST_SECONDS = START_ALERT_LEAD_MINUTES * 60
 
 
 def night_brief_day(g: Game) -> str:
@@ -317,6 +367,32 @@ def pick_analysis_game(day_games: list[Game]) -> Game | None:
     return min(live, key=lambda g: (g.start_utc, g.game_id))
 
 
+ANALYSIS_PER_CARD = 3
+"""분석 카드 한 장에 담을 경기 수 (v1.15f).
+
+2026-09-07 대표님 지시: *"경기 분석도 모든 팀 알림으로 변경하자. 몇팀씩 묶어서
+카드한장안에 너무 우겨넣지 않고 보기좋도록 나눠서."*
+
+**높이가 아니라 이 값이 장 수를 정한다.** 높이로만 자르면 정보가 많은 날에
+빽빽해지는데, 대표님이 고른 것은 여백이 있는 카드다(약점 134와 같은 사상).
+KBO 5경기 → 2장(3+2) · NPB 6경기 → 2장(3+3).
+"""
+
+
+def analysis_batches(day_games: list[Game]) -> list[list[Game]]:
+    """그날 예정 경기를 시작 시각 순으로 `ANALYSIS_PER_CARD`개씩 나눈다.
+
+    **큐와 렌더가 반드시 같은 규칙을 쓴다.** 예약 시각은 큐가 정하는데 그때는
+    RecordBook이 없으므로, 여기서는 **기록 없이도 셀 수 있는 것**(시각·id)만 본다
+    — `pick_analysis_game`이 그렇게 만들어진 이유와 같다. 두 곳이 다르게 나누면
+    "2장 중 1장"이라 예약해 놓고 다른 경기를 그리는 카드가 나간다.
+    """
+    gs = sorted([g for g in day_games if g.status is Status.SCHEDULED],
+                key=lambda g: (g.start_utc, g.game_id))
+    n = max(1, ANALYSIS_PER_CARD)
+    return [gs[i:i + n] for i in range(0, len(gs), n)]
+
+
 def build_queue(games: list[Game], now: datetime, channel: str,
                 floor_hours: int = 6, horizon_hours: int = 30) -> list[QueueItem]:
     """한 리그의 큐를 만든다. 틱의 자가치유·수집 잡의 add는 floor_hours=0으로 부른다.
@@ -337,31 +413,64 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     if any(g.league is not league for g in games):
         raise GateError("build_queue는 한 리그씩 부른다 — 섞으면 멱등키가 엉킨다")
 
-    # 모닝 브리핑 — 대상 구간은 sports_day가 아니라 절대 시각 [07:30, 익일 07:30)
+    # ── 경기 예고 — **첫 경기 30분 전** (2026-09-07 대표님 확정) ──────
     #
-    # **지나간 07:30도 유예 안이면 큐에 남긴다 (v1.11d).**
-    # 전에는 `while morning < now: morning += 1일`로 **항상 미래 것만** 잡았다.
-    # 그래서 시계가 07:30~08:30 창에 안 들어오면 그날 모닝은 큐에서 통째로
-    # 사라졌고, 유예를 아무리 늘려도 소용이 없었다 — 유예는 큐에 있는 항목에만
-    # 적용되기 때문이다. 실측 시계 간격이 100분이라 이 일이 매일 벌어졌다.
-    # (결과 카드는 같은 이유로 이미 '과거 마감도 큐에 포함'으로 고쳐져 있다.)
-    _base = now.astimezone(KST).replace(hour=7, minute=30, second=0, microsecond=0)
-    for _m in (_base, _base + timedelta(days=1)):
-        _m_utc = _m.astimezone(timezone.utc)
+    # 대표님 지시: *"경기종료가 아니라 경기시작전 흐름을 다시짜봐 ·
+    # 경기종료랑 같은 흐름으로"*. 종료 흐름의 **거울상**으로 짠다:
+    #
+    #   [전경기 예고판]  ← 첫 경기 30분 전
+    #        ↓ 30분
+    #   1번 경기 시작 → [경기 시작 카드]   … 경기마다
+    #   1번 경기 종료 → [경기 종료 카드]   … 경기마다
+    #        ↓ 마지막 종료 + 30분
+    #   [전경기 정리판]
+    #
+    # **왜 07:30을 버렸나.** 고정 시각이라 리그마다 뜻이 달랐다 — KBO는 경기
+    # 10시간 전, MLB는 이미 경기가 진행 중인 시각이다. 그래서 카드가 "오늘"이라고
+    # 못 하고 `day_word_span`으로 매번 말을 골라야 했다. 첫 경기에 붙이면
+    # 모든 리그에서 뜻이 같아진다: **곧 시작한다.**
+    #
+    # **지나간 예고 시각도 유예 안이면 큐에 남긴다 (v1.11d에서 배운 것).**
+    # 전에는 항상 미래 것만 잡아, 시계가 그 창에 안 들어오면 그날 것이 통째로
+    # 사라졌다 — 유예는 큐에 있는 항목에만 적용되기 때문이다.
+    # **하루가 아니라 시간대 덩어리마다 한 장** (2026-09-07 대표님: "시간대별로 쪼갠다").
+    # 유럽 5대리그는 하루 19~22시간에 걸쳐 열려서, 하루 한 장으로 예고하면
+    # "2시간 전"이 마지막 경기에는 22시간 전이 된다(`contract.preview_buckets`).
+    _by_day: dict[str, list[Game]] = defaultdict(list)
+    for g in games:
+        _by_day[g.sports_day].append(g)
+    _buckets: list[tuple[str, str, datetime]] = []
+    for _d, _gs in _by_day.items():
+        for _key, _bg in preview_buckets(
+                _gs, lead_seconds=PREVIEW_BEFORE_FIRST_SECONDS):
+            _buckets.append((_d, _key, min(x.start_utc for x in _bg)))
+    for _day, _bkey, _first in sorted(_buckets, key=lambda x: x[2]):
+        # **심야 회피를 그대로 이어받는다.** 첫 경기 2시간 전이 한국시각 새벽이면
+        # (MLB·유럽이 늘 그렇다) 전날 밤으로 앞당긴다 — 새벽 4시에 울리는
+        # 알림은 정보가 아니라 소음이다. 옛 시작 알림이 쓰던 계산 그대로다.
+        _m_utc = shift_out_of_quiet_hours(
+            _first - timedelta(seconds=PREVIEW_BEFORE_FIRST_SECONDS))
+        _m = _m_utc.astimezone(KST)
         if _m_utc > hi:
             continue
         # **버림 판정은 여기서 하지 않는다 (v1.11i).**
         # 큐 생성부가 유예로 먼저 잘라내면 tick의 is_late()는 영원히 참이 되지 않는다 —
         # 실제로 38,283건 중 한 번도 참이 아니었고, 그래서 사라진 모닝 24%가
         # 로그에도 알림에도 남지 않았다. 큐는 남기고, 버림과 기록은 tick 한 곳에서 한다.
+        # **버림 판정은 여기서 하지 않는다 (v1.11i).**
+        # 큐 생성부가 유예로 먼저 잘라내면 tick의 is_late()는 영원히 참이 되지
+        # 않는다 — 실제로 38,283건 중 한 번도 참이 아니었고, 그래서 사라진
+        # 발행이 로그에도 알림에도 안 남았다. 큐는 남기고, 버림과 기록은
+        # tick 한 곳에서 한다.
         if not keep_in_queue(_m_utc, now, ContentType.MORNING):
             continue
-        day = _m.strftime("%Y-%m-%d")
-        # 그날 경기가 없으면 모닝 브리핑도 없다. 큐에 넣어두고 렌더에서 버리면
-        # 매일 빈 항목이 쌓여 진짜 항목이 안 보인다(V리그는 시즌이 7개월 뒤다).
-        if not any(g.sports_day == day for g in games):
-            continue
-        scope = f"{league.value}:{day}"
+        # **묶음 기준은 그 경기의 sports_day다** — 예고 시각의 한국 날짜가
+        # 아니다. MLB 현지 9/1 슬레이트는 한국시각 9/2 새벽에 시작하므로,
+        # 예고 시각으로 날짜를 매기면 카드가 다른 날 경기를 싣는다.
+        day = _day
+        # **묶음 키를 scope에 넣는다.** 안 넣으면 같은 날 두 묶음이 같은
+        # 멱등키를 갖고, 둘째 예고가 '이미 보냄'으로 조용히 사라진다.
+        scope = f"{league.value}:{day}#{_bkey}"
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.MORNING, scope),
             content_type=ContentType.MORNING, scope=scope,
@@ -387,6 +496,13 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     for g in games:
         by_day[day_schedule_scope(g)].append(g)
     for scope, gs_all in by_day.items():
+        # **껐다 (2026-09-07).** 경기 예고가 첫 경기 30분 전으로 오면서
+        # 같은 목록을 두 번 말하게 됐다 — 하나는 이미지, 하나는 텍스트로.
+        # 계약이 `DISABLED_CONTENT_TYPES`로 판정하고 여기서 지킨다.
+        # (처음에는 계약에서만 빼고 여기를 안 고쳐서 **계약은 껐다는데 큐는
+        #  계속 만드는** 상태가 됐다 — 반쯤 꺼진 것이 제일 나쁘다.)
+        if ContentType.START_ALERT in DISABLED_CONTENT_TYPES:
+            continue
         gs = [g for g in gs_all if g.status is Status.SCHEDULED]
         if not gs:
             continue                      # 전부 시작했거나 취소됐다 — 알릴 것이 없다
@@ -426,24 +542,70 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     # **리그 단위 카드(시간표·결과 요약)는 그대로 둔다.** 개별 카드가 창을
     # 놓쳐도 요약이 그날 전 경기를 반드시 담으므로 누락이 구조적으로 0이 된다.
     if PER_GAME_SENDING:
+        # ── ① 킥오프 — **같은 시각에 시작하는 경기는 한 장으로** (2026-09-07) ──
+        #
+        # 대표님 지시: *"같은시간에 시작하는 경기는, 묶어서 시작 직전 알림카드
+        # 보내자"*. 경기마다 한 장이면 동시 시작이 그대로 도배가 된다 —
+        # 실측: 유로파 18경기가 04:00에 함께 시작하고, KBO 5경기는 전부 17:00이다.
+        # 18장이 한 창에 몰리면 채널이 그 시각에 통째로 잠긴다.
+        #
+        # **버킷 키는 시각이다** (`start_alert_bucket`, 5분 단위).
+        # 경기 식별자를 키에서 뺐지만 중복은 여전히 구조적으로 막힌다 —
+        # 리그·날짜·시각이 유일하기 때문이다. 그리고 **시각으로 고정하는 것이
+        # 더 안전하다**: 묶음 안의 한 경기가 취소돼 내용이 바뀌어도 키가 그대로라
+        # 이미 나간 알림이 다시 나가지 않는다(취소는 정정 카드가 담당).
+        #
+        # `start_rev`도 그대로 넣는다 — 경기가 순연되면 그 경기는 다른 시각
+        # 버킷으로 옮겨 가므로 자연히 새 키가 된다(약점 20의 짝).
+        _kick: dict = defaultdict(list)
+        for g in games:
+            if g.status is Status.SCHEDULED:
+                _kick[start_alert_bucket(g)].append(g)
+        for _bk, _bg in _kick.items():
+            _first = min(x.start_utc for x in _bg)
+            _at = _first - timedelta(seconds=KICKOFF_LEAD_SECONDS)
+            if _at > hi or not keep_in_queue(_at, now, ContentType.KICKOFF):
+                continue
+            _rev = max((x.start_rev or 0) for x in _bg)
+            items.append(QueueItem(
+                idem_key=idem_key(channel, ContentType.KICKOFF, _bk,
+                                  start_rev=_rev),
+                content_type=ContentType.KICKOFF, scope=_bk,
+                scheduled_utc=_at, league=league,
+                sports_day=_bg[0].sports_day,
+                # **경기 하나를 대표로 남긴다.** 렌더가 버킷을 다시 계산하지만,
+                # 대장·로그에 무엇에 대한 항목인지 남아 있어야 사람이 읽는다.
+                game_id=sorted(x.game_id for x in _bg)[0]))
+
         for g in games:
             _scope = f"{league.value}:{g.sports_day}:{g.game_id}"
 
-            # ① 킥오프 — 그 경기 시작 10~1분 전.
-            #    예약은 T-10분이고 유예가 9분이라 창이 [T-10, T-1]이다.
-            #    **앞창은 0으로 잠겨 있다**(계약이 검사한다) — 일찍 나가면
-            #    "N분 뒤 시작"이 거짓이 되기 때문이다.
-            if g.status is Status.SCHEDULED:
-                _at = g.start_utc - timedelta(seconds=KICKOFF_LEAD_SECONDS)
-                if _at <= hi and keep_in_queue(_at, now, ContentType.KICKOFF):
+            # ① 선발 라인업 (v1.17) — **예약 시각이 시계가 아니라 데이터다.**
+            #
+            # 대표님: *"경기시작전에 알려줄 출장 라인업이 가능하면 좋아"*
+            # 라인업은 킥오프 약 1시간 전 발표 전까지 세상에 없다(실측
+            # 2026-09-08: 18시간 전 경기 17건 전부 빈칸). 그래서 시각으로
+            # 예약할 수 없다 — 우리가 **명단을 처음 본 시각**에 건다.
+            # 결과 속보(`first_final_at`)와 같은 꼴이고, 그래서 같은 검사가 듣는다.
+            _ls = getattr(g.meta, "lineup_seen_at", None) if g.meta else None
+            if LINEUP_ENABLED and _ls and getattr(g.meta, "lineup", None):
+                try:
+                    _lat = datetime.fromisoformat(_ls)
+                except (TypeError, ValueError):
+                    _lat = None
+                # **너무 늦게 뜬 명단은 카드를 내지 않는다.** 킥오프를 넘겨
+                # 나가는 '경기 시작 전 라인업'은 이름과 어긋난다. 그 경기의
+                # 명단은 종료 속보가 담는다(SAFETY_NET_FOR가 못 박은 짝).
+                _deadline = g.start_utc - timedelta(
+                    seconds=LINEUP_CARD_MIN_LEAD_SECONDS)
+                if (_lat is not None and _lat <= _deadline and _lat <= hi
+                        and keep_in_queue(_lat, now, ContentType.LINEUP)):
                     items.append(QueueItem(
-                        # **start_rev를 넣는다.** 경기가 순연되면 시작 시각이
-                        # 달라지므로 알림을 새로 열어야 한다(약점 20의 짝).
-                        idem_key=idem_key(channel, ContentType.KICKOFF, _scope,
-                                          start_rev=g.start_rev),
-                        content_type=ContentType.KICKOFF, scope=_scope,
-                        scheduled_utc=_at, league=league,
-                        sports_day=g.sports_day, game_id=g.game_id))
+                        idem_key=idem_key(channel, ContentType.LINEUP, _scope),
+                        content_type=ContentType.LINEUP, scope=_scope,
+                        scheduled_utc=_lat, league=league,
+                        sports_day=g.sports_day, game_id=g.game_id,
+                        render_at_utc=_lat))
 
             # ② 결과 속보 — 그 경기 종료를 **우리가 알아챈** 시각 직후.
             #    소스가 종료 시각을 안 준다(실측: gameDateTime은 시작,
@@ -503,8 +665,46 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # 마감은 **안전망으로 남긴다** — 우천 연기 등으로 마지막 경기가 영영
         # 종결되지 않으면, 마감 시각에 그때까지의 결과로라도 내보낸다.
         # (그러지 않으면 그날 결과가 통째로 사라진다.)
+        # ── 정리판은 **마지막 경기 속보 + 30분** (2026-09-07 대표님 확정) ──
+        #
+        # 대표님이 그린 흐름 그대로다:
+        #   1번 경기 끝남 → 즉시 [경기 종료 카드]
+        #   2번 경기 끝남 → 즉시 [경기 종료 카드]  …
+        #   마지막 경기 끝남 → 즉시 [경기 종료 카드]
+        #                       ↓ 30분
+        #                 [그 리그 전경기 정리판]
+        #
+        # **왜 30분을 두나.** 속보가 막 나간 자리에 같은 점수판을 곧바로 또 내면
+        # 두 카드가 겹쳐 읽힌다. 사이를 벌리면 앞은 '방금 끝났다', 뒤는
+        # '오늘 하루가 이랬다'로 역할이 갈린다.
+        #
+        # **기준점은 `now`가 아니라 마지막 종료 감지 시각이다.** `now`는 우리가
+        # 그것을 알아챈 시각이라 시계가 밀린 날에는 실제 종료보다 한참 뒤가 된다
+        # (2026-09-06 실측: MLB 종료 감지가 9시간 39분에 걸쳐 흩어졌다).
+        # 그러면 "속보 + 30분"이 "속보 + 몇 시간"이 된다.
         settled = league_day_settled(games, day, now)
-        at = now if settled else deadline
+        at = deadline
+        if settled:
+            # **기준점은 마지막 경기의 종료 감지 시각이다** — 그 시각이 곧
+            # 그 경기 속보(`FINAL_FLASH`)가 예약된 시각이고, 대표님이 말한
+            # "마지막경기 경기결과 카드가 나간" 그 순간이다.
+            _flashes = [datetime.fromisoformat(g.meta.first_final_at)
+                        for g in gs if g.meta and g.meta.first_final_at]
+            at = now
+            if _flashes:
+                at = max(_flashes) + timedelta(
+                    seconds=RESULT_AFTER_LAST_FLASH_SECONDS)
+                # 그 시각이 이미 지났으면 더 기다리지 않는다 — 늦게 알아챈 날에
+                # 30분을 또 얹으면 그만큼 더 늦어질 뿐이다(2026-09-06 실측:
+                # MLB 종료 감지가 9시간 39분에 걸쳐 흩어졌다).
+                if at < now:
+                    at = now
+            # ⚠️ **속보가 없었던 날에는 `now`다 (30분을 더하지 않는다).**
+            # `first_final_at`은 우리가 **종료로 넘어가는 순간을 실제로 봤을 때만**
+            # 적힌다. 없다는 것은 그 경기 속보도 안 나갔다는 뜻이고, 그러면
+            # "속보 + 30분"이라는 기준 자체가 없다 — 없는 기준을 흉내 내려고
+            # `now + 30분`을 쓰면 **매 틱마다 예약이 앞으로 도망가** 카드가
+            # 영영 안 나간다(처음에 그렇게 짰고 검증이 잡았다).
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.LEAGUE_RESULT,
                               f"{league.value}:{day}"),
@@ -560,23 +760,26 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     # ── 분석 카드 — 그날 첫 경기 시작 T-3시간, 리그별 1건 ──────────
     # 경기 전 정보다. 시작한 뒤에 나가면 '분석'이 아니라 뒷북이므로 예약을
     # T-3h에 두고, 늦은 것은 is_late()가 버린다(유예 3시간 = 경기 시작 직전까지).
-    if league in RECORD_SOURCE_LEAGUES:
+    if league in ANALYSIS_LEAGUES:
         for day, gs in by_day.items():
-            target = pick_analysis_game(gs)
-            if target is None:
-                continue                  # 예정 경기가 없다 — 분석할 것이 없다
-            an_at = target.start_utc - timedelta(hours=ANALYSIS_LEAD_HOURS)
-            if an_at > hi:
-                continue
-            if not keep_in_queue(an_at, now, ContentType.ANALYSIS):
-                continue
-            scope = f"{league.value}:{day}"
-            items.append(QueueItem(
-                idem_key=idem_key(channel, ContentType.ANALYSIS, scope),
-                content_type=ContentType.ANALYSIS, scope=scope,
-                scheduled_utc=an_at, league=league, sports_day=day,
-                game_id=target.game_id,
-                render_at_utc=an_at - timedelta(minutes=15)))
+            # ── **그날 전 경기를 묶음마다 한 장** (v1.15f · 대표님 지시) ──
+            # 전에는 `pick_analysis_game`으로 **하루 한 경기**만 다뤘다. 그런데
+            # 야구는 대부분 동시 시작이라(실측 KBO 80%) 그 '첫 경기'를 사실상
+            # 팀 코드 알파벳 순이 정했다 — 한화가 두산의 8배로 뽑혔다(약점 136).
+            # 이제 전 경기를 담고, 예약 시각은 **그 묶음 첫 경기 −3시간**이다.
+            for _bi, _bg in enumerate(analysis_batches(gs)):
+                an_at = _bg[0].start_utc - timedelta(hours=ANALYSIS_LEAD_HOURS)
+                if an_at > hi:
+                    continue
+                if not keep_in_queue(an_at, now, ContentType.ANALYSIS):
+                    continue
+                scope = f"{league.value}:{day}#{_bi}"
+                items.append(QueueItem(
+                    idem_key=idem_key(channel, ContentType.ANALYSIS, scope),
+                    content_type=ContentType.ANALYSIS, scope=scope,
+                    scheduled_utc=an_at, league=league, sports_day=day,
+                    game_id=_bg[0].game_id,
+                    render_at_utc=an_at - timedelta(minutes=15)))
 
     # ── 나이트 브리핑 — 매일 23:00 KST, **전 리그 통합 1건** ──────
     #
@@ -609,15 +812,28 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         if not keep_in_queue(_nb_utc, now, ContentType.NIGHT_BRIEF):
             continue
         _day = _nb.strftime("%Y-%m-%d")
-        # 그날 이 리그에 경기가 없으면 이 리그는 나이트 브리핑을 만들 근거가 없다.
-        # (다른 리그에 경기가 있으면 그 리그의 build_queue가 같은 항목을 만든다.)
-        if not _nb_by_day.get(_day):
+        _nb_games = _nb_by_day.get(_day)
+        if not _nb_games:
             continue
-        scope = f"ALL:{_day}"
+        if ContentType.NIGHT_BRIEF in DISABLED_CONTENT_TYPES:
+            continue                        # 위 주석 참고 — 정리판이 그 역할을 한다
+        # ── **리그마다 한 장** (2026-09-07 대표님 결정) ──────────
+        #
+        # 예전에는 `scope = f"ALL:{_day}"`였다. 어느 리그가 만들든 같은 키라
+        # 전 리그가 한 장으로 합쳐졌다. 대표님 지시:
+        # *"여러개 리그를 한개 카드에 다 넣는것 보다는 각 리그마다 나눠서 보내는게 좋아"*
+        #
+        # scope에 리그를 넣으면 그것으로 끝난다 — 큐도 멱등키도 리그별이 된다.
+        # **경기가 있는 리그만** 만든다(`_nb_games`가 이 리그 경기다).
+        _lg = _nb_games[0].league
+        scope = f"{_lg.value}:{_day}"
         items.append(QueueItem(
             idem_key=idem_key(channel, ContentType.NIGHT_BRIEF, scope),
             content_type=ContentType.NIGHT_BRIEF, scope=scope,
-            scheduled_utc=_nb_utc, league=None, sports_day=_day,
+            # **리그를 채운다.** 예전에는 None이었고(통합 카드였으므로) 그래서
+            # 렌더가 `all_games`를 뒤져 그날 전 리그를 다시 모았다.
+            # 이제는 이 항목이 그 리그의 카드다.
+            scheduled_utc=_nb_utc, league=_lg, sports_day=_day,
             render_at_utc=_nb_utc - timedelta(minutes=15)))
 
     items.sort(key=lambda i: i.scheduled_utc)
@@ -681,6 +897,7 @@ _LEAGUE_ICON = {
     League.KL1: _ICON_FOOT, League.EPL: _ICON_FOOT, League.LALIGA: _ICON_FOOT,
     League.SERIEA: _ICON_FOOT, League.BUNDESLIGA: _ICON_FOOT,
     League.LIGUE1: _ICON_FOOT, League.UCL: _ICON_FOOT,
+    League.UEL: _ICON_FOOT, League.MLS: _ICON_FOOT,
     League.LCK: _ICON_GAME, League.INTL_LOL: _ICON_GAME,
 }
 
@@ -688,7 +905,8 @@ _LEAGUE_ICON = {
 # 있지도 않은 사고를 안내하는 셈이다.
 OUTDOOR_LEAGUES = frozenset({
     League.KBO, League.MLB, League.NPB, League.KL1, League.EPL, League.LALIGA,
-    League.SERIEA, League.BUNDESLIGA, League.LIGUE1, League.UCL,
+    League.SERIEA, League.BUNDESLIGA, League.LIGUE1, League.UCL, League.UEL,
+    League.MLS,
 })
 
 
@@ -734,6 +952,13 @@ LEAGUE_LABEL = {
     League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
     League.EPL: "EPL", League.LALIGA: "라리가", League.SERIEA: "세리에A",
     League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "UCL",
+    # UCL은 국내에서 그대로 쓰는 약자지만 **UEL은 아니다.** 약자로 맞추면
+    # 대칭은 예뻐도 읽는 사람이 무슨 대회인지 모른다 — 이름을 쓴다.
+    League.UEL: "유로파리그",
+    # 리그 전체가 아니라 **한국 선수 경기만** 실린다 — 그래도 리그 이름은
+    # 리그 이름이다. 카드 머리에 '손흥민'을 적으면 그날 김기희가 뛴 경기가
+    # 이상해진다(약점 90: 소스가 말하지 않은 것을 이름에 넣지 않는다).
+    League.MLS: "MLS",
 }
 
 
@@ -863,6 +1088,10 @@ def assert_league_render_maps() -> None:
         "LEAGUE_LABEL": [l.value for l in League if l not in LEAGUE_LABEL],
         "LEAGUE_COLORS": [l.value for l in League if l not in LEAGUE_COLORS],
         "_LEAGUE_ICON": [l.value for l in League if l not in _LEAGUE_ICON],
+        # **이 표가 빠져 있었다 (2026-09-07).** 유로파리그를 넣으며 다른 표는
+        # 다 채웠는데 이모지 표만 놓쳤고, 검사 목록에 없어서 아무도 못 잡았다.
+        # 검사가 표를 하나 빠뜨리면 그 표는 사실상 게이트 밖이다.
+        "LEAGUE_EMOJI": [l.value for l in League if l not in LEAGUE_EMOJI],
     }
     bad = {k: v for k, v in missing.items() if v}
     if bad:
@@ -1458,6 +1687,11 @@ LEAGUE_EMOJI = {
     League.KBL: "🏀", League.VLEAGUE_M: "🏐", League.VLEAGUE_W: "🏐",
     League.KL1: "⚽", League.EPL: "⚽", League.LALIGA: "⚽", League.SERIEA: "⚽",
     League.BUNDESLIGA: "⚽", League.LIGUE1: "⚽", League.UCL: "⚽",
+    # ⚠️ 유로파리그가 여기 없었다 (2026-09-07 발견). 리그를 추가하며 다른 표는
+    # 다 채웠는데 이 표만 빠졌고, `assert_league_render_maps()`가 이 표를
+    # **검사 목록에 넣지 않아서** 게이트도 통과시켰다. 검사에 없는 표는
+    # 없는 것과 같다 — 그래서 아래 게이트에 이 표를 넣었다.
+    League.UEL: "⚽", League.MLS: "⚽",
     League.LCK: "🎮", League.INTL_LOL: "🎮",
 }
 
@@ -2516,7 +2750,23 @@ def _night_allocate(groups: list[tuple[League, list[Game]]],
 # LCK·LoL 국제대회는 라이엇 공식 API 키를 구하지 못해 Leaguepedia(팬 위키)를 쓴다.
 # 팬 위키를 '공식'이라 부르면 카드가 출처를 속이는 것이다.
 # 나머지 리그는 각 연맹의 공식 API·공식 페이지에서 온다.
-UNOFFICIAL_SOURCE_LEAGUES: frozenset = frozenset({League.LCK, League.INTL_LOL})
+#
+# **유럽 축구 7개가 여기 있다 — 1차 소스가 네이버(비공식)이기 때문이다.**
+# 오늘 하루에만 이 목록이 두 번 움직였다: 네이버로 갈아타며 넣었고,
+# football-data로 되돌리며 뺐고, 다시 네이버로 확정되며 넣었다.
+# **소스가 바뀔 때마다 이 목록이 같이 움직여야 한다**는 것이 요점이다 —
+# 약점 107: 'LCK 공식 결과'라고 적었는데 실제로는 팬 위키였다.
+# 소스만 갈아끼우고 이 목록을 잊으면 카드가 출처를 속인다.
+#
+# ⚠️ 2차 소스(football-data)로 전환된 날에는 그 여섯이 **공식이 된다.**
+# 지금 구조는 그날을 자동으로 반영하지 못한다 — 꼬리말이 하루 동안
+# 실제보다 겸손하게 나갈 뿐 거짓말은 아니므로 그대로 둔다.
+# (거꾸로였다면, 즉 비공식인데 '공식'이라 적히는 쪽이었다면 못 둔다.)
+UNOFFICIAL_SOURCE_LEAGUES: frozenset = frozenset({
+    League.LCK, League.INTL_LOL,
+    League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
+    League.LIGUE1, League.UCL, League.UEL, League.MLS,
+})
 
 # 점수 단위를 사람 말로. **한 곳에만 둔다** — 결과 카드와 나이트 브리핑이
 # 같은 표를 써야 같은 숫자를 같은 낱말로 설명한다.
@@ -2537,9 +2787,27 @@ def _is_official(league: League) -> bool:
     return league not in UNOFFICIAL_SOURCE_LEAGUES
 
 
+# 비공식 소스마다 **무엇을 봤는지**를 적는다.
+# 이 표가 없던 동안 `source_note`는 비공식이면 무조건 "커뮤니티 기록
+# (Leaguepedia)"이라고 답했다 — 그래서 유럽 축구를 비공식으로 옮기자마자
+# 챔피언스리그 출처가 **Leaguepedia(롤 팬 위키)**로 나왔다.
+# 출처를 밝히려고 만든 함수가 출처를 틀리게 말한 것이다.
+_SOURCE_LABEL: dict = {
+    League.LCK: "커뮤니티 기록(Leaguepedia)",
+    League.INTL_LOL: "커뮤니티 기록(Leaguepedia)",
+}
+_SOURCE_LABEL.update({lg: "비공식 집계" for lg in (
+    League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
+    League.LIGUE1, League.UCL, League.UEL, League.MLS)})
+
+
 def source_note(league: League) -> str:
-    """카드 꼬리말에 쓸 출처 표기. 공식이 아니면 그렇게 적는다."""
-    return "공식 기록" if _is_official(league) else "커뮤니티 기록(Leaguepedia)"
+    """카드 꼬리말에 쓸 출처 표기. 공식이 아니면 **무엇을 봤는지**까지 적는다."""
+    if _is_official(league):
+        return "공식 기록"
+    # 비공식인데 표에 없으면 **뭉뚱그리지 않는다** — 남의 소스 이름을 잘못
+    # 붙이느니 이름을 말하지 않는 편이 정직하다.
+    return _SOURCE_LABEL.get(league, "비공식 집계")
 
 
 def _unit_note(leagues: list) -> str:
@@ -2909,12 +3177,68 @@ ANALYSIS_LEADER_CATEGORIES: tuple[str, ...] = (
 )
 
 # 리그별 팀 기록 라벨. 야구 밖으로 넓힐 때 여기만 늘린다.
-TEAM_STAT_LABELS: tuple[tuple[str, str, bool], ...] = (
-    # (team_stats 키, 카드에 찍을 이름, 높을수록 좋은가)
+# ── 팀 지표 표기 — **종목마다 다른 것을 뭉개지 않는다** (v1.16) ────
+#
+# 2026-09-07 대표님 지시: *"모든리그 기록수집을 정확하게 하고, 모든리그 분석,
+# 승리팀 예상 분석글을 상세하게 적을 수 있도록 업그레이드하자."*
+#
+# 전에는 야구 3개(`avg`·`era`·`hr`)만 있었고 그것도 KBO만 수집했다.
+# 이제 야구 7개 · 축구 6개이고 KBO·MLB·NPB·K리그가 전부 채운다.
+# **키 이름은 어댑터(`naver_stats.team_stat_fields`)와 같아야 한다** —
+# 두 곳에서 따로 정하면 조용히 빈 칸이 생긴다(약점 81).
+TEAM_STAT_LABELS_BASEBALL: tuple[tuple[str, str, bool], ...] = (
     ("avg", "팀타율", True),
-    ("era", "팀평균자책", False),
+    ("ops", "팀OPS", True),
     ("hr", "팀홈런", True),
+    ("run", "팀득점", True),
+    ("era", "팀평균자책", False),
+    ("whip", "팀WHIP", False),
+    ("kk", "팀탈삼진", True),
 )
+TEAM_STAT_LABELS_FOOTBALL: tuple[tuple[str, str, bool], ...] = (
+    ("gf", "경기당 득점", True),
+    ("ga", "경기당 실점", False),
+    ("gd", "골 득실", True),
+    ("sot", "유효슈팅", True),
+    ("pos", "점유율", True),
+    ("cs", "무실점 경기", True),
+)
+
+# **옛 이름을 남겨 둔다.** 여러 곳이 이 이름으로 import한다 — 한 번에 갈아치우면
+# 어느 한 곳이 빠지고 그 카드만 조용히 지표를 잃는다(약점 45·110).
+TEAM_STAT_LABELS = TEAM_STAT_LABELS_BASEBALL
+
+
+def team_stat_labels(league: "League") -> tuple[tuple[str, str, bool], ...]:
+    """그 리그의 팀 지표 표기. 모르는 종목이면 빈 튜플 — **지어내지 않는다.**"""
+    if league in (League.KBO, League.MLB, League.NPB):
+        return TEAM_STAT_LABELS_BASEBALL
+    if league is League.KL1:
+        return TEAM_STAT_LABELS_FOOTBALL
+    return ()
+
+# 부문별 소수 자릿수. **소스는 float을 준다** — `str(0.28)`은 `"0.28"`이 되어
+# 타율이 두 자리로 찍힌다(실측: 삼성 0.28). 값을 바꾸는 것이 아니라
+# 야구 표기법대로 적는 것이므로 재포맷이 맞다.
+TEAM_STAT_DIGITS: dict[str, int] = {
+    "avg": 3, "ops": 3, "era": 2, "whip": 2,          # 야구
+    "gf": 2, "ga": 2, "pos": 1,                        # 축구
+}
+
+
+def format_team_stat(key: str, value) -> str:
+    """팀 기록 한 칸의 표기. **옛 카드와 v5가 반드시 이 함수를 함께 쓴다.**
+
+    한 곳만 고치면 다른 화면에서 같은 값이 다르게 찍힌다(약점 45·93·110).
+    자릿수를 모르는 키는 손대지 않는다 — 지어내지 않는다.
+    """
+    d = TEAM_STAT_DIGITS.get(key)
+    if d is None:
+        return str(value)
+    try:
+        return f"{float(value):.{d}f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ── 카드 높이 예산 (v1.11k) ──────────────────────────────────
@@ -3024,6 +3348,55 @@ def recent_form(history: list[Game], code: str, before_utc: datetime,
     return gs[-n:]
 
 
+def form_record(history: list[Game], code: str, before_utc: datetime,
+                n: int = 5) -> tuple[int, int, int]:
+    """그 팀 직전 n경기 **(승, 패, 무)**. 표본이 없으면 (0,0,0).
+
+    분석글이 "최근 5경기는 …"이라고 말할 근거다. `recent_form`이 고른 것과
+    **같은 경기**를 센다 — 두 곳이 다른 표본을 쓰면 카드가 스스로 어긋난다.
+    """
+    gs = recent_form(history, code, before_utc, n)
+    w = sum(1 for g in gs if _team_result(g, code) == "W")
+    l = sum(1 for g in gs if _team_result(g, code) == "L")
+    d = sum(1 for g in gs if _team_result(g, code) == "D")
+    return (w, l, d)
+
+
+def h2h_from_games(history: list[Game], away: str, home: str
+                   ) -> tuple[WLD, str] | None:
+    """시즌 맞대결을 **경기 스냅샷에서 직접 센다** — (원정팀 기준 WLD, 최근 흐름).
+
+    **왜 소스에 안 기대나.** 상대전적을 주는 소스는 KBO·NPB뿐이다(실측:
+    MLB·K리그는 0건). 그런데 우리는 그 리그의 시즌 경기를 이미 다 갖고 있다 —
+    세면 된다. 소스가 주는 곳에서는 그쪽을 먼저 쓰고, 없을 때만 이걸 쓴다
+    (한 값을 두 곳에서 받으면 어긋날 때 판정할 곳이 없다 — 약점 74·131).
+    """
+    gs = [g for g in history
+          if g.status is Status.FINAL and g.score
+          and {g.home.team_code, g.away.team_code} == {away, home}]
+    if not gs:
+        return None
+    gs.sort(key=lambda g: (g.start_utc, g.game_id))
+    w = l = d = 0
+    for g in gs:
+        r = _team_result(g, away)
+        if r == "W":
+            w += 1
+        elif r == "L":
+            l += 1
+        else:
+            d += 1
+    # 최근 흐름 — **최대 3경기**. 그보다 길면 문장이 표가 된다.
+    tail = gs[-3:]
+    if len(tail) >= 2:
+        marks = "".join({"W": "승", "L": "패", "D": "무"}[_team_result(g, away)]
+                        for g in tail)
+        recent = f"{len(tail)}번 중 {marks}"
+    else:
+        recent = ""
+    return WLD(win=w, loss=l, draw=d), recent
+
+
 def _form_block(rb: RecordBook, game: Game, history: list[Game],
                 n: int = 5) -> tuple[str, int] | None:
     """③ 최근 n경기 폼. (HTML, 행 수). 두 팀 다 표본이 없으면 만들지 않는다."""
@@ -3100,7 +3473,7 @@ def _condition_block(sa: Standing, sh: Standing, na: str, nh: str,
     for k, label, higher in TEAM_STAT_LABELS:
         if k not in ta or k not in th:
             continue                      # **빈 칸을 남기지 않는다** — 행을 뺀다
-        va, vb = str(ta[k]), str(th[k])
+        va, vb = format_team_stat(k, ta[k]), format_team_stat(k, th[k])
         try:
             fa, fb = float(va), float(vb)
             better = None if fa == fb else ((fa > fb) if higher else (fa < fb))

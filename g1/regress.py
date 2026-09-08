@@ -31,7 +31,11 @@ def gate(n, fn, exc=(GateError, UnknownStatus, ValueError)):
     fail += 1; print(f"  FAIL  {n} 통과시킴")
 
 print("1. 계약 불변식")
-check("리그 15개", len(League) == 15, len(League))
+# 리그 수를 **고정으로 못 박아 두는 검사**다. 리그가 조용히 늘거나 줄면
+# 여기서 먼저 걸린다 — 늘어난 리그가 색·라벨·아이콘 표에 빠져 있으면
+# 그 리그 카드가 KBO 기본값으로 나가기 때문이다(2026-08-28 실제 사고).
+# 17 = 15 + 유로파리그 + MLS(v1.15, 2026-09-07 추가).
+check("리그 17개", len(League) == 17, len(League))
 check("완전성 assert 통과 (임포트 성공)", True)
 check("멱등키 구분자 |", "|" in idem_key("c", ContentType.MORNING, "KBO:2026:x"))
 check("멱등키 game_id 콜론 보존",
@@ -136,15 +140,16 @@ _fix_now = min(g.start_utc for g in games
 qf = P.build_queue(games, _fix_now, "-100test")
 check(f"예약 검사용 고정 큐 {len(qf)}건 ({_fix_day} 첫 경기 -6시간 기준)", bool(qf))
 
-# ③ 시작 알림만 따로 — 그 시간표의 첫 경기보다 리드타임만큼 앞서 잡힌다.
-#    (심야 회피로 더 앞당겨질 수는 있어도 뒤로 밀리지는 않는다.)
-_sa = [i for i in qf if i.content_type is ContentType.START_ALERT]
+# ③ 경기 예고만 따로 — 그 리그 첫 경기보다 **30분** 앞서 잡힌다.
+#    (시작 알림은 껐다 — 경기 예고가 그 자리를 맡는다.)
+_sa = [i for i in qf if i.content_type is ContentType.MORNING]
 _sa_late = []
 for i in _sa:
-    _first = min(g.start_utc for g in games if day_schedule_scope(g) == i.scope)
-    if i.scheduled_utc > _first - timedelta(minutes=C.START_ALERT_LEAD_MINUTES):
+    _first = min(g.start_utc for g in games if g.sports_day == i.sports_day)
+    if i.scheduled_utc > _first - timedelta(
+            seconds=P.PREVIEW_BEFORE_FIRST_SECONDS):
         _sa_late.append(f"{i.scope} 예약 {i.scheduled_utc} · 첫 경기 {_first}")
-check(f"시작 알림({len(_sa)}건)은 첫 경기보다 리드타임만큼 앞서 잡힌다",
+check(f"경기 예고({len(_sa)}건)는 첫 경기보다 30분 앞서 잡힌다",
       bool(_sa) and not _sa_late, str(_sa_late[:2]))
 
 # ── 예약 시각 — 새 4종이 약속한 시각에 잡히는가 (2026-09-03 신설) ──
@@ -152,16 +157,17 @@ check(f"시작 알림({len(_sa)}건)은 첫 경기보다 리드타임만큼 앞�
 # 전부 다른 이야기를 하게 된다.
 # **약속한 숫자를 여기에 직접 적는다.** 파이프라인 상수로 검사하면 상수를 바꾸는
 # 순간 검사도 따라가서 아무것도 못 잡는다 — 검증이 코드를 되풀이해 읽을 뿐이 된다.
-_NB_HOUR, _LB_HOUR, _AN_LEAD_H = 23, 12, 3
-check("파이프라인 상수가 약속과 같다 (23시 · 12시 · -3시간)",
-      (P.NIGHT_BRIEF_HOUR_KST, P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS)
-      == (_NB_HOUR, _LB_HOUR, _AN_LEAD_H),
-      f"{P.NIGHT_BRIEF_HOUR_KST}/{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
+_LB_HOUR, _AN_LEAD_H, _RESULT_DELAY_MIN = 12, 3, 30
+check("파이프라인 상수가 약속과 같다 (12시 · -3시간 · 정리판 +30분)",
+      (P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS,
+       P.RESULT_AFTER_LAST_FLASH_SECONDS // 60)
+      == (_LB_HOUR, _AN_LEAD_H, _RESULT_DELAY_MIN),
+      f"{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}/"
+      f"{P.RESULT_AFTER_LAST_FLASH_SECONDS // 60}")
 _at_kst = lambda i: i.scheduled_utc.astimezone(KST)
+# 나이트 브리핑(23:00)은 껐다 — 결과 정리판이 그 역할을 한다(위 참고).
 _nb = [i for i in qf if i.content_type is ContentType.NIGHT_BRIEF]
-check(f"나이트 브리핑은 23:00 KST ({len(_nb)}건)",
-      bool(_nb) and all((_at_kst(i).hour, _at_kst(i).minute) == (_NB_HOUR, 0)
-                        for i in _nb),
+check("나이트 브리핑은 큐에 오르지 않는다 (껐다)", not _nb,
       str([f"{_at_kst(i):%H:%M}" for i in _nb[:3]]))
 _lb = [i for i in qf if i.content_type is ContentType.LEADERBOARD]
 check(f"리더보드는 12:00 KST ({len(_lb)}건)",
@@ -365,11 +371,15 @@ _ka = {i.idem_key for i in _qa} - _nb_a
 _kb = {i.idem_key for i in _qb} - _nb_b
 check("나이트 브리핑을 뺀 멱등키는 리그가 다르면 겹치지 않는다", not (_ka & _kb),
       str(sorted(_ka & _kb)[:2]))
-# 여기가 진짜 위험이다 — 통합 카드 키가 리그마다 조금이라도 다르면
-# 대장이 못 접어서 **리그 수만큼** 같은 카드가 채널에 나간다(아홉 리그면 하루 아홉 번).
-check("나이트 브리핑은 리그가 달라도 완전히 같은 키 (다르면 리그 수만큼 발송된다)",
-      bool(_nb_a) and _nb_a == _nb_b,
-      f"KBO={sorted(_nb_a)} KBL={sorted(_nb_b)}")
+# ⚠️ **나이트 브리핑은 2026-09-07에 껐다.** 리그별로 나눠 보니 결과 정리판과
+# 같은 자리에 섰다(같은 리그·같은 날·같은 경기 목록). 대표님이 그린 흐름에도
+# 리그 단위 카드는 정리판 하나다. **반쯤 꺼진 상태가 제일 나쁘다** — 큐에는
+# 없는데 게이트가 찾으면 매일 유령 경고가 뜬다.
+check("★ 끈 콘텐츠(나이트)는 큐에 하나도 안 오른다",
+      not _nb_a and not _nb_b, f"KBO={sorted(_nb_a)} KBL={sorted(_nb_b)}")
+check("  ↳ 계약의 '끈 목록'과 '큐 목록'이 서로 어긋나지 않는다",
+      ContentType.NIGHT_BRIEF in C.DISABLED_CONTENT_TYPES
+      and ContentType.NIGHT_BRIEF not in C.QUEUED_CONTENT_TYPES)
 # 같은 리그·같은 날 안에서도 종류가 다르면 키가 달라야 한다. 안 그러면
 # 결과 카드가 나간 뒤 순위표가 '이미 보냄'으로 조용히 사라진다.
 _slot: dict = {}

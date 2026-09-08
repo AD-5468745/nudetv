@@ -164,18 +164,46 @@ for _name, _gs in snaps.items():
     _keys_own[_name] = {i.idem_key for i in _q1
                         if i.content_type is not ContentType.NIGHT_BRIEF}
 
-# **여기가 진짜 위험이다.** 나이트 브리핑 키가 리그마다 조금이라도 다르면
-# 대장이 못 접어서 **리그 수만큼** 같은 통합 카드가 채널에 나간다(아홉 리그면 하루 아홉 번).
-_nb_sets = list(_keys_nb.values())
-check(f"나이트 브리핑은 리그가 달라도 완전히 같은 키 "
-      f"({len(_nb)}건 → 키 {len({i.idem_key for i in _nb})}개, 다르면 리그 수만큼 발송된다)",
-      bool(_nb_sets) and all(s and s == _nb_sets[0] for s in _nb_sets),
-      str({k: sorted(v) for k, v in _keys_nb.items()})[:160])
-# 통합 카드를 뺀 나머지는 예전 기대 그대로 — 리그끼리 절대 안 겹친다.
+# ⚠️ **나이트 브리핑은 2026-09-07에 껐다.** 리그별로 나누라는 지시를 받고
+# 나눠 봤더니 리그 결과 정리판과 같은 자리에 섰다 — 같은 리그, 같은 날,
+# 같은 경기 목록. 대표님이 그린 흐름에도 리그 단위 카드는 정리판 하나다.
+# 그래서 여기서 보는 것은 "**정말 꺼졌는가**"다. 반쯤 꺼진 것이 제일 나쁘다:
+# 큐에는 없는데 게이트는 찾으면 매일 유령 경고가 뜬다(약점 112·113).
+# ⚠️ **콘텐츠 하나씩 검사하면 다음에 또 빠뜨린다.**
+# 실제로 그랬다(2026-09-07): 나이트는 큐에서 빼면서 검사도 넣었는데,
+# 같은 날 시작 알림을 끄면서는 **계약에서만 빼고 큐 생성부를 안 고쳐** 계속
+# 만들어지고 있었다. 나이트 전용 검사는 그것을 볼 이유가 없었다.
+# 그래서 **끈 콘텐츠 전부**를 한 번에 본다 — 목록이 늘어도 검사는 그대로다.
+_all_items = T.build_all_queues(snaps, NOW, "-100test")
+_leaked = sorted({i.content_type.value for i in _all_items
+                  if i.content_type in C.DISABLED_CONTENT_TYPES})
+check(f"★★ 끈 콘텐츠는 큐에 하나도 안 오른다 "
+      f"({len(C.DISABLED_CONTENT_TYPES)}종: "
+      f"{', '.join(sorted(c.value for c in C.DISABLED_CONTENT_TYPES))})",
+      not _leaked, f"새어 나온 것: {_leaked}")
+check("  ↳ 계약의 두 목록이 서로 어긋나지 않는다 (큐 목록 ∩ 끈 목록 = 0)",
+      not (C.QUEUED_CONTENT_TYPES & C.DISABLED_CONTENT_TYPES),
+      str(sorted(c.value for c in
+                 (C.QUEUED_CONTENT_TYPES & C.DISABLED_CONTENT_TYPES))))
+# 변이시험 — 끈 목록에서 하나를 빼면 이 검사가 정말 잡는가.
+_saved_dis = C.DISABLED_CONTENT_TYPES
+try:
+    C.DISABLED_CONTENT_TYPES = frozenset({ContentType.MORNING})   # 실제로 나가는 것
+    _mut = sorted({i.content_type.value for i in _all_items
+                   if i.content_type in C.DISABLED_CONTENT_TYPES})
+    check("  ↳ 변이시험 — 나가고 있는 콘텐츠를 '껐다'고 하면 잡는다", bool(_mut))
+finally:
+    C.DISABLED_CONTENT_TYPES = _saved_dis
+check("  ↳ 변이시험 뒤 목록이 원래대로 돌아왔다",
+      C.DISABLED_CONTENT_TYPES == _saved_dis)
+import render_v5 as _R5NB                                    # noqa: E402
+check("  ↳ 되돌리는 길이 한 줄로 남아 있다 (렌더·계약 코드는 지우지 않았다)",
+      hasattr(_R5NB, "night_card") and ContentType.NIGHT_BRIEF in C.GRACE_SECONDS)
+# 나머지도 같은 기대다 — 리그끼리 절대 안 겹친다.
 _clash = [(a, b, sorted(_keys_own[a] & _keys_own[b])[:2])
           for a in _keys_own for b in _keys_own
           if a < b and (_keys_own[a] & _keys_own[b])]
-check("나이트 브리핑을 뺀 키는 리그 간 충돌 0", not _clash, str(_clash[:2]))
+check("나이트 브리핑을 뺀 키도 리그 간 충돌 0", not _clash, str(_clash[:2]))
 
 # 같은 리그·같은 날 안에서도 종류가 다르면 키가 달라야 한다. 안 그러면
 # 결과 카드가 나간 뒤 순위표가 '이미 보냄'으로 조용히 사라진다
@@ -508,55 +536,114 @@ check("전 리그가 시즌 표에 등록됨",
       set(C.SEASON_MONTHS) == set(League),
       str([l.value for l in League if l not in C.SEASON_MONTHS]))
 
-# ── 9. 시작 알림 = 리그 하루 한 통 (v1.11c) ────────────────────
-print("\n9. 시작 알림 — 도배가 아니라 하루 한 통인가")
+# ── 9. 경기 예고 = 리그 하루 한 장 (v1.11c → v1.15) ─────────────
+print("\n9. 경기 예고 — 도배가 아니라 하루 한 장인가")
 # 사고: 같은 시각(±5분) 경기를 묶어 시각마다 보냈더니 실측 **하루 26건**,
 # 그중 17건이 MLB 새벽 1~3시대였다. 새벽에 열일곱 번 울리는 채널은 구독자가 나간다.
+# 그 규칙("리그 하루 한 장")은 시작 알림이 지키던 것이고, 2026-09-07에
+# **경기 예고**가 그대로 이어받았다 — 시작 알림은 껐다(같은 목록을 두 번 말했다).
 from contract import day_schedule_scope, START_ALERT_LEAD_MINUTES
 
-# NOW는 2026-08-29 07:00 KST다. 경기는 그 뒤여야 알림이 미래에 잡힌다
+# NOW는 2026-08-29 07:00 KST다. 경기는 그 뒤여야 예고가 미래에 잡힌다
 # (과거 예약은 큐가 걸러낸다 — 그것도 정상 동작이다).
 _many = ([mkgame(League.MLB, "NYY", "BOS", day="2026-08-29", hh=h)
           for h in (12, 14, 17, 20, 23)]
          + [mkgame(League.MLB, "LAD", "SF", day="2026-08-29", hh=h)
             for h in (12, 17, 23)])
 _q = T.build_all_queues({"MLB": _many}, NOW, "-100test")
-_sa = [i for i in _q if i.content_type is ContentType.START_ALERT]
-check(f"경기 {len(_many)}건 · 시작 알림 {len(_sa)}건 (하루 한 통)", len(_sa) == 1,
-      f"{len(_sa)}건 — 도배")
-check("scope에 리그와 날짜가 들어간다",
-      bool(_sa) and _sa[0].scope == "MLB:2026-08-29", _sa[0].scope if _sa else "")
+_sa = [i for i in _q if i.content_type is ContentType.MORNING]
+# ⚠️ **2026-09-07: '하루 한 장'에서 '시간대 덩어리마다 한 장'으로 바뀌었다.**
+# 유럽 5대리그가 하루 19~22시간에 걸쳐 열려, 한 장으로 예고하면 "2시간 전"이
+# 마지막 경기에는 22시간 전이 된다. 대표님이 *"시간대별로 쪼갠다"*로 정했다.
+# 시험 데이터는 12·14·17·20·23시라 3시간 규칙으로 갈린다.
+_want = len(C.preview_buckets(_many))
+check(f"경기 {len(_many)}건 · 경기 예고 {len(_sa)}건 (시간대 덩어리 {_want}개)",
+      len(_sa) == _want, f"{len(_sa)}건 vs 덩어리 {_want}개")
+# **도배 방지는 여전히 살아 있어야 한다** — 옛 시작 알림은 시각마다 보내
+# 하루 26건을 냈고 그래서 접었다. 덩어리는 경기 수보다 반드시 적다.
+check("★ 예고 장수가 경기 수보다 적다 (경기마다 한 장이면 도배로 되돌아간 것)",
+      len(_sa) < len(_many), f"예고 {len(_sa)} vs 경기 {len(_many)}")
+check("scope에 리그·날짜·묶음이 들어간다",
+      bool(_sa) and all(i.scope.startswith("MLB:2026-08-29#") for i in _sa),
+      str([i.scope for i in _sa])[:120])
+check("  ↳ 묶음마다 scope가 다르다 (같으면 둘째 예고가 '이미 보냄'으로 사라진다)",
+      len({i.scope for i in _sa}) == len(_sa))
+# 3시간 안에 붙어 있으면 한 덩어리다 — 쪼개기가 지나치지 않은지 본다.
+_tight = [mkgame(League.MLB, "NYY", "BOS", day="2026-08-29", hh=h)
+          for h in (12, 13, 14)]
+check("★ 3시간 안에 붙은 경기는 한 장으로 묶인다 (지나치게 쪼개지 않는다)",
+      len(C.preview_buckets(_tight)) == 1,
+      str([k for k, _ in C.preview_buckets(_tight)]))
 
-# 첫 경기 기준으로 리드타임만큼 앞서 예약되는가
+# ── 심야 회피가 만든 겹침을 병합하는가 (2026-09-07) ────────────
+#
+# 새벽 경기의 예고는 전날 밤으로 앞당겨진다. 그러다 보면 **앞 덩어리의
+# 예고와 몇 분 차로 겹친다.** 실측 리그1 2026-09-13:
+#   00:15 경기 → 예고 22:15   ·   03:45 경기 → 예고 22:00(심야 회피)
+# 15분 차에 두 장이면 쪼갠 뜻이 없고 도배만 된다.
+# `mkgame(hh=N)`은 **한국시각 N:30**을 만든다.
+#   00:30 경기 → 예고 22:30 (전날, 심야 아님)
+#   03:30 경기 → 예고 01:30 → 심야(00~06)라 **전날 22:00**으로 회피
+# 두 예고가 30분 차라 병합 대상이다. 시작 시각은 3시간 차라 원래 다른 덩어리다.
+_l1 = ([mkgame(League.MLB, "AAA", "BBB", day="2026-09-13", hh=0)]
+       + [mkgame(League.MLB, "CCC", "DDD", day="2026-09-13", hh=3)]
+       + [mkgame(League.MLB, "EEE", "FFF", day="2026-09-13", hh=20)])
+_raw = C.preview_buckets(_l1)
+_lead = P.PREVIEW_BEFORE_FIRST_SECONDS
+_mrg = C.preview_buckets(_l1, lead_seconds=_lead)
+check("★★ 예약 시각이 붙은 덩어리는 하나로 합친다",
+      len(_mrg) <= len(_raw), f"시작기준 {len(_raw)}개 → 예약기준 {len(_mrg)}개")
+_ats = sorted(C.preview_at(min(x.start_utc for x in b), _lead) for _k, b in _mrg)
+_gaps = [(_ats[i + 1] - _ats[i]).total_seconds() for i in range(len(_ats) - 1)]
+check("★★ 남은 예고끼리는 30분 넘게 떨어져 있다 (연달아 두 장이 안 나간다)",
+      all(g > C.PREVIEW_MERGE_WITHIN_SECONDS for g in _gaps),
+      str([f"{g / 60:.0f}분" for g in _gaps]))
+check("  ↳ 병합해도 경기가 사라지지 않는다 (합친 뒤 총 경기 수가 같다)",
+      sum(len(b) for _k, b in _mrg) == len(_l1),
+      f"{sum(len(b) for _k, b in _mrg)} vs {len(_l1)}")
+# 변이시험 — 병합을 끄면(예약 시각을 안 보면) 겹침이 실제로 남는가.
+_ats_raw = sorted(C.preview_at(min(x.start_utc for x in b), _lead)
+                  for _k, b in _raw)
+_gaps_raw = [(_ats_raw[i + 1] - _ats_raw[i]).total_seconds()
+             for i in range(len(_ats_raw) - 1)]
+check("  ↳ 변이시험 — 병합을 안 하면 30분 안에 겹치는 쌍이 실제로 생긴다",
+      any(g <= C.PREVIEW_MERGE_WITHIN_SECONDS for g in _gaps_raw),
+      str([f"{g / 60:.0f}분" for g in _gaps_raw]))
+
+# ★★ **첫 경기 30분 전** — 종료 흐름(마지막 속보 + 30분)의 거울상이다.
 _first = min(g.start_utc for g in _many)
 if _sa:
     lead = (_first - _sa[0].scheduled_utc).total_seconds() / 60
-    check(f"첫 경기 {START_ALERT_LEAD_MINUTES}분 전 예약", abs(lead - START_ALERT_LEAD_MINUTES) < 1,
-          f"{lead:.0f}분")
+    # **최소 리드타임**을 본다 — 심야 회피가 걸리면 더 **일찍** 나갈 수 있다.
+    # (MLB 실측: 첫 경기 05:10 KST → 전날 22:00, 7.2시간 전)
+    check(f"★★ 첫 경기보다 적어도 {P.PREVIEW_BEFORE_FIRST_SECONDS // 60}분 앞선다",
+          lead >= P.PREVIEW_BEFORE_FIRST_SECONDS / 60 - 1, f"{lead:.0f}분")
+    # ⚠️ **앞뒤 간격이 같으면 안 된다 (2026-09-07 대표님 지적).**
+    # 처음에 둘 다 30분으로 뒀다가 바로잡혔다:
+    #   *"경기시작전에는 빨리 정보를 확인하고싶고 경기종료후에는 빨리 결과를
+    #     확인하고 싶어하니까"* — 같아야 하는 것은 **구조**이지 숫자가 아니다.
+    check("★ 예고는 정리판보다 훨씬 일찍 나간다 (앞뒤는 보는 마음이 반대다)",
+          P.PREVIEW_BEFORE_FIRST_SECONDS > P.RESULT_AFTER_LAST_FLASH_SECONDS,
+          f"예고 {P.PREVIEW_BEFORE_FIRST_SECONDS}초 vs "
+          f"정리판 {P.RESULT_AFTER_LAST_FLASH_SECONDS}초")
+    check("  ↳ 첫 경기보다 **앞**이다 (예고가 시작 뒤에 나가면 예고가 아니다)",
+          _sa[0].scheduled_utc < _first)
 
-# 한 통에 그날 경기가 다 들어가야 한다 — 빠지면 '하루 한 통'이 정보 손실이 된다
-_txt = P.render_start_alert(_many, _first - timedelta(minutes=START_ALERT_LEAD_MINUTES))
-check("한 통에 전 경기가 들어간다", _txt.count("vs") == len(_many),
-      f"{_txt.count('vs')}/{len(_many)}")
-check("시각별로 묶여 있다", _txt.count("◆") == len({g.start_kst.strftime('%H:%M') for g in _many}))
-check("텔레그램 텍스트 상한 안", len(_txt) <= 4096, f"{len(_txt)}자")
-check("경기가 많으면 접고펼치기", "<blockquote expandable>" in _txt)
-check("첫 경기까지 남은 시간을 적는다", "시작" in _txt)
-
-# 두 리그가 같은 날이면 서로 다른 통이어야 한다
+# 두 리그가 같은 날이면 서로 다른 장이어야 한다
 _two = T.build_all_queues(
     {"MLB": _many, "KBO": [mkgame(League.KBO, "LG", "OB", day="2026-08-29", hh=18)]},
     NOW, "-100test")
-_sa2 = [i for i in _two if i.content_type is ContentType.START_ALERT]
-check("두 리그면 두 통 (서로 안 덮음)", len(_sa2) == 2, f"{len(_sa2)}건")
-check("멱등키도 다르다", len({i.idem_key for i in _sa2}) == 2)
+_sa2 = [i for i in _two if i.content_type is ContentType.MORNING]
+_kbo_pv = [i for i in _sa2 if i.league is League.KBO]
+check("두 리그가 섞여도 리그마다 자기 예고를 갖는다",
+      len(_kbo_pv) == 1 and len(_sa2) == len(_sa) + 1,
+      f"KBO {len(_kbo_pv)} · 전체 {len(_sa2)}")
+check("멱등키가 전부 다르다 (하나라도 겹치면 그 장이 사라진다)",
+      len({i.idem_key for i in _sa2}) == len(_sa2))
 
-# 이미 끝난 경기는 시간표에 안 들어간다
-_mixed = _many + [mkgame(League.MLB, "CHC", "STL", day="2026-08-29", hh=10,
-                         status=Status.FINAL, score=Score(4, 2, ScoreUnit.RUNS))]
-_q3 = T.build_all_queues({"MLB": _mixed}, NOW, "-100test")
-_sa3 = [i for i in _q3 if i.content_type is ContentType.START_ALERT]
-check("종료된 경기는 시작 알림 대상이 아니다", len(_sa3) == 1)
+# 끈 시작 알림이 되살아나지 않았는지 — 같은 데이터로 확인한다.
+check("시작 알림은 만들어지지 않는다 (껐다)",
+      not [i for i in _q if i.content_type is ContentType.START_ALERT])
 
 # ── 10. 폰트 게이트 — 두부 카드를 막는가 ──────────────────────
 # 개발 컴퓨터에는 한글 폰트가 있고 **서버(ubuntu-latest)에는 없다.**
@@ -650,6 +737,23 @@ for _pd in ("2026-08-26", "2026-08-27"):
 for _g in _full["KBO"]:
     if _g.status is Status.FINAL:
         _g.meta.first_final_at = T._iso(NOW - timedelta(minutes=3))
+
+# **선발 라인업(v1.17)도 같은 이유로 표본이 필요하다.** 예약 시각이 시계가
+# 아니라 '명단을 처음 본 시각'이라, `lineup_seen_at`이 찍힌 경기가 표본에
+# 없으면 그 종류가 통째로 안 잡힌다 — 위 속보와 판박이다.
+# 축구 리그로 넣는다: 카드가 포메이션과 22명을 실제로 그려야 통과한다.
+_EPL_DAY = "2026-08-29"
+_lug = mkgame(League.EPL, "ARS", "CHE", day=_EPL_DAY, hh=23)
+_lug.meta.lineup = {
+    side: {"formation": "4231",
+           "rows": [[f"{side[0].upper()}선수{_i}"] if _i == 0 else
+                    [f"{side[0].upper()}선수{_i}-{_j}" for _j in range(_n)]
+                    for _i, _n in enumerate((1, 4, 2, 3, 1))]}
+    for side in ("home", "away")}
+# 킥오프보다 넉넉히 앞서 관측된 것으로 둔다 — 큐가 '킥오프 15분 전까지
+# 관측된 것'만 만들기 때문이다(그 경계 자체는 아래 12-B에서 따로 친다).
+_lug.meta.lineup_seen_at = T._iso(NOW - timedelta(minutes=3))
+_full["EPL"] = [_lug]
 _items = T.build_all_queues(_full, NOW, "-100test")
 _kinds = {i.content_type for i in _items}
 check(f"큐에 오르는 {len(QUEUED_CONTENT_TYPES)}종이 다 오른다 ({len(_items)}건)",
@@ -726,15 +830,19 @@ check(f"{len(QUEUED_CONTENT_TYPES)}종이 모두 실제로 만들어진다",
       {c.value for c in QUEUED_CONTENT_TYPES} <= set(_made),
       f"만들어짐={sorted(set(_made))} 비어서건너뜀={sorted(set(_empty))}")
 
-# 시작 알림은 사진 없이 글만 나간다 — 그 형태까지 확인한다
-_sa = next(i for i in _items if i.content_type is ContentType.START_ALERT)
-_sr = T.render_for(_sa, _full[_sa.league.value])
-check("시작 알림은 사진 없이 글만", _sr is not None and _sr[0] == [] and _sr[1])
-check("시작 알림 글에 팀 이름이 들어간다",
-      bool(_sr) and any("KT" in p or "SS" in p for p in _sr[1]), str(_sr[1])[:120])
-# 새 4종은 카드(사진)로 나간다 — 글만 나가면 디자인이 통째로 빠진 것이다
+# **경기 예고는 카드(사진)로 나간다.** 예전 시작 알림은 텍스트였고, 껐다 —
+# 같은 목록을 이미지와 텍스트로 두 번 말하고 있었기 때문이다.
+_pv = next((i for i in _items if i.content_type is ContentType.MORNING), None)
+check("경기 예고가 큐에 있다", _pv is not None)
+if _pv is not None:
+    _pr = T.render_for(_pv, _full[_pv.league.value])
+    check("★ 경기 예고는 사진으로 나간다 (텍스트 목록으로 되돌아가지 않는다)",
+          _pr is not None and bool(_pr[0]), str(_pr)[:100] if _pr else "None")
+    check("  ↳ 캡션도 함께 나간다 (비면 푸시에 '사진'만 뜬다)",
+          bool(_pr) and bool(_pr[1]) and bool(str(_pr[1][0]).strip()))
+# 나머지 카드도 사진으로 나간다 — 글만 나가면 디자인이 통째로 빠진 것이다
 for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
-            ContentType.NIGHT_BRIEF, ContentType.ANALYSIS):
+            ContentType.ANALYSIS):
     _one = next((i for i in _items if i.content_type is _ct), None)
     _gs = (_allg if _one is not None and _one.league is None
            else _full.get(_one.league.value, []) if _one is not None else [])
@@ -755,19 +863,29 @@ _RECORD_ONLY = {ContentType.STANDINGS, ContentType.LEADERBOARD, ContentType.ANAL
 # v1.11k: NPB 기록 어댑터(npb_records)를 추가해 표가 둘로 늘었다.
 # **이 검사는 값을 못 박는 것이 목적이 아니라, 표가 늘 때 아래 검사도 함께
 # 넓히도록 강제하는 것이 목적이다.** 실제로 NPB를 넣자 이 검사가 먼저 걸렸다.
-check("기록 소스 표가 실제 어댑터와 일치한다",
+check("순위표·리더보드 카드가 나가는 리그 표",
       P.RECORD_SOURCE_LEAGUES == frozenset({League.KBO, League.NPB}),
       str(sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)))
-check("기록 소스에 실제 어댑터가 있다",
-      set(T._record_jobs()) == {l.value for l in P.RECORD_SOURCE_LEAGUES},
-      f"어댑터 {sorted(T._record_jobs())} vs 표 "
-      f"{sorted(l.value for l in P.RECORD_SOURCE_LEAGUES)}")
+# ── v1.16: **기록을 받는 리그**와 **순위표 카드가 나가는 리그**가 갈렸다 ──
+# 분석은 순위+팀지표만 있으면 되지만, 순위표 카드는 MLB 지구 6개·K리그 부문
+# 없음 같은 사정이 걸린다. 그래서 표를 둘로 나눴다.
+check("★★ 분석 리그가 전부 기록 어댑터를 갖는다 (없으면 큐만 쌓이고 카드는 안 나온다)",
+      {l.value for l in P.ANALYSIS_LEAGUES} <= set(T._record_jobs()),
+      f"어댑터 {sorted(T._record_jobs())} vs 분석 "
+      f"{sorted(l.value for l in P.ANALYSIS_LEAGUES)}")
+check("★ 순위표 리그는 분석 리그의 부분집합이다 (순위표만 있고 분석이 없는 리그는 없다)",
+      P.RECORD_SOURCE_LEAGUES <= P.ANALYSIS_LEAGUES,
+      str(sorted(l.value for l in (P.RECORD_SOURCE_LEAGUES - P.ANALYSIS_LEAGUES))))
+check("★ 기록 어댑터에 분석 대상이 아닌 리그가 없다 (죽은 수집 금지 — 약점 53)",
+      set(T._record_jobs()) <= {l.value for l in P.ANALYSIS_LEAGUES},
+      str(sorted(set(T._record_jobs()) - {l.value for l in P.ANALYSIS_LEAGUES})))
 
+# **기록이 정말 없는 리그로 시험한다.** K리그는 v1.16에서 기록이 생겼으므로
+# 더 이상 이 표본이 아니다 — 낡은 표본을 두면 검사가 헛돈다(약점 106).
 _norec = {
-    "KL1": [mkgame(League.KL1, "K01", "K02", day=_day, hh=19),
-            mkgame(League.KL1, "K03", "K04", day=_day, hh=14, status=Status.FINAL,
-                   score=Score(2, 1, ScoreUnit.GOALS))],
-    "KBL": [mkgame(League.KBL, "SK", "LG", day=_day, hh=19)],
+    "KBL": [mkgame(League.KBL, "SK", "LG", day=_day, hh=19),
+            mkgame(League.KBL, "DB", "KC", day=_day, hh=14, status=Status.FINAL,
+                   score=Score(88, 80, ScoreUnit.POINTS))],
 }
 _nq = T.build_all_queues(_norec, NOW, "-100test")
 _leak = sorted({f"{i.league.value if i.league else 'ALL'}/{i.content_type.value}"
@@ -778,9 +896,10 @@ check("기록이 없는 리그에는 순위·리더보드·분석이 큐에 오�
 check("기록이 있는 리그(KBO)에는 세 가지가 실제로 오른다",
       _RECORD_ONLY <= {i.content_type for i in _items},
       str(sorted(c.value for c in (_RECORD_ONLY - {i.content_type for i in _items}))))
-# 기록이 없는 리그도 나이트 브리핑에는 참여한다 (통합 카드라 리그를 안 가린다)
-check("기록이 없는 리그도 나이트 브리핑은 만든다 (통합 카드)",
-      ContentType.NIGHT_BRIEF in {i.content_type for i in _nq})
+# 기록이 없는 리그도 **결과 정리판**은 만든다 — 정리판은 순위·기록이 아니라
+# 그날 경기만 있으면 그릴 수 있다. (나이트는 껐다 — 위 참고.)
+check("기록이 없는 리그도 결과 정리판은 만든다",
+      ContentType.LEAGUE_RESULT in {i.content_type for i in _nq})
 
 # ── 11c. 예약 시각 — 약속한 시각에 잡히는가 ────────────────────
 # 카드마다 '언제 나간다'가 약속돼 있다. 여기가 틀어지면 아무 오류 없이
@@ -790,31 +909,80 @@ print("\n11c. 예약 시각 — 나이트 23:00 · 리더보드 12:00 · 분석 
 # 검사하면 상수를 바꾸는 순간 검사도 같이 따라가서 아무것도 못 잡는다 —
 # 검증이 코드를 되풀이해 읽을 뿐 약속을 지키는지는 안 보게 된다.
 _NB_HOUR, _LB_HOUR, _AN_LEAD_H = 23, 12, 3
-check("파이프라인 상수가 약속과 같다 (23시 · 12시 · -3시간)",
-      (P.NIGHT_BRIEF_HOUR_KST, P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS)
-      == (_NB_HOUR, _LB_HOUR, _AN_LEAD_H),
-      f"{P.NIGHT_BRIEF_HOUR_KST}/{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
-_nb_at = [i.scheduled_utc.astimezone(KST) for i in _items
-          if i.content_type is ContentType.NIGHT_BRIEF]
-check(f"나이트 브리핑은 23:00 KST ({len(_nb_at)}건)",
-      bool(_nb_at) and all((t.hour, t.minute) == (_NB_HOUR, 0) for t in _nb_at),
-      str([f"{t:%H:%M}" for t in _nb_at[:3]]))
+check("파이프라인 상수가 약속과 같다 (12시 · -3시간)",
+      (P.LEADERBOARD_HOUR_KST, P.ANALYSIS_LEAD_HOURS) == (_LB_HOUR, _AN_LEAD_H),
+      f"{P.LEADERBOARD_HOUR_KST}/{P.ANALYSIS_LEAD_HOURS}")
+# 나이트 브리핑(23:00)은 껐다 — 그 자리를 결과 정리판이 맡는다.
+# **정리판은 고정 시각이 아니다**: 그 리그 마지막 경기 속보 + 30분이라
+# 리그마다·날마다 다르다. 그래서 여기서는 시각이 아니라 **늦춤의 규칙**을 본다.
+check(f"정리판 늦춤이 약속과 같다 ({P.RESULT_AFTER_LAST_FLASH_SECONDS // 60}분)",
+      P.RESULT_AFTER_LAST_FLASH_SECONDS == 30 * 60,
+      str(P.RESULT_AFTER_LAST_FLASH_SECONDS))
+check("나이트 브리핑은 큐에 오르지 않는다 (껐다)",
+      not [i for i in _items if i.content_type is ContentType.NIGHT_BRIEF])
 _lb_at = [i.scheduled_utc.astimezone(KST) for i in _items
           if i.content_type is ContentType.LEADERBOARD]
 check(f"리더보드는 12:00 KST ({len(_lb_at)}건)",
       bool(_lb_at) and all((t.hour, t.minute) == (_LB_HOUR, 0) for t in _lb_at),
       str([f"{t:%H:%M}" for t in _lb_at[:3]]))
 _an = [i for i in _items if i.content_type is ContentType.ANALYSIS]
+# ── 분석은 **그날 전 경기를 묶음마다 한 장**이다 (v1.15f) ──────────
+# 전에는 `pick_analysis_game`(그날 첫 경기) 하나만 봤다. 야구는 대부분
+# 동시 시작이라 그 검사는 새 동작에서도 우연히 통과한다 — 그래서 여기를
+# **묶음 기준으로 다시 쓴다**(약점 98: 낡은 검증이 버그를 정상이라 보증한다).
 _an_bad = []
 for _it in _an:
-    _target = P.pick_analysis_game([g for g in _full[_it.league.value]
-                                    if g.sports_day == _it.sports_day])
-    if (_target is None
-            or _it.scheduled_utc != _target.start_utc
-            - timedelta(hours=_AN_LEAD_H)):
-        _an_bad.append(f"{_it.sports_day} {_it.scheduled_utc:%H:%M}")
-check(f"분석 카드는 그날 주목 경기 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
+    _bi = int(_it.scope.rsplit("#", 1)[1]) if "#" in _it.scope else -1
+    _bt = P.analysis_batches([g for g in _full[_it.league.value]
+                              if g.sports_day == _it.sports_day])
+    if _bi < 0 or _bi >= len(_bt):
+        _an_bad.append(f"{_it.scope} 묶음번호 없음/범위밖"); continue
+    if _it.scheduled_utc != _bt[_bi][0].start_utc - timedelta(hours=_AN_LEAD_H):
+        _an_bad.append(f"{_it.scope} {_it.scheduled_utc:%H:%M}")
+check(f"분석 카드는 **그 묶음 첫 경기** 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
       bool(_an) and not _an_bad, str(_an_bad[:3]))
+check("★★ scope에 묶음 번호가 있다 (없으면 여러 장이 서로를 덮어쓴다)",
+      bool(_an) and all("#" in i.scope for i in _an),
+      str([i.scope for i in _an[:3]]))
+check("★ 멱등키가 묶음마다 다르다",
+      len({i.idem_key for i in _an}) == len(_an))
+# ★★ 그날 전 경기가 빠짐없이 어느 한 묶음에 들어간다
+_cov_bad = []
+for _lgv, _gs in _full.items():
+    for _d in {g.sports_day for g in _gs}:
+        _dd = [g for g in _gs if g.sports_day == _d and g.status is Status.SCHEDULED]
+        if not _dd:
+            continue
+        _flat = [g.game_id for b in P.analysis_batches(_dd) for g in b]
+        if sorted(_flat) != sorted(g.game_id for g in _dd) or len(set(_flat)) != len(_flat):
+            _cov_bad.append(f"{_lgv} {_d}")
+check("★★ 묶음이 그날 예정 경기를 빠짐없이·중복 없이 덮는다", not _cov_bad,
+      str(_cov_bad[:3]))
+check(f"★ 한 장에 {P.ANALYSIS_PER_CARD}경기를 넘지 않는다 (우겨넣지 않는다)",
+      all(len(b) <= P.ANALYSIS_PER_CARD
+          for _lgv, _gs in _full.items()
+          for _d in {g.sports_day for g in _gs}
+          for b in P.analysis_batches([g for g in _gs if g.sports_day == _d])))
+# ★★ 변이시험 — **표본을 직접 만들어 무조건 돌린다.**
+# 실데이터에 기대면 그날 경기가 적을 때 이 검사가 조용히 건너뛴다(약점 106:
+# 표본이 그 검사를 의미 있게 만드는지 먼저 확인한다).
+class _AnG:
+    def __init__(self, i):
+        self.status = Status.SCHEDULED
+        self.game_id = f"g{i:02d}"
+        self.start_utc = datetime(2026, 9, 8, 9, 30, tzinfo=timezone.utc)
+
+
+_big = [_AnG(i) for i in range(7)]
+_bt7 = P.analysis_batches(_big)
+check("★★ 7경기는 여러 장으로 나뉜다 (한 장에 몰아넣지 않는다)",
+      len(_bt7) == 3 and [len(b) for b in _bt7] == [3, 3, 1],
+      str([len(b) for b in _bt7]))
+check("★★ 변이시험 — 안 나누면 한 장에 7경기가 다 들어간다 (지금은 안 그렇다)",
+      len(_big) > P.ANALYSIS_PER_CARD
+      and max(len(b) for b in _bt7) <= P.ANALYSIS_PER_CARD)
+check("  ↳ 나눠도 순서가 유지된다 (번호가 그날 순서와 어긋나면 카드가 거짓말한다)",
+      [g.game_id for b in _bt7 for g in b] == [g.game_id for g in _big])
 # 분석은 경기가 시작된 뒤에 나가면 '분석'이 아니라 뒷북이다 — 예약이 늘 경기 앞이다
 check("분석 카드 예약은 반드시 경기 시작 전",
       all(i.scheduled_utc < min(g.start_utc for g in _full[i.league.value]
@@ -1032,6 +1200,19 @@ C.GRACE_SECONDS[ContentType.MORNING] = _saved
 _sim_day = "2026-08-31"
 _sim = {"KBO": [mkgame(League.KBO, "LG", "OB", day=_sim_day, hh=18),
                 mkgame(League.KBO, "KT", "SS", day=_sim_day, hh=18)]}
+# **선발 라인업(v1.17)을 여기 넣는 것이 요점이다.** 계약 주석은 "라인업은
+# 안전망 없이 자기 창(4시간)만으로 뜸한 시계를 견딘다"고 주장한다 —
+# 그 주장을 실제로 치는 자리가 여기다. 넣지 않으면 주장이 검사되지 않은 채
+# 남는다(약점 50: 검사 목록에 없는 것은 게이트 밖이다).
+_sim_lu = mkgame(League.EPL, "ARS", "CHE", day=_sim_day, hh=23)
+_sim_lu.meta.lineup = {s: {"formation": "433",
+                           "rows": [["GK"], ["D1", "D2", "D3", "D4"],
+                                    ["M1", "M2", "M3"], ["F1", "F2", "F3"]]}
+                       for s in ("home", "away")}
+# 킥오프 80분 전에 관측된 것으로 둔다 — 실측한 발표 시점(약 1시간 전)에 맞춘 값이고,
+# 큐 조건('킥오프 15분 전까지')도 넉넉히 통과한다.
+_sim_lu.meta.lineup_seen_at = T._iso(_sim_lu.start_utc - timedelta(minutes=80))
+_sim["EPL"] = [_sim_lu]
 _base = datetime(2026, 8, 30, 20, 0, tzinfo=timezone.utc)   # KST 05:00
 _seen: set = set()
 for _step in range(20):                                     # 100분 x 20 = 33시간
@@ -1044,7 +1225,8 @@ for _step in range(20):                                     # 100분 x 20 = 33�
 
 check(f"모닝 브리핑이 100분 시계에 걸린다", ContentType.MORNING in _seen,
       str(sorted(c.value for c in _seen)))
-check("시작 알림이 100분 시계에 걸린다", ContentType.START_ALERT in _seen,
+# 시작 알림은 껐다 — 그 자리를 **경기 예고**가 맡는다(리그 하루 한 장).
+check("경기 예고가 100분 시계에 걸린다", ContentType.MORNING in _seen,
       str(sorted(c.value for c in _seen)))
 check("결과 카드가 100분 시계에 걸린다", ContentType.LEAGUE_RESULT in _seen,
       str(sorted(c.value for c in _seen)))
@@ -1763,25 +1945,45 @@ _pg_now = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)     # KST 12:00
 _pgq = P.build_queue(_pg_games, _pg_now, "-100test", floor_hours=0)
 _kick = [i for i in _pgq if i.content_type is ContentType.KICKOFF]
 
-check(f"경기마다 킥오프가 하나씩 잡힌다 ({len(_kick)}건 / 경기 {len(_pg_games)}개)",
-      len(_kick) == len(_pg_games), str([i.scope for i in _kick]))
-check("★★ 킥오프 멱등키가 경기마다 전부 다르다 (같으면 한 경기만 나가고 나머지가 먹힌다)",
+# ⚠️ **2026-09-07: 킥오프가 '경기마다'에서 '같은 시각 묶음마다'로 바뀌었다.**
+# 대표님 지시: *"같은시간에 시작하는 경기는, 묶어서 시작 직전 알림카드 보내자"*.
+# 경기마다 한 장이면 동시 시작이 그대로 도배가 된다 —
+# 유로파 18경기가 04:00에 함께 시작하고 KBO 5경기는 전부 17:00이다.
+# 시험 표본은 18:30×2 + 14:30×1이라 **2묶음**이 정답이다.
+_want_kick = len({C.start_alert_bucket(g) for g in _pg_games})
+check(f"같은 시각 경기가 한 장으로 묶인다 ({len(_kick)}건 / 경기 {len(_pg_games)}개 "
+      f"· 시각 {_want_kick}종)", len(_kick) == _want_kick,
+      str([i.scope for i in _kick]))
+check("★★ 킥오프 멱등키가 묶음마다 전부 다르다 (같으면 한 묶음만 나가고 나머지가 먹힌다)",
       len({i.idem_key for i in _kick}) == len(_kick),
       str(sorted(i.idem_key for i in _kick))[:200])
-check("킥오프 항목이 자기 경기를 들고 다닌다 (더블헤더에서 엉뚱한 경기를 그리지 않게)",
-      {i.game_id for i in _kick} == {g.game_id for g in _pg_games})
+# **키에서 경기 식별자가 빠졌어도 중복은 여전히 구조적으로 막힌다** —
+# 리그·날짜·시각이 유일하기 때문이다. 오히려 시각 고정이 더 안전하다:
+# 묶음 안의 한 경기가 취소돼 내용이 바뀌어도 키가 그대로라 재발송이 안 된다.
+check("★★ 킥오프 scope가 리그·날짜·시각으로 유일하다",
+      all(i.scope.startswith("KBO:2026-08-29@") for i in _kick)
+      and len({i.scope for i in _kick}) == len(_kick),
+      str([i.scope for i in _kick]))
+check("  ↳ 같은 시각 경기는 같은 묶음에 들어간다 (한 장에 다 실린다)",
+      len(_kick) < len(_pg_games),
+      f"묶음 {len(_kick)} vs 경기 {len(_pg_games)}")
 
 # ── 예약 시각 — 창이 [T-10분, T-1분]인가 ──────────────────────
-_by_gid = {g.game_id: g for g in _pg_games}
+# 묶음이 된 뒤로는 `game_id`가 대표 경기일 뿐이므로, **그 묶음의 첫 경기**로 잰다.
+_bucket_first = {}
+for g in _pg_games:
+    _k = C.start_alert_bucket(g)
+    if _k not in _bucket_first or g.start_utc < _bucket_first[_k]:
+        _bucket_first[_k] = g.start_utc
 _lead_ok = all(
-    abs((_by_gid[i.game_id].start_utc - i.scheduled_utc).total_seconds()
+    abs((_bucket_first[i.scope] - i.scheduled_utc).total_seconds()
         - C.KICKOFF_LEAD_SECONDS) < 1 for i in _kick)
 check(f"★ 킥오프 예약이 경기 시작 {C.KICKOFF_LEAD_SECONDS // 60}분 전이다", _lead_ok,
-      str([(str(i.scheduled_utc), str(_by_gid[i.game_id].start_utc)) for i in _kick][:1]))
+      str([(str(i.scheduled_utc), str(_bucket_first[i.scope])) for i in _kick][:1]))
 check("★★ 창 끝(예약+유예)이 경기 시작보다 앞이다 — 경기 시작 이후 발송이 구조적으로 불가능",
       all(i.scheduled_utc
           + timedelta(seconds=C.GRACE_SECONDS[ContentType.KICKOFF])
-          < _by_gid[i.game_id].start_utc for i in _kick))
+          < _bucket_first[i.scope] for i in _kick))
 check("킥오프에 앞창이 없다 ('10분 뒤 시작'이 일찍 나가면 거짓말)",
       C.LOOKAHEAD_SECONDS_BY_CONTENT.get(ContentType.KICKOFF) == 0)
 

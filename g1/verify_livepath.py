@@ -283,28 +283,34 @@ _missing = [ct.value for ct in C.QUEUED_CONTENT_TYPES
 check("큐에 오르는 콘텐츠는 전부 render_for에 분기가 있다",
       not _missing, " · ".join(_missing))
 
-# **나이트 브리핑은 리그가 없는 유일한 카드다** — 부르는 쪽이 item.league로
-# 고른 리그 스냅샷은 항상 비어 있다. 그 상태로도 만들어져야 한다.
-# (v1.11m 이전에는 문지기에 걸려 한 장도 못 만들었다.)
+# ── 그 리그의 하루를 닫는 **정리판**이 실제로 만들어지는가 ──────────
+#
+# 2026-09-07까지 이 자리는 나이트 브리핑을 봤다. 나이트는 껐고(리그별로
+# 나눠 보니 정리판과 같은 자리에 섰다), 그 역할을 결과 정리판이 맡는다.
+# 여기서 보는 것은 그대로다: **큐에 오르고, 실제로 그려지는가.**
 _nb_day = datetime.now(timezone.utc).astimezone(C.KST).strftime("%Y-%m-%d")
 _nb_games = [mkgame(League.KBO, "LG", "OB", _nb_day, 18, Status.FINAL,
                     Score(5, 3, ScoreUnit.RUNS))]
 _nb_item = next((i for i in T.build_all_queues({"KBO": _nb_games},
                                                datetime.now(timezone.utc), "chTEST")
-                 if i.content_type is ContentType.NIGHT_BRIEF), None)
-check("나이트 브리핑이 큐에 오른다", _nb_item is not None)
+                 if i.content_type is ContentType.LEAGUE_RESULT), None)
+check("결과 정리판이 큐에 오른다", _nb_item is not None)
+check("  ↳ 끈 나이트 브리핑은 안 오른다",
+      not [i for i in T.build_all_queues({"KBO": _nb_games},
+                                         datetime.now(timezone.utc), "chTEST")
+           if i.content_type is ContentType.NIGHT_BRIEF])
 if _nb_item is not None:
     # 이 검사만 브라우저(playwright)를 쓴다. 없는 환경에서는 **통과로 세지 않고**
     # 건너뛴다 — 도구가 없어서 초록불이 되는 것이 가장 나쁘다.
     try:
-        _nb_made = T.render_for(_nb_item, [], all_games=_nb_games)
-        check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
-              _nb_made is not None, "None이 돌아왔다 — 리그 문지기에 걸린다")
+        _nb_made = T.render_for(_nb_item, _nb_games, all_games=_nb_games)
+        check("결과 정리판이 실제로 그려진다", _nb_made is not None,
+              "None이 돌아왔다 — 렌더가 막혔다")
     except ModuleNotFoundError as e:
-        print(f"  SKIP  나이트 브리핑 실렌더 — 이 환경에 브라우저가 없다 ({e})")
+        print(f"  SKIP  정리판 실렌더 — 이 환경에 브라우저가 없다 ({e})")
     except Exception as e:                                   # noqa: BLE001
-        check("나이트 브리핑은 리그 스냅샷이 비어도 만들어진다 (league=None)",
-              False, f"{type(e).__name__}: {str(e)[:120]}")
+        check("결과 정리판이 실제로 그려진다", False,
+              f"{type(e).__name__}: {str(e)[:120]}")
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)

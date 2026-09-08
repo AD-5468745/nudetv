@@ -29,8 +29,9 @@ import html as _html
 from datetime import datetime
 from typing import Optional
 
-from contract import (KST, League, SCORE_UNIT_BY_LEAGUE, ScoreUnit, Status,
-                      StreakKind, TEAM_NAMES, card_theme, venue_name)
+from contract import (fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
+                      Status, StreakKind, TEAM_NAMES, card_theme, league_accent,
+                      venue_name)
 
 from headline import Headline
 
@@ -44,12 +45,16 @@ LEAGUE_LABEL = {
     League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
     League.EPL: "프리미어리그", League.LALIGA: "라리가", League.SERIEA: "세리에A",
     League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "챔피언스리그",
+    League.UEL: "유로파리그", League.MLS: "MLS",
 }
 
 # 콘텐츠 종류마다 **고유한 아이콘 + 라벨**. 색이 아니라 이 둘이 종류를 가른다 —
 # 색은 테마(리그)가 이미 쓰고 있어서 종류까지 색으로 나누면 둘이 충돌한다.
 KIND_META = {
-    "morning":  ("모닝 브리핑", "M4 17h16M6.5 17a5.5 5.5 0 0 1 11 0M12 4.5v2"
+    # **"모닝"이 아니라 "경기 예고"다 (2026-09-07).** 07:30 고정에서 첫 경기
+    # 30분 전으로 옮기면서 아침 카드가 아니게 됐다 — MLB는 새벽, 유럽은 심야에
+    # 나간다. 이름이 시각을 말하면 시각이 바뀔 때마다 이름이 거짓이 된다.
+    "morning":  ("경기 예고", "M4 17h16M6.5 17a5.5 5.5 0 0 1 11 0M12 4.5v2"
                               "M5 8l1.4 1.4M19 8l-1.4 1.4M2.5 13h2M19.5 13h2"),
     "start":    ("시작 알림", "M12 5v8l5 3"),
     # 킥오프는 시간표(start)와 **다른 아이콘**을 쓴다 — 하루에 가장 많이 나가는
@@ -84,13 +89,26 @@ THEMES = {
 }
 
 
+# 리그 강조색을 카드 어디까지 넣을 것인가. `shell()` 주석에 세 값의 뜻이 있다.
+# **대표님이 시안 3벌을 보고 고른 값** (2026-09-07): "C — 바 + 라벨까지".
+# 한 글자만 바꾸면 전 카드가 따른다.
+ACCENT_MODE = "full"
+
+
 def esc(s) -> str:
     return _html.escape(str(s), quote=True)
 
 
 def _nm(league: Optional[League], team) -> str:
+    """카드에 찍을 팀 이름.
+
+    표에 있으면 표를 쓰고, 없으면 코드를 그대로 쓴다(유럽·MLS는 **코드가 곧
+    한글 이름**이다). 마지막에 예외 표를 한 번 거친다 — 소스 이름이 다른
+    리그와 어긋나거나 카드 폭을 넘는 몇 건만 여기서 바로잡는다(v1.16).
+    """
     code = getattr(team, "team_code", team)
-    return TEAM_NAMES.get(league, {}).get(code, code) if league else code
+    name = TEAM_NAMES.get(league, {}).get(code, code) if league else code
+    return fix_team_name(name)
 
 
 def _kst(dt: datetime) -> str:
@@ -130,6 +148,7 @@ _DENSITY_CSS = {
 .li{padding:27px 0}
 .ix{padding:28px 0}
 .cmp{padding:24px 0}
+.fm{padding:26px 0}
 .tl{padding:25px 0}
 .fr{padding:26px 0}
 .qr{padding:16px 0}
@@ -141,6 +160,7 @@ _DENSITY_CSS = {
 .li{padding:19px 0}
 .ix{padding:22px 0}
 .cmp{padding:18px 0}
+.fm{padding:19px 0}
 .tl{padding:19px 0}
 .fr{padding:22px 0}
 .qr{padding:12px 0}
@@ -148,10 +168,28 @@ _DENSITY_CSS = {
 }
 
 
+def credit_line(leagues) -> str:
+    """이 카드에 실린 리그들이 요구하는 소스 표기. 없으면 빈 문자열.
+
+    **한 곳에서만 만든다.** 카드 종류가 여덟이고 꼬리말 호출부가 일곱 군데인데
+    거기마다 문구를 적으면 그중 하나를 반드시 빠뜨린다 — 그리고 빠뜨린 카드는
+    오류도 경고도 없이 **약관을 어긴 채로** 발행된다(약점 135).
+    여러 리그가 섞인 카드(나이트 브리핑)도 하나라도 해당하면 붙인다.
+    같은 문구가 둘 이상이면 한 번만 쓴다.
+    """
+    seen: list = []
+    for lg in leagues or ():
+        c = SOURCE_CREDIT.get(lg)
+        if c and c not in seen:
+            seen.append(c)
+    return " · ".join(seen)
+
+
 def shell(*, kind: str, league: Optional[League], date_label: str,
           head: Headline, body: str, foot_left: str,
           theme: Optional[str] = None, group_label: str = "",
-          density: str = "air") -> str:
+          density: str = "air", credit_for=None,
+          kind_label: str = "") -> str:
     """머리(라벨·헤드라인) — 본문 — 꼬리. **일곱 종류가 전부 이 골격을 쓴다.**
 
     바뀌는 것은 `kind`(아이콘·라벨)와 `body`(본문 골격)뿐이다.
@@ -161,8 +199,33 @@ def shell(*, kind: str, league: Optional[League], date_label: str,
         raise ValueError(f"모르는 카드 종류: {kind}")
     if density not in _DENSITY_CSS:
         raise ValueError(f"모르는 밀도: {density}")
-    th = THEMES[theme or card_theme(league)]
+    _theme = theme or card_theme(league)
+    th = THEMES[_theme]
+    # ── 리그 강조색 (v1.15) ───────────────────────────────────
+    # 대표님 지시(2026-09-07): *"리그별 색으로 나눈다"*.
+    # **얼마나 넣느냐가 곧 설계다.** 다 칠하면 채널이 산만해지고, 안 칠하면
+    # 스크롤할 때 챔피언스리그와 유로파가 같은 카드로 보인다.
+    # `ACCENT_MODE`가 그 눈금이다 — 시안을 이 값만 바꿔 세 벌 뽑았다.
+    #   "off"  현행. 전 리그 브랜드 민트
+    #   "rail" 왼쪽 세로 바만 리그색. 종류 라벨은 민트 유지
+    #   "full" 세로 바 + 종류 라벨(아이콘·글자)까지 리그색
+    _acc = league_accent(league, _theme) if ACCENT_MODE != "off" else None
+    # **원본 테마 표를 건드리지 않는다.** 여기서 `th`를 제자리 수정하면 그 색이
+    # 다음 카드로 새어 나간다 — 리그 하나의 색이 다른 리그 카드에 찍히는데,
+    # 오류도 안 나고 로그에도 안 남는다(약점 45와 같은 얼굴: 공유 상태의 변형).
+    _rail_color = _acc or th["accent"]
+    if _acc and ACCENT_MODE == "full":
+        th = dict(th, accent=_acc)
+    # 소스 표기(football-data 약관 제7.1조). `credit_for`를 주지 않으면
+    # 이 카드의 리그 하나로 판단한다 — 그래서 호출부는 아무것도 안 해도 붙는다.
+    _c = credit_line(credit_for if credit_for is not None else [league])
+    _credit = f'<span class="cr">{esc(_c)}</span>' if _c else ""
     label, icon = KIND_META[kind]
+    # **종류 이름을 발송 순간에 바꿔 달 수 있다.** 경기 예고가 첫 경기 뒤에
+    # 나가는 날에는 '예고'가 아니라 '안내'다(`contract.morning_label`).
+    # 아이콘은 그대로 둔다 — 같은 종류의 카드이고, 아이콘까지 바뀌면
+    # 시청자에게는 다른 카드로 보인다.
+    label = kind_label or label
     lg = group_label or (LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그")
     sub = (f'<div class="sub">{esc(head.sub)}</div>' if head.sub else "")
     rail = '<div class="rail"></div>' if th["rail"] else ""
@@ -175,7 +238,7 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .card{{width:{CARD_W}px;border-radius:{th['radius']};overflow:hidden;position:relative}}
 .num{{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}}
 .top{{padding:52px 56px 0;position:relative}}
-.rail{{position:absolute;left:0;top:52px;bottom:0;width:6px;background:{th['accent']}}}
+.rail{{position:absolute;left:0;top:52px;bottom:0;width:6px;background:{_rail_color}}}
 .lab{{display:flex;align-items:center;gap:16px;font-size:22px;font-weight:800;
   letter-spacing:.16em;color:{th['accent']}}}
 .lab svg{{width:30px;height:30px;flex:none}}
@@ -191,6 +254,51 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
   align-items:center;font-size:21px;color:{th['faint']};font-weight:600;
   letter-spacing:.03em}}
 .wm{{color:{th['wm']};font-weight:800;letter-spacing:.14em;font-size:20px}}
+/* 번호·시각은 **곁들이는 값**이다. 팀명·점수보다 한 단 낮춰 두어야
+   눈이 결과를 먼저 읽는다. 그래도 판독 하한(20px)은 지킨다. */
+/* 리그 머리줄 — 경기 목록 위에 얹는다. 배지는 색인과 같은 것을 쓰되
+   위쪽 여백을 크게 둬서 **묶음이 눈으로 갈라지게** 한다. */
+.gh{{display:flex;align-items:center;gap:18px;padding:30px 0 10px;
+  border-bottom:1px solid {th['line']}}}
+.gh:first-child{{padding-top:6px}}
+.gh .bg{{font-size:20px;font-weight:800;letter-spacing:.10em;color:{th['chip_ink']};
+  background:{th['chip_bg']};padding:9px 16px;border-radius:{th['radius']};
+  min-width:130px;text-align:center}}
+.gh .cn{{font-size:27px;font-weight:700;white-space:nowrap;color:{th['ink']}}}
+/* 빽빽판 — 경기 조각을 흘려 담는다. 조각 사이는 가운뎃점으로 가른다.
+   판독 하한(20px)을 지키면서 줄당 두세 경기가 들어가는 크기다. */
+.cw{{padding:16px 0 4px;font-size:26px;line-height:1.78;color:{th['dim']};
+  font-weight:600}}
+/* 조각 사이는 **여백으로만** 가른다. 가운뎃점을 넣어 봤더니 줄이 바뀌는
+   자리에서 점이 줄 맨 앞에 떨어졌다 — 줄바꿈 위치는 브라우저가 정하므로
+   글자로 된 구분자는 어디에 붙여도 언젠가 줄 끝이나 줄 앞에 남는다.
+   점수가 이미 조각을 갈라 주므로 여백이면 충분하다. */
+.cw .cg{{white-space:nowrap;margin-right:30px}}
+/* 오늘의 경기 — 목록과 **눈에 띄게 갈라야** 한다. 목록의 한 줄처럼 보이면
+   골라 놓은 뜻이 사라진다. 위에 굵은 선을 긋고 제목을 얹는다. */
+.bt{{margin-top:34px;padding-top:26px;border-top:2px solid {th['rule']};
+  font-size:22px;font-weight:800;letter-spacing:.12em;color:{th['accent']}}}
+.bs{{display:flex;align-items:baseline;gap:20px;padding:18px 0;
+  border-bottom:1px solid {th['line']}}}
+.bs:last-child{{border-bottom:none}}
+.bm{{font-size:31px;font-weight:600;color:{th['dim']}}}
+.bm b{{color:{th['ink']};font-weight:800}}
+.bsc{{font-weight:800;color:{th['ink']};margin:0 6px}}
+.bn{{margin-left:auto;font-size:24px;font-weight:700;color:{th['accent']};
+  white-space:nowrap}}
+.cw .cg b{{color:{th['ink']};font-weight:800}}
+.cw .cg .dimt{{color:{th['dim']}}}
+.cw .cg i{{font-style:normal;color:{th['faint']};font-size:24px}}
+.lead-cell{{display:flex;align-items:baseline;gap:14px}}
+.no{{color:{th['faint']};font-size:22px;font-weight:700;min-width:34px}}
+.tm{{color:{th['dim']};font-size:26px;font-weight:600;letter-spacing:.01em}}
+/* 소스 표기는 약관이 요구하는 문장 그대로라 길다(47자). 읽히되 카드의
+   주인공이 되지 않아야 하므로 **굵기와 투명도로만** 낮춘다.
+   크기는 못 낮춘다 — 처음에 15px로 넣었더니 v5 판독성 게이트(`MIN_FONT_PX`
+   20px)가 즉시 잡았다. 게이트가 옳다: 폰에서 못 읽는 표기는 약관이 말하는
+   'visible location'도 아니다. 20px는 워터마크와 같은 크기다. */
+.cr{{display:block;font-size:20px;font-weight:500;letter-spacing:.01em;
+  opacity:.62;margin-top:6px}}
 /* ── 본문 부품 (일곱 종류가 나눠 쓴다) ── */
 .li{{display:grid;align-items:baseline;gap:14px;padding:19px 0;
   border-bottom:1px solid {th['line']}}}
@@ -199,6 +307,36 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .t2{{font-size:31px;font-weight:600;color:{th['ink']}}}
 .t2.dim{{color:{th['dim']};font-weight:500}}
 .t3{{font-size:23px;color:{th['faint']};font-weight:600}}
+/* ── 홈팀 배지 (v1.15e, 2026-09-07 대표님 지시) ────────────────
+   목록형 카드는 '원정 vs 홈' 순서로만 홈을 알렸다 — **보는 사람은 그 규칙을
+   모른다.** 한 글자로 못박는다. 팀명과 붙어 다니므로 baseline을 맞추고,
+   글자는 안쪽 span이 갖는다(고정 상자를 잎 노드로 두면 접힘 게이트가
+   `높이/줄높이`를 접힘으로 읽는다 — 약점 153). */
+.hb{{display:inline-flex;align-items:center;justify-content:center;
+  margin-left:10px;padding:3px 10px;border-radius:{th['radius']};
+  border:1.5px solid {th['line']};vertical-align:2px}}
+.hb>span{{font-size:20px;font-weight:700;line-height:1;letter-spacing:.04em;
+  color:{th['faint']}}}
+/* ── 홈 배지 — **팀명 우측 상단 모서리** (2026-09-07 대표님 확정) ──
+   *"팀명 우측상단 모서리쯤 컬러감 있는 배지를 만들어서 박아두고 싶어.
+   집모양도 괜찮고."*
+   색은 `th['accent']` = **그 카드의 리그 색**이라 카드마다 저절로 갈린다. */
+.tn{{font-weight:inherit;color:inherit;letter-spacing:inherit}}
+.hm{{display:inline-flex;align-items:center;justify-content:center;
+  width:30px;height:30px;margin-left:7px;vertical-align:super;
+  border-radius:50%;flex:none}}
+.hm>svg{{width:16px;height:16px;display:block}}
+.hm.dot{{background:{th['accent']};color:{th['bg']}}}
+.hm.ring{{border:2px solid {th['accent']};color:{th['accent']}}}
+.hm.tag{{border-radius:9px;background:{th['accent']};color:{th['bg']}}}
+/* 진 팀·취소된 경기에서는 **색을 빼지 않고 낮춘다.**
+   회색으로 바꾸면 대표님이 원한 '컬러감'이 절반만 남는다 — 배지는 홈을
+   말하는 것이지 승패를 말하는 것이 아니므로, 위계는 투명도로만 준다. */
+.dim .hm{{opacity:.45}}
+/* icon — 색 없이 선만 */
+.hi{{display:inline-flex;width:22px;height:22px;margin-left:11px;
+  vertical-align:-2px;color:{th['faint']};opacity:.85}}
+.hi>svg{{width:100%;height:100%}}
 .sc{{font-size:44px;font-weight:800;letter-spacing:-.03em;text-align:center;
   color:{th['ink']}}}
 .sc i{{font-style:normal;color:{th['faint']};padding:0 12px;font-weight:500}}
@@ -292,6 +430,81 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .tl>span.m{{text-align:center;font-size:24px;font-weight:800;color:{th['accent']};
   letter-spacing:-.01em}}
 .tl>span em{{font-style:normal;font-size:22px;font-weight:600;color:{th['faint']}}}
+/* ── 최근 n경기 폼 (v1.15c) ──────────────────────────────────
+   **색만으로 읽히면 안 된다.** 승/패/무 글자를 배지 안에 함께 넣는다 —
+   옛 v4 카드가 이미 그렇게 고쳐 놓은 것을 그대로 옮긴다(약점 132). */
+.anh{{display:flex;align-items:baseline;justify-content:space-between;
+  padding:0 0 16px;border-bottom:1px solid {th['rule']};
+  font-size:22px;font-weight:800;letter-spacing:.08em;color:{th['dim']}}}
+.anh span{{font-size:20px;font-weight:700;letter-spacing:.04em;color:{th['faint']}}}
+.fm{{padding:26px 0;border-bottom:1px solid {th['line']}}}
+.fm:last-child{{border-bottom:none}}
+.fm .tn{{font-size:32px;font-weight:800;color:{th['ink']};letter-spacing:-.02em}}
+.fm .dots{{display:flex;gap:10px;margin:14px 0 12px}}
+.fm .d{{width:56px;height:56px;border-radius:{th['radius']};display:flex;
+  align-items:center;justify-content:center}}
+/* **글자는 안쪽 span이 갖는다.** 배지는 고정 높이 56px짜리 '상자'이고 글자가
+   아니다. 잎 노드가 상자면 접힘 게이트가 56/24 = 2.3줄로 읽어 멀쩡한 배지를
+   접혔다고 잡는다 — 상자와 글자를 나누면 게이트를 느슨하게 하지 않고도
+   정확해진다(예외 목록에 넣어 게이트를 무디게 만드는 쪽이 더 나쁘다). */
+.fm .d>span{{font-size:24px;font-weight:800;line-height:1}}
+.fm .d.w{{background:{th['accent']};color:{th['bg']}}}
+.fm .d.l{{background:{th['line']};color:{th['faint']}}}
+.fm .d.t{{background:{th['chip_bg']};color:{th['chip_ink']}}}
+.fm .lst{{font-size:24px;font-weight:600;color:{th['dim']}}}
+/* ── 시즌 상대전적 — 막대는 길이가 곧 수치다 ── */
+.hh{{padding:22px 0}}
+.hh .r{{display:grid;grid-template-columns:200px 1fr 120px;align-items:center;
+  gap:20px;padding:12px 0}}
+.hh .nm{{font-size:30px;font-weight:700;color:{th['ink']};letter-spacing:-.02em;
+  white-space:nowrap;overflow:hidden}}
+.hh .bg{{height:22px;border-radius:11px;background:{th['line']};overflow:hidden}}
+.hh .bg>i{{display:block;height:100%;background:{th['accent']};border-radius:11px}}
+.hh .bg>i.q{{background:{th['faint']}}}
+.hh .vl{{font-size:30px;font-weight:800;color:{th['ink']};text-align:right}}
+/* ── 여러 경기 분석 (v1.15f, 2026-09-07 대표님 지시) ──────────────
+   *"경기 분석도 모든 팀 알림으로 변경하자. 몇팀씩 묶어서 카드한장안에
+   너무 우겨넣지 않고 보기좋도록 나눠서."*
+   한 경기를 **네 줄**로 줄인다: 번호·시각 / 대진 / 비교 / 한 줄 평. */
+.ag{{padding:30px 0;border-bottom:1px solid {th['line']}}}
+.ag:last-child{{border-bottom:none}}
+.agh{{display:flex;align-items:baseline;gap:16px;margin-bottom:16px}}
+.agh .no{{font-size:22px;font-weight:800;color:{th['faint']}}}
+.agh .tm{{font-size:24px;font-weight:700;color:{th['dim']};letter-spacing:-.01em}}
+.agm{{display:grid;grid-template-columns:1fr 84px 1fr;align-items:baseline;
+  column-gap:12px}}
+.agm .nm{{font-size:36px;font-weight:800;letter-spacing:-.03em;color:{th['ink']};
+  white-space:nowrap;overflow:hidden}}
+.agm .nm.r{{text-align:right}}
+.agm .x{{font-size:20px;font-weight:800;color:{th['faint']};text-align:center;
+  letter-spacing:.12em}}
+.agm .rk{{font-size:23px;font-weight:600;color:{th['dim']};margin-top:6px}}
+.agm .rk.r{{text-align:right}}
+.agk{{margin-top:18px;font-size:24px;font-weight:600;color:{th['dim']};
+  line-height:1.55;word-break:keep-all}}
+.agk b{{font-weight:800;color:{th['ink']}}}
+.agv{{margin-top:12px;font-size:25px;font-weight:700;color:{th['ink']};
+  letter-spacing:-.02em;line-height:1.45;word-break:keep-all}}
+/* ── 선발 라인업 (v1.17) — 축구. 포메이션 줄을 그대로 세로로 쌓는다 ── */
+.lu{{padding:24px 0;border-bottom:1px solid {th['line']}}}
+.lu:last-child{{border-bottom:none}}
+.luh{{display:flex;align-items:baseline;gap:14px;margin-bottom:18px}}
+.luh .nm{{font-size:34px;font-weight:800;letter-spacing:-.03em;color:{th['ink']}}}
+.luh .fm2{{font-size:23px;font-weight:700;letter-spacing:.06em;color:{th['accent']}}}
+.lur{{display:flex;flex-wrap:wrap;gap:10px 0;padding:11px 0}}
+.lur+.lur{{border-top:1px solid {th['line']}}}
+.lup{{font-size:27px;font-weight:600;color:{th['ink']};letter-spacing:-.02em;
+  white-space:nowrap}}
+/* **이름 사이에 구분점을 찍는다.** 공백만으로는 한 줄이 통째로 한 덩어리로
+   읽힌다 — 유럽은 '리산드로 마르티네스'처럼 이름 자체가 두 단어인 선수가
+   많아서, 어디서 끊기는지 눈으로 못 찾는다. 여백을 더 벌리는 방법도 있지만
+   그러면 한 줄에 네 명이 안 들어가 줄이 접히고 포메이션 모양이 무너진다.
+   구분점은 자리를 거의 안 먹으면서 경계를 확실히 만든다. */
+.lup+.lup{{margin-left:16px;padding-left:16px;
+  border-left:1px solid {th['line']}}}
+.lup .gl{{font-size:22px;font-weight:800;color:{th['accent']};margin-left:6px}}
+.lupos{{font-size:20px;font-weight:800;letter-spacing:.1em;color:{th['faint']};
+  min-width:44px;align-self:center}}
 /* ── 관전 포인트 — 숫자를 읽어 주는 자리 (예측하는 자리가 아니다) ── */
 .vd{{margin-top:30px;border-left:4px solid {th['accent']};padding:2px 0 2px 26px}}
 .vd p{{font-size:28px;line-height:1.52;color:{th['ink']};font-weight:600;
@@ -314,7 +527,7 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
     <div class="rule"></div>
   </div>
   <div class="body num">{body}</div>
-  <div class="foot"><span>{esc(foot_left)}</span><span class="wm">NUDE-TV.NET</span></div>
+  <div class="foot"><span>{esc(foot_left)}{_credit}</span><span class="wm">NUDE-TV.NET</span></div>
 </div></body></html>"""
 
 
@@ -322,8 +535,60 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 # 본문 — 종류마다 골격이 다르다
 # ══════════════════════════════════════════════════════════════
 
+HOME_BADGE_TEXT = "홈"
+
+# 홈 표시를 어떤 모양으로 할 것인가 (v1.15g — 대표님: *"촌스럽다. 트렌디하고
+# 감각적으로"*). **한 글자만 바꾸면 전 카드가 따른다.**
+#
+#   "dot"   **팀명 우측 상단 · 리그 강조색 원 + 집** ← 대표님 확정 방향
+#   "ring"  같은 자리 · 색은 테두리만 (더 가볍게)
+#   "tag"   같은 자리 · 라운드 사각
+#   "icon"  팀명 옆 얇은 선 집 아이콘 (색 없음)
+#   "at"    원정 @ 홈 — 국제 스포츠 표기
+#   "chip"  테두리 + 한글 '홈'  ← 첫 안. 대표님: *"촌스럽다"*
+#   "off"   표시 없음
+#
+# 색은 `th['accent']`를 쓴다 — `shell()`이 이 값을 **그 카드의 리그 색**으로
+# 바꿔 두므로(ACCENT_MODE="full"), 배지가 리그마다 저절로 갈린다.
+# 새 색표를 만들지 않는다(약점 17: 표가 있어도 안 쓰면 없는 것과 같다).
+HOME_BADGE_STYLE = "dot"
+
+
+def home_badge() -> str:
+    """홈팀 뒤에 붙는 표시. **모양을 한 곳에서만 만든다.**
+
+    2026-09-07 대표님 지시: *"각 경기 홈팀에 배지 붙이자."* → 첫 안(테두리 칩)을
+    보시고 *"촌스럽다. 트렌디하고 감각적으로 바꿔줘."*
+
+    끄려면 `HOME_BADGE_STYLE = "off"`.
+    """
+    st = HOME_BADGE_STYLE
+    if st == "off" or not HOME_BADGE_TEXT:
+        return ""
+    if st == "at":
+        return ""            # `@`는 배지가 아니라 구분자다 — `vs_mark()`가 쓴다
+    # 집 아이콘 — 카드 헤더 라벨과 **같은 stroke 언어**(굵기·둥근 끝)를 쓴다.
+    # 새 조형을 하나 더 만들면 카드 안에 언어가 둘이 된다.
+    _house = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+              'stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">'
+              '<path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M6 9.6V20h12V9.6"/></svg>')
+    if st in ("dot", "ring", "tag"):
+        return f'<i class="hm {st}">{_house}</i>'
+    if st == "icon":
+        return f'<i class="hi">{_house}</i>'
+    return f'<i class="hb"><span>{esc(HOME_BADGE_TEXT)}</span></i>'
+
+
+def vs_mark() -> str:
+    """원정과 홈 사이에 쓸 구분자. `at` 스타일이면 **`vs` 대신 `@`**.
+
+    국제 스포츠 표기에서 `@` 뒤가 홈이다 — 글자를 더하지 않고 홈을 알린다.
+    """
+    return "@" if HOME_BADGE_STYLE == "at" else "vs"
+
+
 def body_schedule(games: list, league: League, *, with_venue: bool = True,
-                  times: Optional[list] = None) -> str:
+                  times: Optional[list] = None, numbered: bool = False) -> str:
     """모닝·시작 알림이 함께 쓴다 — 시각 + 대진 + 장소.
 
     `times`는 **부르는 쪽이 이미 만든 시각 표기**이고 정렬된 순서와 같아야 한다.
@@ -342,18 +607,36 @@ def body_schedule(games: list, league: League, *, with_venue: bool = True,
         tail = (f'<span class="t3">{esc(venue)}</span>' if venue else "<span></span>")
         cls = "t2 dim" if cancel else "t2"
         mark = " · 취소" if cancel else ""
+        # 번호는 **시간순**이다 — 목록이 시작 시각으로 정렬되므로 번호가 곧
+        # "그날 몇 번째로 열리는 경기인가"가 된다. 정리판과 같은 규칙이다
+        # (대표님: 시작 흐름을 종료 흐름과 같은 모양으로).
+        lead = f'<span class="no">{i + 1}</span>' if numbered else ""
+        cols = ("70px minmax(150px,auto) 1fr auto" if numbered
+                else "minmax(150px,auto) 1fr auto")
         out.append(
-            f'<div class="li" style="grid-template-columns:minmax(150px,auto) 1fr auto">'
+            f'<div class="li" style="grid-template-columns:{cols}">{lead}'
             f'<span class="t1">{esc(times[i] if times else _kst(g.start_utc))}</span>'
-            f'<span class="{cls}">{esc(_nm(league, g.away))} vs '
-            f'{esc(_nm(league, g.home))}{mark}</span>{tail}</div>')
+            f'<span class="{cls}"><b class="tn">{esc(_nm(league, g.away))} '
+            f'{vs_mark()} {esc(_nm(league, g.home))}{mark}</b>'
+            f'{home_badge()}</span>{tail}</div>')
     return "".join(out)
 
 
-def body_scoreboard(games: list, league: League) -> str:
-    """결과 — 이긴 쪽이 굵다. **취소는 점수 자리에 사유를 쓴다**(숨기지 않는다)."""
+def body_scoreboard(games: list, league: League, *,
+                    with_time: bool = False, numbered: bool = False) -> str:
+    """결과 — 이긴 쪽이 굵다. **취소는 점수 자리에 사유를 쓴다**(숨기지 않는다).
+
+    `with_time`·`numbered`는 2026-09-07 대표님 요청이다:
+    *"몇번째 경기라고 표기해주면 좋을것같고 경기시간도 같이 알려주면 좋겠다"*.
+
+    **번호는 시간순이다.** 목록이 시작 시각으로 정렬되므로 번호가 곧
+    "그날 몇 번째로 열린 경기인가"가 된다 — 우리가 임의로 매긴 순서가 아니다.
+    시각은 **한국시각**이다(카드의 다른 모든 시각과 같다).
+    """
     out = []
+    _n = 0
     for g in sorted(games, key=lambda x: x.start_utc):
+        _n += 1
         if g.status in (Status.CANCELED, Status.POSTPONED):
             why = (g.meta.cancel_reason if g.meta else "") or "취소"
             mid = f'<span class="off">{esc(why)}</span>'
@@ -366,10 +649,25 @@ def body_scoreboard(games: list, league: League) -> str:
         else:
             mid = '<span class="off">진행 중</span>'
             lc = rc = "t2"
+        lead = ""
+        cols = "1fr 300px 1fr"
+        if numbered or with_time:
+            bits = []
+            if numbered:
+                bits.append(f'<span class="no">{_n}</span>')
+            if with_time:
+                bits.append(f'<span class="tm">{esc(_kst(g.start_utc))}</span>')
+            lead = f'<span class="lead-cell">{"".join(bits)}</span>'
+            # 번호 50 + 시각 90 = 140px를 앞에 떼어 준다. 점수 칸을 줄이지 않는다 —
+            # 점수는 이 카드의 주인공이고, 팀명 칸이 대신 좁아지는 편이 낫다.
+            cols = ("140px 1fr 260px 1fr" if (numbered and with_time)
+                    else ("70px 1fr 280px 1fr" if numbered else "110px 1fr 280px 1fr"))
         out.append(
-            f'<div class="li" style="grid-template-columns:1fr 300px 1fr">'
+            f'<div class="li" style="grid-template-columns:{cols}">{lead}'
             f'<span class="{lc}" style="text-align:right">{esc(_nm(league, g.away))}</span>'
-            f'{mid}<span class="{rc}">{esc(_nm(league, g.home))}</span></div>')
+            f'{mid}<span class="{rc}">'
+            f'<b class="tn">{"@ " if HOME_BADGE_STYLE == "at" else ""}'
+            f'{esc(_nm(league, g.home))}</b>{home_badge()}</span></div>')
     return "".join(out)
 
 
@@ -506,16 +804,232 @@ def body_compare(rows: list[tuple], away_name: str, home_name: str,
     return "".join(body)
 
 
-def body_index(rows: list[tuple]) -> str:
-    """나이트 — 리그별 한 줄. `rows`는 (리그라벨, 건수문구, 대표결과) 이다.
+def body_form(rows: list[tuple], *, title: str = "최근 5경기") -> str:
+    """분석 ③ — 최근 n경기 폼. `rows`는 (팀명, [결과…], 직전 한 줄) 이다.
 
-    **결과를 다시 쓰지 않는다.** 상세는 리그별 결과 카드에 있다 — 여기서 되풀이하면
-    같은 내용이 하루에 두 번 나간다(옛 나이트 브리핑이 정확히 그랬다).
+    결과는 `"W"|"L"|"D"`. **색만으로 읽히면 안 되므로 글자를 함께 넣는다** —
+    옛 v4 카드가 이미 그렇게 고쳐 놓았던 것을 그대로 가져온다(약점 132:
+    새 경로는 옛 경로가 고쳐 온 것을 먼저 옮겨 적고 시작한다).
+
+    **비어 있으면 빈 문자열을 돌려준다** — 부르는 쪽이 블록을 안 붙이면 된다.
+    """
+    if not rows:
+        return ""
+    # **'무'의 클래스는 `t`다 — `d`로 두면 배지 컨테이너 클래스와 겹친다.**
+    # `class="d d"`가 되면 셀렉터 `.d.d`가 `.d`와 같아져 **모든 배지**에
+    # 매치되고, 뒤에 오는 규칙이 승·패 색까지 덮어쓴다. 실렌더로 잡았다
+    # (약점 58의 CSS 판 — 이름이 겹치면 조용히 덮어쓴다).
+    _W = {"W": ("w", "승"), "L": ("l", "패"), "D": ("t", "무")}
+    out = [f'<div class="anh">{esc(title)}<span>왼쪽이 오래된 경기</span></div>']
+    for name, results, last in rows:
+        dots = "".join(
+            f'<div class="d {_W[r][0]}"><span>{_W[r][1]}</span></div>'
+            for r in results if r in _W)
+        out.append(f'<div class="fm"><div class="tn">{esc(name)}</div>'
+                   f'<div class="dots">{dots}</div>'
+                   f'<div class="lst">{esc(last)}</div></div>')
+    return "".join(out)
+
+
+def body_h2h(away_name: str, home_name: str, away_win: int, home_win: int,
+             draw: int = 0, *, title: str = "시즌 상대전적") -> str:
+    """분석 ④ — 시즌 상대전적. 막대 길이가 곧 수치다.
+
+    **무승부는 막대에서 뺀다.** 세 값을 한 막대에 쌓으면 '누가 앞서나'가
+    흐려진다 — 무는 제목 옆 총 경기 수에만 담는다.
+    """
+    total = away_win + home_win + draw
+    if total <= 0:
+        return ""
+    top = max(away_win, home_win) or 1
+    out = [f'<div class="anh">{esc(title)}'
+           f'<span>{total}경기{f" · {draw}무" if draw else ""}</span></div>',
+           '<div class="hh">']
+    for name, win in ((away_name, away_win), (home_name, home_win)):
+        pct = int(round(win * 100 / top))
+        cls = "" if win == max(away_win, home_win) and away_win != home_win else " q"
+        out.append(f'<div class="r"><div class="nm">{esc(name)}</div>'
+                   f'<div class="bg"><i class="{cls.strip()}" '
+                   f'style="width:{pct}%"></i></div>'
+                   f'<div class="vl">{win}승</div></div>')
+    out.append("</div>")
+    return "".join(out)
+
+
+def body_analysis_multi(rows: list) -> str:
+    """분석 — **여러 경기를 한 장에** (v1.15f · 대표님 지시).
+
+    `rows`는 경기마다 dict:
+      `no`(그날 몇 번째) `time` `away` `home` `away_sub` `home_sub`
+      `keys`(비교 한 줄 · 없으면 생략) `verdict`(한 줄 평 · 없으면 생략)
+
+    **한 경기를 네 줄로 줄인다.** 한 경기 상세 카드(비교표 6줄 + 폼 + 상대전적)를
+    그대로 여러 벌 쌓으면 카드가 1만 픽셀이 된다 — 대표님이 말한
+    *"우겨넣지 않고 보기좋도록"*은 **경기 수를 줄이는 것이 아니라 경기당 줄을
+    줄이는 것**으로 푼다. 몇 경기씩 나눌지는 부르는 쪽(렌더)이 정한다.
+    """
+    out = []
+    for r in rows:
+        head = []
+        if r.get("no"):
+            head.append(f'<span class="no">{esc(str(r["no"]))}</span>')
+        if r.get("time"):
+            head.append(f'<span class="tm">{esc(r["time"])}</span>')
+        out.append(
+            f'<div class="ag">'
+            + (f'<div class="agh">{"".join(head)}</div>' if head else "")
+            + f'<div class="agm">'
+              f'<span class="nm">{esc(r["away"])}</span>'
+              f'<span class="x">VS</span>'
+              f'<span class="nm r"><b class="tn">{esc(r["home"])}</b>'
+              f'{home_badge()}</span>'
+              f'<span class="rk">{esc(r.get("away_sub", ""))}</span>'
+              f'<span></span>'
+              f'<span class="rk r">{esc(r.get("home_sub", ""))}</span>'
+              f'</div>'
+            + (f'<div class="agk">{r["keys"]}</div>' if r.get("keys") else "")
+            + (f'<div class="agv">{esc(r["verdict"])}</div>'
+               if r.get("verdict") else "")
+            + '</div>')
+    return "".join(out)
+
+
+POS_LABELS = ("GK", "DF", "MF", "FW")
+
+
+def body_lineup(teams: list) -> str:
+    """선발 라인업 — 축구 (v1.17).
+
+    `teams`는 팀마다 dict:
+      `name` `formation`(예 "4-2-3-1") `rows`([[(이름, 골분[]), …], …])
+    `rows`는 **골키퍼가 첫 줄**이어야 한다 — 소스는 피치 배치 순서로 주므로
+    원정팀은 뒤집혀 온다. 방향 판정은 부르는 쪽이 한다(포메이션과 맞춰서).
+
+    포지션 라벨은 **줄 수가 4일 때만** 붙인다. 3줄·5줄 포메이션에 GK·DF·MF·FW를
+    억지로 맞추면 카드가 없는 사실을 말한다 — 그때는 라벨 없이 줄만 그린다.
+    """
+    out = []
+    for t in teams:
+        rows = t.get("rows") or []
+        head = (f'<div class="luh"><span class="nm">{esc(t["name"])}</span>'
+                + (f'<span class="fm2">{esc(t["formation"])}</span>'
+                   if t.get("formation") else "") + '</div>')
+        # GK + 3줄 = 4줄일 때만 DF·MF·FW가 참말이 된다
+        labeled = len(rows) == 4
+        body = []
+        for i, line in enumerate(rows):
+            names = []
+            for nm, goals in line:
+                g = ("".join(f"<span class='gl'>{esc(m)}′</span>" for m in goals)
+                     if goals else "")
+                names.append(f'<span class="lup">{esc(nm)}{g}</span>')
+            lab = (f'<span class="lupos">{POS_LABELS[i]}</span>'
+                   if labeled and i < len(POS_LABELS) else "")
+            body.append(f'<div class="lur">{lab}{"".join(names)}</div>')
+        out.append(f'<div class="lu">{head}{"".join(body)}</div>')
+    return "".join(out)
+
+
+def body_index(rows: list[tuple]) -> str:
+    """나이트 — 리그별 한 줄. `rows`는 (리그라벨, 건수문구) 이다.
+
+    **가장 짧은 단이다.** 전 경기를 실으면 카드가 높이 상한을 넘는 날
+    (리그 서넛 · 30~40경기)에만 여기까지 내려온다.
+
+    ⚠️ **'대표 경기'를 더 이상 고르지 않는다** (2026-09-07).
+    예전에는 리그마다 '가장 점수차가 큰 경기' 하나를 골라 옆에 적었다.
+    대표님 지적: *"대표경기라는 기준이 사람들마다 다를텐데"* — 맞다.
+    점수차가 크다는 것은 **일방적이었다**는 뜻이지 볼 만했다는 뜻이 아니다.
+    1점차 접전을 더 치는 사람이 많다. 우리가 정한 기준을 카드가 사실인 양
+    내세우고 있었던 것이고, 그건 지어내기(FACT_LOCK)에 한 발 걸친 일이다.
+    **고를 수 없으면 고르지 않는다** — 전부 싣거나, 숫자만 적는다.
     """
     return "".join(
         f'<div class="ix"><span class="bg">{esc(lg)}</span>'
-        f'<span class="cn">{cnt}</span>'
-        f'<span class="pk">{pick}</span></div>' for lg, cnt, pick in rows)
+        f'<span class="cn">{cnt}</span></div>' for lg, cnt in rows)
+
+
+def compact_result(g, league: League) -> str:
+    """한 경기를 **한 조각**으로. `LG 5:3 두산` · `SK 우천취소 OB`.
+
+    빽빽한 판에서 쓴다 — 줄마다 한 경기를 두면 30경기가 카드에 안 담긴다.
+    이긴 쪽을 굵게 하는 규칙은 목록판과 같다(같은 사실을 다르게 보이지 않는다).
+    """
+    aw, hm = _nm(league, g.away), _nm(league, g.home)
+    if g.status in (Status.CANCELED, Status.POSTPONED):
+        why = (g.meta.cancel_reason if g.meta else "") or "취소"
+        return (f'<span class="cg"><span class="dimt">{esc(aw)}</span> '
+                f'<i>{esc(why)}</i> <span class="dimt">{esc(hm)}</span></span>')
+    if not g.score:
+        return (f'<span class="cg"><span class="dimt">{esc(aw)}</span> '
+                f'<i>진행 중</i> <span class="dimt">{esc(hm)}</span></span>')
+    a_, h_ = g.score.away, g.score.home
+    aw_s = f'<b>{esc(aw)}</b>' if a_ > h_ else f'<span class="dimt">{esc(aw)}</span>'
+    hm_s = f'<b>{esc(hm)}</b>' if h_ > a_ else f'<span class="dimt">{esc(hm)}</span>'
+    return f'<span class="cg">{aw_s} {a_}:{h_} {hm_s}</span>'
+
+
+def body_night_compact(groups: list[tuple]) -> str:
+    """나이트 **빽빽판** — 리그별 머리줄 + 그 리그 경기를 한 덩어리로 흘린다.
+
+    `groups`는 (리그라벨, 건수문구, [경기조각HTML]) 이다.
+
+    **왜 이 단이 필요한가.** 대표님이 고른 것은 "대표 경기가 아니라 전 경기"다.
+    그런데 리그 넷이 겹친 날은 30~40경기라, 줄마다 한 경기를 두면 3,800px가
+    되어 어떤 밀도로도 2000px 상한에 안 담긴다(실측 2026-09-05).
+    그때 리그별 건수만 남기면 **대표님이 요청한 '전 경기'가 사라진다** —
+    가장 경기가 많은 날에만 요청이 무효가 되는 셈이다.
+    그래서 줄을 버리지 않고 **줄바꿈을 버린다**: 경기를 가운뎃점으로 이어 흘리면
+    같은 30경기가 열 줄 남짓에 들어간다.
+    """
+    out = []
+    for lg, cnt, chunks in groups:
+        out.append(f'<div class="gh"><span class="bg">{esc(lg)}</span>'
+                   f'<span class="cn">{cnt}</span></div>'
+                   f'<div class="cw">{" ".join(chunks)}</div>')
+    return "".join(out)
+
+
+def body_best(picks: list, league: League, *, title: str = "오늘의 경기") -> str:
+    """오늘 눈여겨볼 경기 한둘 + **왜 골랐는지** (v1.15).
+
+    `picks`는 `[(경기, 코멘트)]` — 코멘트는 `headline.best_games`가 만든다.
+
+    **코멘트가 없으면 이 칸을 통째로 만들지 않는다.** 근거 없이 경기만 올리면
+    그게 대표님이 지적한 자의적 '대표 경기'로 되돌아간다.
+    """
+    if not picks:
+        return ""
+    rows = []
+    for g, note in picks:
+        if not note:
+            continue
+        aw, hm = _nm(league, g.away), _nm(league, g.home)
+        a_, h_ = (g.score.away, g.score.home) if g.score else ("", "")
+        aw_s = f"<b>{esc(aw)}</b>" if g.score and a_ > h_ else esc(aw)
+        hm_s = f"<b>{esc(hm)}</b>" if g.score and h_ > a_ else esc(hm)
+        rows.append(f'<div class="bs"><span class="bm">{aw_s} '
+                    f'<span class="bsc">{a_}:{h_}</span> {hm_s}</span>'
+                    f'<span class="bn">{esc(note)}</span></div>')
+    if not rows:
+        return ""
+    return (f'<div class="bt">{esc(title)}</div>' + "".join(rows))
+
+
+def body_night_grouped(groups: list[tuple]) -> str:
+    """나이트 — **리그별로 묶고 그 안에 그날 경기를 전부** 싣는다 (2026-09-07).
+
+    `groups`는 (리그라벨, 건수문구, 경기목록HTML) 이다.
+    대표님이 고른 형태다: *"대표경기가 아니라 전 경기 넣어주고, 리그별 색인"*.
+
+    리그 머리줄이 있어야 어느 리그의 경기인지 알 수 있다 — 경기만 죽 이으면
+    KBO와 MLB가 한 덩어리로 보인다.
+    """
+    out = []
+    for lg, cnt, rows_html in groups:
+        out.append(f'<div class="gh"><span class="bg">{esc(lg)}</span>'
+                   f'<span class="cn">{cnt}</span></div>{rows_html}')
+    return "".join(out)
 
 
 # ══════════════════════════════════════════════════════════════

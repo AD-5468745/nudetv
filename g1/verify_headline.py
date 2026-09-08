@@ -113,8 +113,27 @@ check("표본이 없는 리그(V리그)도 꺼져 있다",
 _off = [_G("KT", "HH", 3, 2),
         _G("LG", "OB", status=Status.CANCELED, reason="우천취소")]
 _h = H.for_result(_off, KBO)
-check("취소가 있으면 사유 원문을 그대로 쓴다",
+check("취소가 있으면 한글 사유를 그대로 쓴다 (외국어는 아래에서 따로 본다)",
       _h and _h.rule == "R-CANCEL" and "우천취소" in _h.text, str(_h))
+# ★★ 외국어 원문이 제목으로 나가지 않는다 (2026-09-07 실렌더로 잡음)
+# NPB 카드에 **"1경기 中止"**가 나갔다 — 한국어 채널에 일본어 원문이 제목이 됐다.
+_jp = [_G("SS", "LT", 4, 3),
+       _G("LG", "OB", status=Status.CANCELED, reason="中止")]
+_hj = H.for_result(_jp, KBO)
+check("★★ 취소 사유가 외국어면 제목에 원문을 쓰지 않는다",
+      _hj and "中止" not in _hj.text, str(_hj))
+check("  ↳ 대신 계약이 정한 한국어 표기로 떨어진다",
+      _hj and "취소" in _hj.text, str(_hj))
+# ★★ 변이시험 — 옛 방식(원문 그대로)이면 제목에 中止가 남는다
+check("★★ 변이시험 — 원문을 그대로 쓰면 '中止'가 제목에 남는다",
+      "中止" == (_jp[1].meta.cancel_reason or "").strip()
+      and "中止" not in (_hj.text if _hj else ""))
+# 한글 사유는 그대로 쓴다 (번역표가 원인을 지어내지 않는다 — 약점 61)
+_hk = H.for_result([_G("SS", "LT", 4, 3),
+                    _G("LG", "OB", status=Status.CANCELED, reason="우천취소")], KBO)
+check("  ↳ 한글 사유는 그대로 쓴다 (원인을 지어내지 않는다)",
+      _hk and "우천취소" in _hk.text, str(_hk))
+
 _off2 = [_G("LG", "OB", status=Status.CANCELED, reason="우천취소"),
          _G("NC", "SK", status=Status.CANCELED, reason="폭염취소")]
 _h2 = H.for_result(_off2, KBO)
@@ -198,6 +217,35 @@ check("1·2위가 벌어져도 상위권 다툼이 있으면 그것이 헤드라
       _h and _h.rule == "S-RACE" and _h.facts["ranks"] == [2, 3], str(_h))
 check("  ↳ 그때 꼴찌 팀 부진(최근10 1승)은 얼굴이 되지 않는다",
       _h and _h.rule != "S-LAST10", str(_h))
+
+# ★★ '공동'은 순위가 같을 때만 쓴다 (2026-09-07 실렌더로 잡음)
+#
+# 실측 NPB 9/8: 세이부 .574 **2위** · 닛폰햄 .573 **3위** — 둘 다 승차 6.0.
+# 승차가 같다고 '공동'이라 적으면 그 낱말이 그 자리에서 거짓이 된다.
+# 8팀이라야 상위 절반(4팀)에 2·3위 쌍이 들어온다. 1·2위는 벌려서(2.0)
+# 그 쌍이 후보에서 빠지게 하고, 2·3위만 승차가 같게(둘 다 6) 만든다.
+_gb_same = [_st("SOF", 1, 75, 45, 3, "0"), _st("SEI", 2, 70, 52, 3, "6"),
+            _st("NIP", 3, 71, 53, 2, "6"), _st("HAN", 4, 69, 52, 1, "9"),
+            _st("YOG", 5, 67, 55, 2, "12"), _st("ORI", 6, 60, 62, 2, "15"),
+            _st("HIR", 7, 58, 64, 2, "17"), _st("RAK", 8, 55, 67, 2, "20")]
+_h = H.for_standings(_gb_same, KBO)
+check("★★ 승차가 같아도 순위가 다르면 '공동'이라 하지 않는다",
+      _h and "공동" not in _h.text, str(_h))
+check("  ↳ 옆 문형과 같은 '0경기 차'로 적는다 (새 낱말을 만들지 않는다)",
+      _h and _h.text == "2·3위 0경기 차", str(_h))
+# 진짜 동률 — 순위가 같으면 그때는 '공동'이 참말이다
+_tie_rank = [_st("SOF", 1, 75, 45, 3, "0"), _st("SEI", 2, 70, 52, 3, "6"),
+             _st("NIP", 2, 70, 52, 3, "6"), _st("HAN", 4, 69, 52, 1, "9"),
+             _st("YOG", 5, 67, 55, 2, "12"), _st("ORI", 6, 60, 62, 2, "15"),
+             _st("HIR", 7, 58, 64, 2, "17"), _st("RAK", 8, 55, 67, 2, "20")]
+_h = H.for_standings(_tie_rank, KBO)
+check("★ 순위가 같을 때만 '공동 N위'라고 쓴다",
+      _h and _h.text == "공동 2위", str(_h))
+# ★★ 변이시험 — 옛 방식(승차만 보고 '공동')이면 첫 표본에서 거짓말이 나온다
+_old = ("2·3위 공동" if 0 == 0 else "")
+check("★★ 변이시험 — 옛 방식은 승차만 같은 두 팀을 '공동'이라 부른다",
+      _old == "2·3위 공동"
+      and (H.for_standings(_gb_same, KBO) or H.Headline("", "")).text != _old)
 
 _runaway = [_st("KT", 1, 69, 44, 3, "0"), _st("SS", 2, 60, 60, 0, "9"),
             _st("LG", 3, 58, 62, 0, "11"),
@@ -527,6 +575,119 @@ check("시점을 아무도 안 밝혔으면 예전처럼 만든다 (옛 호출�
 check("시점을 안 밝혔으면 사실에도 안 남긴다 (모르는 것을 아는 척하지 않는다)",
       "as_of" not in (H.for_preview(away_name="삼성", home_name="LG",
                                     metrics=_SET).facts))
+
+# ── 한국 선수 한 줄 (v1.15 — MLS "한국선수 출전경기만") ──────────
+#
+# 이 한 줄이 없으면 시청자는 **왜 MLS 경기가 딱 하나 올라왔는지** 모른다.
+# 그래서 "있으면 좋은 것"이 아니라 그 기능의 절반이다.
+print("\n한국 선수 한 줄")
+from contract import PlayerLine, TeamRef, League as _L                # noqa: E402
+
+
+def _pl(name, **sc):
+    base = {"start": True, "goals": 0, "own_goals": 0, "card": None}
+    base.update(sc)
+    return PlayerLine(player_id="x", name_ko=name, team=TeamRef(_L.MLS, "LAFC"),
+                      played=True, soccer=base)
+
+
+check("★★ 라인업을 못 본 경기는 아무 말도 안 한다 (모르는 것을 말하지 않는다)",
+      H.korean_player_sub([]) == "" and H.korean_player_sub(None) == "")
+check("선발이면 '선발'", H.korean_player_sub([_pl("손흥민")]) == "손흥민 선발")
+check("★ 선발이 아니면 '교체 명단'이라고만 한다 (뛰었다고 말하지 않는다)",
+      H.korean_player_sub([_pl("손흥민", start=False)]) == "손흥민 교체 명단")
+check("골이 있으면 골을 말한다",
+      H.korean_player_sub([_pl("손흥민", goals=2)]) == "손흥민 선발 · 2골")
+check("자책골은 골과 구분해 적는다",
+      "자책골" in H.korean_player_sub([_pl("손흥민", own_goals=1)]))
+check("경고·퇴장도 소스가 준 대로 적는다",
+      H.korean_player_sub([_pl("손흥민", card="퇴장")]).endswith("퇴장"))
+check("두 명이 뛰면 둘 다 적는다",
+      H.korean_player_sub([_pl("손흥민"), _pl("김기희", start=False)])
+      == "손흥민 선발 / 김기희 교체 명단")
+check("★ 소스에 없는 것(출전 시간·평점)을 지어내지 않는다",
+      not any(w in H.korean_player_sub([_pl("손흥민", goals=1)])
+              for w in ("분", "평점", "활약", "맹활약")))
+# `soccer`가 아예 없는 옛 PlayerLine(야구 코리안리거)이 섞여도 죽지 않아야 한다.
+_old = PlayerLine(player_id="y", name_ko="이정후", team=TeamRef(_L.MLB, "SF"))
+check("★★ 야구 코리안리거 줄은 축구 말로 옮기지 않는다 (이정후가 '교체 명단'이 되면 거짓이다)",
+      H.korean_player_sub([_old]) == "", H.korean_player_sub([_old]))
+check("  ↳ 섞여 있어도 축구 선수만 골라 말한다",
+      H.korean_player_sub([_old, _pl("손흥민")]) == "손흥민 선발")
+
+# ── 오늘의 경기 (v1.15 — 대표님: "베스트 경기를 뽑아 간단히 코멘트") ──
+#
+# 오늘 아침에 '대표 경기'를 없앤 이유가 *"기준이 사람들마다 다를텐데"*였다.
+# 그래서 이 규칙이 지켜야 하는 것은 하나다: **고른 이유가 데이터에서 읽혀야 한다.**
+# 아래 검사는 전부 그것을 본다 — 지어낸 낱말이 없는가, 근거 없이 고르지 않는가,
+# 규칙이 실제로 걸리는가.
+print("\n오늘의 경기 (베스트 + 코멘트)")
+from contract import GameMeta, Goal, Status                     # noqa: E402
+from contract import League as _LG                              # noqa: E402
+import datetime as _dt                                          # noqa: E402
+
+
+class _BR:
+    def __init__(self, c): self.team_code = c
+
+
+class _BG:
+    def __init__(self, h, a, hs, as_, line=None, goals=(), unit=ScoreUnit.RUNS,
+                 st=Status.FINAL):
+        self.home, self.away = _BR(h), _BR(a)
+        self.score = Score(hs, as_, unit) if hs is not None else None
+        self.status = st
+        self.meta = GameMeta()
+        self.meta.line_score = line or []
+        self.meta.goals = goals
+        self.start_utc = _dt.datetime(2026, 9, 5, 9, tzinfo=_dt.timezone.utc)
+
+
+_flip = [(0, 1), (0, 0), (1, 1), (0, 0), (0, 1), (0, 0), (0, 0), (0, 0), (3, 0)]
+_g_flip = _BG("LG", "두산", 4, 3, line=_flip)
+_r = H.best_games([_g_flip], _LG.KBO)
+check("★★ 역전을 알아본다 (구간 점수로 계산 — 소스가 말해 준 게 아니다)",
+      _r and "9회 역전" in _r[0][1], str(_r))
+
+_ext = [(0, 0)] * 8 + [(1, 1)] + [(0, 0), (0, 0), (1, 0)]
+_r = H.best_games([_BG("SSG", "한화", 2, 1, line=_ext)], _LG.KBO)
+check("★ 연장을 알아본다 (구간 수가 정규 9를 넘었다)",
+      _r and "연장 12회" in _r[0][1], str(_r))
+
+_r = H.best_games([_BG("KT", "키움", 12, 9, line=[(2, 1)] * 9)], _LG.KBO)
+check("★ 대량 득점을 알아본다", _r and "합계 21점" in _r[0][1], str(_r))
+
+_gl = (Goal(minute=12, side="away", name="A"),
+       Goal(minute=55, side="home", name="B"),
+       Goal(minute=80, side="home", name="C"))
+_r = H.best_games([_BG("서울", "전북", 2, 1, goals=_gl, unit=ScoreUnit.GOALS)], _LG.KL1)
+check("★ 축구는 득점 시각으로 역전을 잰다 (구간이 없는 종목이다)",
+      _r and "80분 역전" in _r[0][1], str(_r))
+check("  ↳ 축구는 '1점 차'가 아니라 '한 골 차'라고 말한다",
+      _r and "한 골 차" in _r[0][1], str(_r))
+
+check("★★ 규칙에 걸리는 게 없으면 아무것도 고르지 않는다 (억지로 채우지 않는다)",
+      H.best_games([_BG("A", "B", 7, 2, line=[(1, 0)] * 9)], _LG.KBO) == [])
+check("  ↳ 끝나지 않은 경기는 고르지 않는다",
+      H.best_games([_BG("A", "B", None, None, st=Status.SCHEDULED)], _LG.KBO) == [])
+check("  ↳ 빈 목록에도 죽지 않는다", H.best_games([], _LG.KBO) == [])
+
+_many = [_BG("A", "B", 4, 3), _BG("C", "D", 5, 4), _BG("E", "F", 9, 8),
+         _BG("G", "H", 2, 1)]
+check("★ 대표님이 말한 '한두 경기'를 넘지 않는다",
+      len(H.best_games(_many, _LG.KBO)) <= H.BEST_MAX,
+      str(len(H.best_games(_many, _LG.KBO))))
+check("  ↳ 근거가 강한 것이 앞에 온다 (역전 > 연장 > 접전 > 대량)",
+      H.best_games([_BG("A", "B", 9, 8), _g_flip], _LG.KBO)[0][1].startswith("9회 역전"),
+      str(H.best_games([_BG("A", "B", 9, 8), _g_flip], _LG.KBO)))
+
+# **지어낸 낱말이 하나도 없어야 한다.** 이 검사가 이 기능의 핵심이다.
+_words = " ".join(c for _g, c in H.best_games(
+    [_g_flip, _BG("KT", "키움", 12, 9, line=[(2, 1)] * 9)], _LG.KBO))
+check("★★ 감상을 담은 낱말을 쓰지 않는다 (명승부·짜릿·역대급 …)",
+      not any(w in _words for w in
+              ("명승부", "짜릿", "역대급", "최고", "환상", "대박", "완벽", "감동")),
+      _words)
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

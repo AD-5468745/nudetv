@@ -49,6 +49,15 @@ class League(str, Enum):
     BUNDESLIGA = "BUNDESLIGA"
     LIGUE1 = "LIGUE1"
     UCL = "UCL"
+    # 유로파리그 (2026-09-07 대표님: "유에파 챔피언스리그 유로파리그도 이제 추가")
+    UEL = "UEL"
+    # MLS (2026-09-07 대표님: "한국선수 출전경기만 포함").
+    # **리그 전체를 발행하지 않는다** — 한국 선수가 뛰는 경기만 수집 단계에서
+    # 걸러 들어온다(`adapters.naver_football.KOREAN_PLAYERS`).
+    # 걸러내는 자리를 수집으로 잡은 이유: 파이프라인에 리그 예외를 만들면
+    # "리그마다 따로 논다"가 되살아난다(대표님 불만 ③). 파이프라인은 MLS를
+    # 다른 리그와 똑같이 다루고, 애초에 적은 경기만 받는다.
+    MLS = "MLS"
 
 
 class ScoreUnit(str, Enum):
@@ -68,6 +77,8 @@ SCORE_UNIT_BY_LEAGUE: dict[League, ScoreUnit] = {
     League.LALIGA: ScoreUnit.GOALS, League.SERIEA: ScoreUnit.GOALS,
     League.BUNDESLIGA: ScoreUnit.GOALS, League.LIGUE1: ScoreUnit.GOALS,
     League.UCL: ScoreUnit.GOALS,
+    League.UEL: ScoreUnit.GOALS,
+    League.MLS: ScoreUnit.GOALS,
 }
 
 # 스코어 상한 — 파싱 오류가 그대로 카드에 인쇄되는 것을 막는다
@@ -89,6 +100,10 @@ SEASON_FORMAT_BY_LEAGUE: dict[League, re.Pattern] = {
     League.LALIGA: SEASON_SPAN_YEAR, League.SERIEA: SEASON_SPAN_YEAR,
     League.BUNDESLIGA: SEASON_SPAN_YEAR, League.LIGUE1: SEASON_SPAN_YEAR,
     League.UCL: SEASON_SPAN_YEAR,
+    League.UEL: SEASON_SPAN_YEAR,
+    # MLS만 **한 해로 끝난다** — 2~11월 시즌이라 유럽처럼 두 해에 걸치지 않는다.
+    # 유럽과 같은 줄에 있다고 같은 값을 주면 '2026-27 MLS'라는 없는 시즌이 찍힌다.
+    League.MLS: SEASON_SINGLE_YEAR,
 }
 
 GENDER_BY_LEAGUE: dict[League, str] = {
@@ -128,6 +143,8 @@ CARD_THEME_BY_LEAGUE: dict[League, str] = {
     League.EPL: CARD_THEME_DARK, League.LALIGA: CARD_THEME_DARK,
     League.SERIEA: CARD_THEME_DARK, League.BUNDESLIGA: CARD_THEME_DARK,
     League.LIGUE1: CARD_THEME_DARK, League.UCL: CARD_THEME_DARK,
+    League.UEL: CARD_THEME_DARK,
+    League.MLS: CARD_THEME_DARK,
 }
 NIGHT_THEME = CARD_THEME_DARK
 
@@ -238,7 +255,18 @@ SEASON_MONTHS: dict[League, frozenset[int]] = {
     League.SERIEA:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.BUNDESLIGA: frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.LIGUE1:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
-    League.UCL:       frozenset({7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6}),
+    # 유럽 대항전은 **본선만 다룬다** — 소스(네이버)가 예선을 담지 않는다.
+    # 지난 시즌(2025-07~2026-08) 월별 경기 수를 전수 실측한 결과:
+    #   챔피언스리그 7월 0 · 8월 0 · 9월 18 … 5월 3 · 6월 0
+    #   유로파리그   7월 0 · 8월 0 · 9월 18 … 5월 5 · 6월 0
+    # 어제 여기에 12달을 다 적어 두었던 것은 **짐작이었다.** 그대로 두면
+    # 6~8월 석 달 내내 "시즌 중인데 경기가 0건"이 매일 울고, 그 소음에
+    # 진짜 사고가 묻힌다(바로 위 국제 LoL에서 이미 겪은 것과 같은 실수다).
+    League.UCL:       frozenset({9, 10, 11, 12, 1, 2, 3, 4, 5}),
+    League.UEL:       frozenset({9, 10, 11, 12, 1, 2, 3, 4, 5}),
+    # MLS는 **북반구 여름 리그**다(2~11월). 유럽과 정반대라 같은 값을 쓰면
+    # 여름 내내 '비시즌'으로 읽혀 커버리지 감시가 통째로 눈을 감는다.
+    League.MLS:       frozenset({2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
 }
 assert set(SEASON_MONTHS) == set(League), (
     f"SEASON_MONTHS 누락: {[l.value for l in League if l not in SEASON_MONTHS]}")
@@ -445,6 +473,7 @@ SOURCE_FALLBACK: dict[League, Optional[str]] = {
     League.VLEAGUE_M: None, League.VLEAGUE_W: None,
     League.EPL: None, League.LALIGA: None, League.SERIEA: None,
     League.BUNDESLIGA: None, League.LIGUE1: None, League.UCL: None,
+    League.UEL: None, League.MLS: None,
 }
 
 # 리그별 '정상 침묵 상한'(시간). 초과하면 시즌 중인데 콘텐츠가 0건이라는 뜻 → 경보
@@ -453,8 +482,24 @@ NORMAL_SILENCE_HOURS: dict[League, int] = {
     League.KBL: 48, League.VLEAGUE_M: 72, League.VLEAGUE_W: 72,
     League.KL1: 96, League.LCK: 96, League.INTL_LOL: 96,
     League.EPL: 96, League.LALIGA: 96, League.SERIEA: 96,
-    League.BUNDESLIGA: 96, League.LIGUE1: 96, League.UCL: 168,
+    League.BUNDESLIGA: 96,
+    League.LIGUE1: 96,
+    # ⚠️ 대항전은 **시즌 중에도 라운드 사이가 통째로 빈다.** 2026-27 일정 실측:
+    #   챔피언스리그 최대 공백 41일 (12/10 → 1/20) · 2위 33일 (9/11 → 10/14)
+    #   유로파리그   최대 공백 42일 (12/11 → 1/22) · 2위 28일 (9/18 → 10/16)
+    # 어제 "최대 한 주 넘게 빈다"며 168시간을 적었던 것은 짐작이었고 실측이
+    # 그것을 여섯 배로 뒤집었다. 겨울 휴식기마다 매일 헛경보가 났을 값이다.
+    # 1080시간 = 45일 — 실측 최대(42일)에 여유 사흘.
+    League.UCL: 1080,
+    League.UEL: 1080,
+    # MLS는 매주 돈다 — 대항전 같은 긴 공백이 없다.
+    League.MLS: 96,
 }
+# ⚠️ **이 표는 아직 읽는 곳이 없다.** 정의만 있고 소비자가 없는 상수다
+# (2026-09-07 전수 확인: contract.py 밖 어디에서도 참조하지 않는다).
+# 안전장치처럼 보이지만 아무것도 지키지 않는다 — 값을 실측대로 맞춰 두되
+# '있다'고 세지 않는다. 침묵 감시는 지금 coverage.py의 `in_season` +
+# 수집 창 폭이 대신하고 있다(대항전은 창을 넓혀 라운드 공백을 덮는다).
 
 
 def parse_status(raw: str, league: League) -> Status:
@@ -541,6 +586,11 @@ class PlayerLine:
     dnp_reason: Optional[str] = None
     batting: Optional[dict] = None    # AB H HR RBI BB SO SB AVG
     pitching: Optional[dict] = None   # IP H ER K BB ERA WHIP decision
+    # v1.15 — 축구. 야구 칸(batting/pitching)에 억지로 밀어 넣지 않는다.
+    # 그러면 카드가 '타석 0타수'를 축구 선수에게 붙이게 된다.
+    # {"start": bool, "goals": int, "own_goals": int, "card": str|None}
+    # **소스가 준 값만 담는다** — 출전 시간·평점 같은 것은 소스에 없다.
+    soccer: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -614,6 +664,28 @@ class GameMeta:
     # 영원히 방금이 된다. 그리고 **전환을 실제로 관측했을 때만** 적는다 —
     # 처음 보는데 이미 종료인 경기는 언제 끝났는지 모르므로 비워 둔다.
     first_final_at: Optional[str] = None
+
+    # ── 선발 라인업 (v1.17, 축구 전용) ────────────────────────────
+    #
+    # `lineup` — 소스가 준 그대로의 **줄 구조**를 지킨다:
+    #   {"home": {"formation": "4231", "rows": [["라야"], ["화이트", ...], ...]},
+    #    "away": {...}}
+    # 이름만 평탄화해서 담으면 포메이션이 사라진다 — 4-2-3-1이 그림이 되는 것은
+    # 줄이 나뉘어 있기 때문이다. `player_lines`(코리안리거용)와 **섞지 않는다**:
+    # 그쪽은 한국 선수만 골라 담는 다른 목적의 칸이고, 매 틱 새로 채워진다.
+    #
+    # ⚠️ **줄 순서가 팀마다 반대다** (실측 2026-09-08). 원정 팀은 공격수가 첫
+    # 줄로 오는 경우가 있다. 그래서 어댑터가 `formation` 숫자와 줄 인원을
+    # 맞춰 방향을 판정한 뒤 **언제나 GK가 첫 줄**이 되도록 세워서 담는다.
+    # 카드가 다시 판정하지 않는다 — 판정은 소스를 본 곳에서 한 번만 한다.
+    #
+    # ⚠️ **여기 `goal` 값은 쓰지 않는다.** 소스의 라인업 안 `goal` 필드는 실측
+    # 전부 0이었다(득점한 경기도). 골은 `meta.goals`가 유일한 출처다.
+    lineup: Optional[dict] = None
+    # 우리가 **선발 명단이 다 찬 것을 처음 본 시각** (ISO 문자열 또는 None).
+    # `first_final_at`과 같은 규칙: 한 번 적히면 다시 안 바꾼다.
+    # 이 값이 곧 라인업 카드의 예약 시각이다.
+    lineup_seen_at: Optional[str] = None
 
     # v1.9 신설 — 코리안리거·리더보드
     player_lines: list[PlayerLine] = field(default_factory=list)
@@ -778,6 +850,16 @@ class ContentType(str, Enum):
     # 개별 카드가 창을 놓쳐도 요약이 반드시 담으므로 누락이 구조적으로 0이 된다.
     KICKOFF = "kickoff"
     FINAL_FLASH = "final_flash"
+    # **선발 라인업 (v1.17, 2026-09-08 대표님 지시).**
+    # 대표님: *"경기시작전에 알려줄 출장 라인업이 가능하면 좋아"*
+    #
+    # ⚠️ **이것만은 시각으로 예약할 수 없다.** 라인업은 킥오프 약 1시간 전
+    # 공식 발표 전까지 **세상 어디에도 존재하지 않는다** — 실측 2026-09-08:
+    # 종료 경기 7건은 전부 (11,11) 채워짐, 킥오프 18시간 뒤 경기 17건은
+    # 전부 (0,0) 빈칸. 그래서 킥오프 카드(T-10분)나 예고 카드(T-2h)에
+    # 얹을 수 없다. 시각이 아니라 **데이터가 도착한 순간**이 예약 시각이다
+    # (`meta.lineup_seen_at` — FINAL_FLASH의 `first_final_at`과 같은 꼴).
+    LINEUP = "lineup"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
     KOREAN_DAILY = "korean_daily"          # v1.9: 코리안리거 데일리
@@ -809,6 +891,24 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # 그 경기 속보가 사라졌다. 늦더라도 나가는 쪽이 낫다 —
     # 놓쳐도 그날 리그 요약 카드가 반드시 담는다(이중 안전망).
     ContentType.FINAL_FLASH: 3600,
+    # **선발 라인업 (v1.17).** 예약이 '라인업을 처음 본 시각'이라 앞창은 0이고,
+    # 창은 이 유예로만 만든다.
+    #
+    # **처음엔 30분으로 뒀다가 검증에 지고 고쳤다.** 30분은 실측 최악 시계
+    # 간격(240분)보다 좁다 — 관측한 틱에서 발송이 밀리면 다음 틱은 창 밖이라
+    # 카드가 **조용히** 사라진다. 좁은 창은 짝이 되는 안전망이 있을 때만 허용
+    # 되는데(`SAFETY_NET_FOR`), 라인업에는 그런 안전망이 **없다**: 종료 속보가
+    # 같은 명단을 담기는 하지만 그 자신이 창 60분으로 좁고, 그것마저 놓치면
+    # 정리판으로 넘어가는데 **정리판에는 명단이 없다**(여러 경기를 담아서 자리가
+    # 없다). 정보가 보존되지 않는 체인은 안전망이 아니다.
+    #
+    # 그래서 창을 실제로 넓힌다. **이건 검사를 피하려는 숫자가 아니다** —
+    # 라인업 카드는 킥오프 전이면 언제 나가도 참이기 때문에 넓힐 수 있다
+    # (머리말이 남은 시간을 분으로 못 박지 않고 구간으로만 말한다).
+    # 킥오프가 지나면 안 나가는 것은 **창이 닫혀서가 아니라 내용이 만료돼서**다
+    # (`render_v5.lineup_card`가 막는다) — 모닝 브리핑이 정오에 안 나가는 것과
+    # 같은 종류이지, 시계가 뜸해서 사라지는 누락과는 다르다.
+    ContentType.LINEUP: 4 * 3600,
     ContentType.POLL: 1800,
     # v1.11k: 30분 → 3h. 창 90분이라 240분 시계에서 62%가 사라졌다.
     # 분석 카드는 경기 전 정보라 늦으면 값이 떨어지지만, 경기 시작 전이면 유효하다.
@@ -913,6 +1013,8 @@ PACER_PRIORITY: dict[ContentType, int] = {
     # 킥오프는 창이 9분뿐이다 — 페이서가 뒤로 미루면 그대로 사라진다.
     ContentType.KICKOFF: 0,
     ContentType.FINAL_FLASH: 1,
+    # 라인업도 창이 좁다(킥오프 전에만 유효) — 페이서가 뒤로 미루면 사라진다.
+    ContentType.LINEUP: 1,
     ContentType.INPLAY_BOARD: 1,
     ContentType.CORRECTION: 2,
     ContentType.POLL: 3,
@@ -984,8 +1086,9 @@ def shift_out_of_quiet_hours(at_utc: datetime) -> datetime:
 MORNING_ON_TIME_UNTIL_HOUR_KST = 10
 
 
-def morning_label(now_utc: datetime) -> str:
-    """모닝 브리핑 배지·머리말에 쓸 이름. 발송 순간에 정한다.
+def morning_label(now_utc: datetime, first_start_utc: "datetime | None" = None
+                  ) -> str:
+    """경기 예고 배지에 쓸 이름. **발송 순간에 정한다.**
 
     늦은 이름은 **시점을 주장하지 않는다** (v1.11i 육안검수).
     처음엔 "오늘의 경기"로 두었더니, 해외 리그는 대상 슬레이트가 늘 다음날이라
@@ -993,8 +1096,17 @@ def morning_label(now_utc: datetime) -> str:
     한 카드가 스스로 반대말을 한다. 국내 리그에서는 반대로 "오늘의 경기 · 오늘
     KBO 편성 5경기"로 '오늘'이 두 번 겹쳤다.
     시점은 헤드라인이 말한다. 배지는 이 카드가 무엇인지만 말하면 된다.
+
+    **2026-09-07: 기준이 시계에서 첫 경기로 바뀌었다.**
+    예고는 이제 07:30이 아니라 **첫 경기 30분 전**에 잡힌다(대표님 확정).
+    그러면 "아침이냐"는 뜻이 없다 — MLB는 새벽, 유럽은 심야다.
+    뜻이 있는 것은 **첫 경기가 아직 안 시작했느냐**다. 시계가 밀려 첫 경기
+    뒤에 나가는 날에는 '예고'라고 우기지 않는다 — 그건 예고가 아니라 안내다.
     """
-    return ("모닝 브리핑"
+    if first_start_utc is not None:
+        return "경기 예고" if now_utc < first_start_utc else "경기 안내"
+    # 첫 경기를 모르면 옛 기준(시계)으로 떨어진다 — 없는 근거를 지어내지 않는다.
+    return ("경기 예고"
             if now_utc.astimezone(KST).hour < MORNING_ON_TIME_UNTIL_HOUR_KST
             else "경기 안내")
 
@@ -1078,6 +1190,24 @@ PER_GAME_SENDING = True
 KICKOFF_LEAD_SECONDS = 600
 
 
+# ── 선발 라인업 (v1.17, 2026-09-08) ──────────────────────────────
+#
+# **되돌리는 스위치.** False면 라인업 카드도, 종료 속보의 라인업 블록도,
+# 라인업 조회도 전부 멎는다 — 한 줄로 v1.16 상태가 된다.
+LINEUP_ENABLED = True
+
+# 라인업을 **언제부터 찾아보나.** 킥오프 이 시간 전부터 매 틱 확인한다.
+# 실측(2026-09-08): 공식 발표는 킥오프 약 1시간 전, 18시간 전에는 전부 빈칸.
+# 100분으로 잡으면 발표 순간을 놓치지 않으면서, 채워지면 그 경기는 조회를
+# 멈추므로 실제 조회는 경기당 평균 몇 번에 그친다.
+LINEUP_WATCH_SECONDS = 100 * 60
+
+# 라인업 카드를 **낼 수 있는 마지막 시점** (킥오프 이 시간 전까지 관측돼야 한다).
+# 이보다 늦게 뜬 명단은 카드를 내지 않는다 — '경기 시작 전 라인업'이라는
+# 이름과 어긋나기 때문이다. 그 경기의 명단은 종료 속보가 담는다.
+LINEUP_CARD_MIN_LEAD_SECONDS = 15 * 60
+
+
 # 순위표를 결과 카드보다 얼마나 뒤에 둘지. **앞창과 짝을 이루는 값이다** —
 # 아래 LOOKAHEAD_SECONDS_BY_CONTENT[STANDINGS]가 이 값보다 작으면 순위표는
 # 영원히 발송되지 않는다(v1.11n에서 실제로 그랬다. 아래 주석 참조).
@@ -1099,6 +1229,10 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # **결과 속보도 일찍 보낼 수 없다.** 예약이 '종료를 감지한 시각'이라
     # 그보다 이른 시점에는 결과가 존재하지 않는다.
     ContentType.FINAL_FLASH: 0,
+    # **라인업도 같다 — 여기가 이 콘텐츠의 성질 그 자체다.** 예약이 '라인업을
+    # 처음 본 시각'이므로 그보다 이른 시점에는 명단이 존재하지 않는다.
+    # 앞창을 열면 빈 명단으로 카드가 나간다.
+    ContentType.LINEUP: 0,
     # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
@@ -1156,16 +1290,44 @@ def send_window_seconds(content_type: "ContentType", default_lookahead: int) -> 
 # 지금 큐에 실제로 오르는 콘텐츠. 게이트는 이것만 본다 —
 # 아직 만들지 않은 콘텐츠까지 검사하면 오탐으로 발행 전체가 멈춘다.
 QUEUED_CONTENT_TYPES: frozenset = frozenset({
-    ContentType.MORNING, ContentType.START_ALERT, ContentType.LEAGUE_RESULT,
+    ContentType.MORNING, ContentType.LEAGUE_RESULT,
     # v1.11k — 대표님 지시로 약속했던 콘텐츠를 되살린다.
     # "경기분석이나 처음에 하기로 했던 다른 정보들은 전혀 올라오고 있지 않아."
     # 계약에 19종이 선언돼 있는데 실제로 나가는 것은 3종뿐이었다.
     ContentType.STANDINGS, ContentType.LEADERBOARD,
-    ContentType.NIGHT_BRIEF, ContentType.ANALYSIS,
+    ContentType.ANALYSIS,
     # v1.14 — 경기별 2종. **게이트가 보게 넣는다.** 안 넣으면 창이 좁아져도
     # 아무 데도 안 나타난다(약점 50: 게이트가 안 보는 콘텐츠는 안전장치가 없다).
     ContentType.KICKOFF, ContentType.FINAL_FLASH,
+    # v1.17 — 선발 라인업. **게이트가 보게 넣는다**(위와 같은 이유).
+    ContentType.LINEUP,
+    # ⚠️ **나이트 브리핑은 여기 없다 (2026-09-07).** 아래 참고.
 })
+
+# ── 지금 끈 콘텐츠 ────────────────────────────────────────────────
+#
+# **나이트 브리핑(23:00 전 리그 통합 1장).** 역할이 사라져서 껐다.
+# 대표님이 그것을 리그별로 나누라고 하시면서 리그 결과 정리판과 같은 자리에
+# 서게 됐다 — 같은 리그, 같은 날, 같은 경기 목록. 대표님이 그린 흐름에도
+# 리그 단위 카드는 정리판 하나다:
+#
+#   1번 경기 끝남 → 즉시 [경기 종료 카드]   … 마지막 경기까지
+#   마지막 경기 끝남 → 즉시 [경기 종료 카드] → **30분 뒤** [전경기 정리판]
+#
+# **계약·렌더·검증 코드는 전부 남긴다.** 되돌리는 길이 이 집합 한 줄이어야
+# 하고, 전 리그 통합 카드가 다시 필요해질 수 있다(예: 주간 요약).
+# 큐에서 빠지므로 게이트·감시도 이 콘텐츠를 찾지 않는다 —
+# 켜 두고 안 만들면 "왜 안 나오지"라는 유령 경고가 매일 뜬다(약점 112·113).
+# **시작 알림(START_ALERT)도 껐다 (2026-09-07).**
+# 그것은 첫 경기 2시간 전에 나가는 **텍스트 한 줄 + 경기 목록**이었다.
+# 경기 예고도 첫 경기 `START_ALERT_LEAD_MINUTES`(120분) 전에 나간다 —
+# **같은 시각에 같은 목록을 두 번** 말하게 됐다. 하나는 이미지, 하나는 텍스트로.
+# 종료 쪽에서 나이트 브리핑을 끈 것과 같은 이유다.
+DISABLED_CONTENT_TYPES: frozenset = frozenset({
+    ContentType.NIGHT_BRIEF, ContentType.START_ALERT,
+})
+assert not (QUEUED_CONTENT_TYPES & DISABLED_CONTENT_TYPES), (
+    "끈 콘텐츠가 큐 목록에 남아 있습니다 — 둘 중 하나가 거짓말을 합니다")
 
 
 # ── 창을 못 넓히는 콘텐츠와 그 안전망 (v1.14) ────────────────────
@@ -1181,6 +1343,15 @@ QUEUED_CONTENT_TYPES: frozenset = frozenset({
 SAFETY_NET_FOR: dict["ContentType", "ContentType"] = {
     ContentType.KICKOFF: ContentType.START_ALERT,      # 그 리그 시간표가 담는다
     ContentType.FINAL_FLASH: ContentType.LEAGUE_RESULT,  # 그날 결과 요약이 담는다
+    # ⚠️ **선발 라인업(v1.17)은 여기 없다 — 넣으려다 검증에 지고 뺐다.**
+    #
+    # 종료 속보가 같은 명단을 담으니 안전망이라고 적었는데, 검사가 두 가지를
+    # 짚었다: ① 종료 속보 자신이 창 60분으로 좁다(안전망이 같이 사라진다)
+    # ② 그것마저 놓치면 정리판으로 가는데 **정리판에는 명단이 없다**.
+    # 정보가 보존되지 않는 체인은 안전망이 아니다.
+    # 그래서 라인업은 안전망에 기대지 않고 **자기 창을 넓혔다**
+    # (`GRACE_SECONDS[LINEUP]` 주석 참조). 종료 속보가 명단을 다시 싣는 것은
+    # 여전히 사실이고 값어치도 있지만, 그건 덤이지 계약이 아니다.
 }
 NARROW_BY_DESIGN: frozenset = frozenset(SAFETY_NET_FOR)
 
@@ -1848,7 +2019,116 @@ LEAGUE_COLORS: dict[League, tuple[str, str]] = {
     League.BUNDESLIGA: ("#b32127", "#ffd7d7"),
     League.LIGUE1:     ("#1a5aa8", "#d8e8ff"),
     League.UCL:        ("#3f34b8", "#dcd9fb"),
+    # 유로파는 UCL(인디고)과 **뚜렷이 갈라야 한다** — 같은 주에 나란히 나가는
+    # 대회라 색이 비슷하면 두 카드가 구분되지 않는다. 주황 계열로 벌린다.
+    League.UEL:        ("#a35a07", "#ffe3c4"),
+    League.MLS:        ("#0f6f7a", "#cbeff5"),
 }
+
+# ── 소스 표기 의무 (v1.15) ──────────────────────────────────────
+#
+# football-data.org 이용약관 **제7.1조**:
+#   "You agree to include the following attribution to Football-Data in your
+#    app or website: \"Football data provided by the Football-Data.org API\".
+#    This attribution could be published in the footer, about us section or
+#    another visible location in your app or website."
+#
+# **문구를 바꾸지 않는다.** 약관이 문장을 특정하고 있으므로 번역도 요약도
+# 하지 않고 그대로 싣는다. 카드 꼬리말이 약관이 말하는 'footer'다.
+#
+# **왜 표로 두나.** 리그마다 소스가 다르고, 소스가 바뀌면 표기도 같이 바뀌어야
+# 한다. 호출하는 쪽 일곱 군데에 문자열을 흩어 두면 그중 하나를 반드시 빠뜨린다
+# (약점 135: 같은 결함을 한 열에서만 막으면 다른 열에서 다시 난다).
+# 그래서 계약이 표를 갖고, 카드 껍데기 **한 곳**에서만 읽는다.
+FOOTBALL_DATA_CREDIT = "Football data provided by the Football-Data.org API"
+
+# **지금은 비어 있다 — 그게 맞다.**
+# 1차 소스가 네이버로 정해졌고(2026-09-07 대표님 판단), football-data는
+# 네이버가 막히는 날을 위한 **2차 소스**로만 대기한다.
+# 안 쓰는 소스를 카드에 표기하면 그것도 출처를 속이는 것이다(약점 107의 뒷면).
+#
+# football-data로 실제로 받은 날에는 이 표를 채워 넣는다 — 배선은
+# 이미 다 되어 있어서(`cards_v5.credit_line` → 꼬리말) 표만 채우면 붙는다.
+# 채우는 한 줄:
+#     SOURCE_CREDIT = {lg: FOOTBALL_DATA_CREDIT for lg in FOOTBALL_DATA_LEAGUES}
+FOOTBALL_DATA_LEAGUES: frozenset = frozenset({
+    League.EPL, League.LALIGA, League.SERIEA,
+    League.BUNDESLIGA, League.LIGUE1, League.UCL,
+})
+SOURCE_CREDIT: dict = {}
+
+
+# ── v5 카드의 리그 강조색 (v1.15) ───────────────────────────────
+#
+# **위 `LEAGUE_COLORS`를 v5 카드에 그대로 못 쓴다.** 그 표는 v4의 **밝은**
+# 카드용이다 — 파스텔 워시는 어두운 배경(#0C1016)에서 대비는 14~15로 충분하지만
+# 서로 구분이 안 된다. 실측: UCL `#dcd9fb`와 EPL `#e7dcfa`는 눈으로 같은 색이다.
+# 리그를 갈라 보이게 하려고 색을 넣는 것인데 갈라지지 않으면 넣을 이유가 없다.
+#
+# 그래서 **어두운 카드 전용 팔레트**를 따로 둔다. 기준 셋:
+#   ① 어두운 배경 대비 ≥ 4.5 (실측 6.4~13.3 — 전부 통과)
+#   ② 서로 색상각 ≥ 16° (실측 최소 16°: 분데스 29° · 유로파 45°)
+#   ③ 브랜드 민트(#35E0A1, 색상각 155°) 구간을 비워 둔다 —
+#      리그색이 브랜드색과 헷갈리면 둘 다 뜻을 잃는다
+#
+# ⚠️ **색만으로 리그를 구분시키지 않는다**(위 `LEAGUE_COLORS` 주석과 같은 이유).
+# 9개를 sRGB에서 완전히 벌릴 수 없고, 색약에서는 어떤 팔레트도 몇 쌍이 붕괴한다.
+# v5 카드는 머리에 리그 이름을 글자로 항상 달고 있다 — 색은 **보조 신호**다.
+LEAGUE_ACCENT_DARK: dict = {
+    League.LALIGA:     "#FF5C7A",   # 349° 장미
+    League.MLB:        "#FF6E5C",   #   7° 빨강
+    League.BUNDESLIGA: "#FF9E45",   #  29° 주황
+    League.UEL:        "#FFD34D",   #  45° 금색 — UCL 보라와 가장 멀리 벌린다
+    League.MLS:        "#4ADEDE",   # 181° 청록 — 브랜드 민트(155°)와 26° 벌린다
+    League.SERIEA:     "#4FC3F7",   # 199° 하늘
+    League.LIGUE1:     "#7B9CFF",   # 225° 청보라
+    League.UCL:        "#A78BFA",   # 255° 보라
+    League.EPL:        "#D08BFF",   # 276° 자보라
+    League.NPB:        "#FF7BC8",   # 325° 분홍
+    League.LCK:        "#8B7BFF",   # 발행에서 뺐지만 표는 남긴다(되돌리기 한 줄)
+    League.INTL_LOL:   "#8B7BFF",
+}
+
+# 밝은 카드(paper 테마)는 새 팔레트가 필요 없다 — `LEAGUE_COLORS`의 잉크색이
+# 이미 밝은 배경 대비 5.0~8.5로 실측 검증되어 있다. 그대로 쓴다.
+LEAGUE_ACCENT_PAPER: dict = {lg: ink for lg, (ink, _w) in LEAGUE_COLORS.items()}
+
+
+def league_accent(league: "Optional[League]", theme: str) -> "Optional[str]":
+    """v5 카드 강조색. 리그를 모르거나 표에 없으면 None(= 브랜드색 유지).
+
+    **없는 리그를 조용히 아무 색으로 떨구지 않는다.** 그러면 새 리그가
+    다른 리그 색을 뒤집어쓰고 나가는데 아무도 못 알아챈다.
+    """
+    if league is None:
+        return None
+    table = LEAGUE_ACCENT_PAPER if theme == "paper" else LEAGUE_ACCENT_DARK
+    return table.get(league)
+
+
+def assert_v5_accent_cover() -> None:
+    """어두운 테마를 쓰는 **발행 중인** 리그가 전부 팔레트에 있는가."""
+    missing = [l.value for l in League
+               if league_enabled(l) and card_theme(l) != "paper"
+               and l not in LEAGUE_ACCENT_DARK]
+    if missing:
+        raise GateError(
+            f"v5 어두운 카드 강조색 누락: {missing} — "
+            f"그 리그만 브랜드색으로 나가 리그 구분이 사라집니다.")
+
+
+# ── 정규 구간 수 (v1.15) ────────────────────────────────────────
+#
+# 야구 9이닝 · 농구 4쿼터 · 배구 5세트. **구간 수가 이보다 많으면 연장**이다.
+# 종목이 아니라 **점수 단위**로 잰다 — 리그가 늘어도 표를 안 고쳐도 된다.
+# (배구는 5세트가 정규 상한이라 '연장'이 없다. 그래도 값을 적어 두어야
+#  세트 여섯이 오는 이상한 데이터를 규칙이 알아본다.)
+REGULAR_PERIODS: dict = {
+    ScoreUnit.RUNS: 9,
+    ScoreUnit.POINTS: 4,
+    ScoreUnit.SETS: 5,
+}
+
 
 # 리그색을 넣는 4개 영역과 강도. 이 밖(점수·승패·순위 숫자)에는 절대 쓰지 않는다.
 LEAGUE_TINT = {"strip": 1.00, "header_wash": 0.13, "pill_bg": 0.22, "pill_border": 0.42, "row": 0.16}
@@ -1859,7 +2139,21 @@ SEMANTIC_COLORS = {"gold": "#ffd23f", "win": "#4ade80", "lose": "#8595ad", "aler
 PACER_MSG_PER_SECOND = 1
 PACER_MSG_PER_MINUTE = 20
 BURST_WINDOW_S = 600
-BURST_MAX_MESSAGES = 60
+# **10분 창 폭주 차단기 — "지금 뭔가 미쳤다"를 잡는 값이다.**
+#
+# 발송 *속도*를 정하는 것은 이 값이 아니라 위의 페이서다(분당 20건). 이건
+# 그 위에 얹은 **이상 감지선**이라, 정상 운영의 최악보다는 높고 페이서가
+# 10분에 낼 수 있는 최대(200건)보다는 훨씬 낮아야 뜻이 있다.
+#
+# **v1.17에서 60 → 90 (2026-09-08).** 60은 라인업을 켜기 전에도 이미 한계에
+# 닿아 있었다 — 검증이 계산한 정상 최악이 59건(대항전 18경기 동시 종료 +
+# 국내 리그 동시 종료 + 심야 회피로 몰린 예고 15장)이라 **여유가 1건**이었다.
+# 여기에 선발 라인업이 더해지면(대항전 두 대회의 명단이 같은 틱에 몰릴 때
+# 최대 16건) 75건이 되어 반드시 넘는다. 넘으면 그 창의 카드가 밀리는데,
+# 밀린 카드 중 창이 좁은 것은 그대로 사라진다.
+# 90은 정상 최악 75 위에 15건 여유를 둔 값이고, 페이서 한도(200)보다는
+# 여전히 훨씬 낮아 폭주는 그대로 잡는다.
+BURST_MAX_MESSAGES = 90
 BURST_AUTO_RELEASE_S = 1800
 BURST_CANARY_OBSERVE_S = 300     # v1.9: 해제 시 전량 재개 금지 — 1건만 내보내고 관찰
 BURST_MAX_AUTO_RELEASES = 3      # v1.9: 3회 이상이면 수동 해제 전용
@@ -1899,7 +2193,21 @@ def league_enabled(league: "League") -> bool:
 # 유럽 6개 대회를 켜면 주말에 최대 56경기가 더해져 약 250장이 된다.
 # 400은 그 위에 여유를 둔 값이다 — **천장이지 목표가 아니다.**
 # 여기 닿으면 그건 정상 운영이 아니라 사고이므로, 닿는 순간 알림이 뜬다.
-DAILY_MAX_MESSAGES = 400
+#
+# **v1.17에서 400 → 500 (2026-09-08).** 선발 라인업 카드를 켜면서 최악
+# 계산이 405장이 되어 **천장을 넘었다** — 검증(`verify_sender`)이 잡았다.
+# 그대로 두면 정상 운영 중에 그날 뒷부분이 통째로 "다음 날 재시도"로 밀린다.
+# 그건 사고 감지가 아니라 **조용한 누락**이다.
+#
+# 405의 내역: 경기별 248(킥오프+속보) + 리그 60 + 분석 12 + 기타 3
+#             + **라인업 82**(유럽 7개 대회 + MLS의 하루 최대 경기 수 합)
+#
+# ⚠️ **405는 이론적 최악이고 실제와는 거리가 있다** — 모든 리그가 같은 날
+# 동시에 최대 경기를 치른다는 가정이라, UCL 18과 UEL 18이 같은 날인 것처럼
+# 센다(실제로는 수·목으로 갈린다). 실측 운영값은 하루 323장이고, 라인업을
+# 더해도 평균 +10.6장 · 최대 +21장이다(2026-09-07~09-21 유럽 일정 실측).
+# 그래도 **낙관적인 숫자로 천장을 정하지 않는다** — 천장은 최악을 덮어야 한다.
+DAILY_MAX_MESSAGES = 500
 
 
 class SendMethod(str, Enum):
@@ -1978,6 +2286,34 @@ TELEGRAM_PARSE_MODE = "HTML"          # 혼용 금지. MarkdownV2는 이스케�
 BLOCKQUOTE_MIN_API = "7.0"            # <blockquote>
 EXPANDABLE_BLOCKQUOTE_MIN_API = "7.4" # <blockquote expandable>
 BLOCKQUOTE_NESTING_ALLOWED = False    # 공식 제약 — 중첩 불가
+
+# ── 카드에 붙는 버튼 (v1.15d, 2026-09-07 대표님 지시) ─────────────
+#
+# 대표님: *"경기시작 알림글에는 버튼을 하나 붙여서 발송하자. 버튼에 URL을 연결.
+# 유알엘은 누드티비 주소."*
+#
+# **텔레그램 제약 — 앨범(sendMediaGroup)은 버튼을 못 단다.** 사진 1장(sendPhoto)과
+# 텍스트만 `reply_markup`을 받는다. 킥오프 카드는 언제나 1장이라 문제가 없지만,
+# 그 전제가 깨지는 날 **버튼이 조용히 사라지는** 것이 이 프로젝트가 가장 경계하는
+# 사고다 → `Payload.gate()`가 "버튼 + 사진 2장 이상"을 **막는다**(조용히 빼지 않는다).
+BRAND_URL = "https://nude-tv.net"     # 카드 워터마크(NUDE-TV.NET)와 같은 곳
+BRAND_BUTTON_TEXT = "경기 보러가기"
+
+# 버튼을 다는 콘텐츠. **지금은 킥오프 하나다.**
+# 늘리려면 이 집합에 넣기만 하면 된다 — 되돌리기도 한 줄이다.
+# (여기가 비면 버튼 기능 전체가 꺼진다.)
+BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup"})
+
+
+def brand_button() -> list[list[dict]]:
+    """텔레그램 인라인 키보드 한 줄 한 개. **URL은 한 곳에서만 나온다.**
+
+    **문구는 대표님이 정한다 (2026-09-07).** 나는 "그 주소가 무엇을 주는지
+    단정하지 말자"며 '누드TV 바로가기'로 뒀는데, 그 사이트가 무엇을 주는지는
+    **주인이 아는 사실**이지 우리가 지어내는 약속이 아니다.
+    → 대표님 지시로 '경기 보러가기'.
+    """
+    return [[{"text": BRAND_BUTTON_TEXT, "url": BRAND_URL}]]
 
 _HTML_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
 
@@ -2106,6 +2442,8 @@ GAME_DURATION_SECONDS: dict[League, int] = {
     League.BUNDESLIGA: int(2.2 * 3600),
     League.LIGUE1: int(2.2 * 3600),
     League.UCL: int(2.2 * 3600),
+    League.UEL: int(2.2 * 3600),
+    League.MLS: int(2.2 * 3600),
     League.KBL: int(2.5 * 3600),        # 농구 — 연장 포함
     League.VLEAGUE_M: int(2.5 * 3600),  # 배구 — 5세트 풀
     League.VLEAGUE_W: int(2.5 * 3600),
@@ -2146,7 +2484,8 @@ MIN_GAME_SECONDS: dict[League, int] = {
     League.KBO: 4500, League.MLB: 4500, League.NPB: 4500,          # 야구 75분
     League.KL1: 5400, League.EPL: 5400, League.LALIGA: 5400,       # 축구 90분
     League.SERIEA: 5400, League.BUNDESLIGA: 5400,
-    League.LIGUE1: 5400, League.UCL: 5400,
+    League.LIGUE1: 5400, League.UCL: 5400, League.UEL: 5400,
+    League.MLS: 5400,
     League.KBL: 4500, League.VLEAGUE_M: 3000, League.VLEAGUE_W: 3000,
     League.LCK: 1800, League.INTL_LOL: 1800,                       # LoL 1세트 30분
 }
@@ -2259,6 +2598,98 @@ def day_schedule_scope(game: "Game") -> str:
     scope에 리그를 넣는 이유는 멱등키 사고와 같다 — 안 넣으면 아홉 리그가 서로를 덮는다.
     """
     return f"{game.league.value}:{game.sports_day}"
+
+
+# ── 경기 예고 묶음 (v1.15) ──────────────────────────────────────
+#
+# **왜 하루 한 장으로는 안 되나 (2026-09-07 실측).**
+# 유럽 5대리그는 하루에 **19~22시간**에 걸쳐 경기가 열린다 —
+# 유럽 현지 토요일 낮부터 밤까지가 한국시각으로 새벽부터 다음날 새벽이다.
+#   라리가 09-13: 01:30 · 04:00 · 21:00 · 23:15  (21.8시간)
+#   EPL   09-05: 04:00 · 20:30 · 23:00×5        (19.0시간)
+# 그 하루를 한 장으로 예고하면 "첫 경기 2시간 전"이 마지막 경기에는
+# **22시간 전**이 된다. 대표님 지적: *"첫경기 30분전은 너무 타이트"* 를
+# 고친 뒤에 남은 반대쪽 문제이고, 대표님이 *"시간대별로 쪼갠다"*로 정했다.
+#
+# **묶는 기준은 '같은 시각'이 아니라 '끊기지 않는 덩어리'다.**
+# 같은 시각(±5분)으로 묶으면 라리가가 하루 4장이 된다 — 옛 시작 알림이
+# 정확히 그래서 하루 26건을 냈고 도배로 판정됐다(v1.11c).
+# 3시간 이상 벌어지면 다른 덩어리로 본다. 실측 결과:
+#   챔스·유로파 → 1장 (01:45·04:00, 2.25시간 차라 한 덩어리)
+#   EPL·라리가·리그1·세리에A·분데스 → 2장
+#   국내 리그 → 1장 (전 경기가 같은 시각)
+PREVIEW_BUCKET_GAP_SECONDS = 3 * 3600
+
+
+# 예고 **예약 시각**이 이만큼 안에 붙으면 두 덩어리를 하나로 합친다.
+# 심야 회피 때문에 필요하다 — 새벽 경기의 예고가 전날 밤으로 당겨지면서
+# 앞 덩어리의 예고와 몇 분 차로 겹칠 수 있다(실측 리그1 2026-09-13:
+# 00:15 경기 예고 22:15 · 03:45 경기 예고 22:00 — **15분 차에 두 장**).
+# 그러면 쪼갠 뜻이 없고 도배만 된다.
+PREVIEW_MERGE_WITHIN_SECONDS = 30 * 60
+
+
+def preview_at(first_start_utc: datetime, lead_seconds: int) -> datetime:
+    """그 덩어리의 예고가 실제로 예약되는 시각(심야 회피 포함).
+
+    **큐와 묶음 계산이 같은 식을 쓰게 하려고 함수로 뺐다** — 두 곳에서
+    계산하면 반드시 어긋난다(약점 104에서 같은 실수를 했다).
+    """
+    return shift_out_of_quiet_hours(
+        first_start_utc - timedelta(seconds=lead_seconds))
+
+
+def preview_buckets(games: "list[Game]", *, lead_seconds: int = 0
+                    ) -> "list[tuple[str, list[Game]]]":
+    """그날 경기를 **시간대 덩어리**로 나눈다. `[(묶음키, 경기들)]`.
+
+    묶음키는 **그 덩어리 첫 경기의 한국시각**이다(`MM-DD HH:MM` 분 단위).
+    순번(#1·#2)을 쓰지 않는 이유: 경기 하나가 취소되면 순번이 밀려
+    **이미 보낸 예고가 다른 묶음의 키를 갖게 된다** — 그러면 재발송된다.
+    시각은 그 덩어리가 사라지지 않는 한 그대로다.
+
+    **취소·연기 경기도 함께 넣는다.** 그날 편성의 일부이고, 빼고 세면
+    첫 경기가 바뀌어 예약이 뒤로 밀린다(약점 64).
+
+    `lead_seconds`를 주면 **예고 예약 시각까지 보고 병합**한다.
+    안 주면 경기 시작 간격으로만 나눈다(묶음 자체를 볼 때 쓴다).
+    """
+    out: "list[list[Game]]" = []
+    cur: "list[Game]" = []
+    prev = None
+    for g in sorted(games, key=lambda x: x.start_utc):
+        if prev is not None and (g.start_utc - prev).total_seconds() \
+                >= PREVIEW_BUCKET_GAP_SECONDS:
+            out.append(cur)
+            cur = []
+        cur.append(g)
+        prev = g.start_utc
+    if cur:
+        out.append(cur)
+
+    if lead_seconds:
+        # 예약 시각이 붙은 덩어리를 앞에서부터 합친다. 합치면 첫 경기가
+        # 앞당겨져 예약도 앞당겨지므로 **합친 뒤 다시 잰다.**
+        merged: "list[list[Game]]" = []
+        for bucket in out:
+            if merged:
+                a_at = preview_at(min(x.start_utc for x in merged[-1]),
+                                  lead_seconds)
+                b_at = preview_at(min(x.start_utc for x in bucket), lead_seconds)
+                # 경계는 **포함**이다 — 정확히 30분 차가 실제로 나온다
+                # (00:30 경기 예고 22:30 · 03:30 경기 예고 22:00).
+                # `<`로 두면 그 경우가 안 합쳐져 30분 간격 두 장이 나간다.
+                if abs((b_at - a_at).total_seconds()) \
+                        <= PREVIEW_MERGE_WITHIN_SECONDS:
+                    merged[-1] = merged[-1] + bucket
+                    continue
+            merged.append(bucket)
+        out = merged
+    return [(_preview_key(b[0]), b) for b in out]
+
+
+def _preview_key(first: "Game") -> str:
+    return first.start_kst.strftime("%m-%d %H:%M")
 
 
 def start_alert_bucket(game: "Game", minutes: int = 5) -> str:
@@ -2678,6 +3109,53 @@ def unknown_team_codes(games: "list[Game]") -> "list[tuple[League, str]]":
     return sorted(out, key=lambda x: (x[0].value, x[1]))
 
 
+# ── 소스가 팀 이름을 **이미 한국어로** 주는 리그 (v1.15) ──────────
+#
+# 네이버 해외축구는 팀을 `우니온 베를린`·`AT 마드리드`처럼 한글 이름으로 준다.
+# 그래서 코드 자리에 이름을 그대로 넣는다 — `team_name()`은 표에 없는 코드를
+# 그대로 돌려주므로 카드에 한글이 찍힌다.
+#
+# **왜 표를 안 만드나.** 7개 대회에 135개 구단이고(실측 2026-09-07), 유럽 대항전은
+# 해마다 참가팀이 바뀐다. 표를 요구하면 그때마다 손으로 적어야 하는데, 표가
+# 지키려던 것은 '표가 있는가'가 아니라 **'카드에 읽을 수 있는 이름이 찍히는가'**다.
+# 표는 그 목적의 수단일 뿐이고, 여기서는 수단이 목적을 지키지 못한 채 유지비만 만든다.
+# 그래서 **목적을 직접 검사한다** — `is_readable_ko`.
+# (실측: 135개 전부 통과. 8자를 넘는 둘은 어댑터의 NAME_FIX가 줄인다.)
+NAME_IS_ALREADY_KO: frozenset = frozenset({
+    League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
+    League.LIGUE1, League.UCL, League.UEL, League.MLS,
+})
+
+# ── 소스 팀명 예외 표 (v1.16, 2026-09-07) ─────────────────────────
+#
+# 대표님 지시로 **전 리그 팀명을 전수 점검**했다(198팀 · 네이버 표기 대조).
+# 결론은 "대체로 맞다" — KBO 10/10 · NPB 12/12 · K리그 12/12 · MLB 29/30이
+# 네이버와 같았다. 유럽·MLS는 소스 이름을 그대로 쓰므로 애초에 같다.
+#
+# **그래서 표를 새로 만들지 않고 어긋난 것만 덮는다.** 198팀을 사람이 관리하면
+# 그 표가 곧 다음 사고가 된다(약점 141: 표는 작을수록 정확하다).
+# 여기 넣는 기준은 셋뿐이다:
+#   ① 같은 지명을 다른 리그에서 다르게 부른다 (약점 93)
+#   ② 카드 폭(`TEAM_NAME_MAX_LEN`)을 넘어 접힌다 (약점 18·37)
+#   ③ 표기가 깨져 있다 (군더더기 공백 등)
+# **취향으로 넣지 않는다.** 근거를 옆에 적지 못하면 넣지 않는다.
+TEAM_NAME_FIX: dict[str, str] = {
+    # ① 같은 도시를 MLB는 '샌디에이고'·'애틀랜타'로 쓴다. 국립국어원 표기도 그쪽이다.
+    "샌디에고": "샌디에이고",
+    "애틀란타": "애틀랜타",
+    # ② 9자라 카드 행이 무너진다. 그 클럽은 한국에서도 '알크마르'로 통한다.
+    "알크마르 잔스트리크": "알크마르",
+    # ③ 소스가 슬래시 양쪽에 공백을 넣어 한 팀이 두 팀처럼 읽힌다.
+    "보되 / 글림트": "보되/글림트",
+}
+
+
+def fix_team_name(name: str) -> str:
+    """소스가 준 팀명을 카드 표기로. **표에 없으면 그대로 둔다.**"""
+    n = (name or "").strip()
+    return TEAM_NAME_FIX.get(n, n)
+
+
 def assert_team_names_cover(games: "list[Game]") -> None:
     """수집한 경기의 팀이 전부 표에 있는지 본다.
 
@@ -2690,7 +3168,20 @@ def assert_team_names_cover(games: "list[Game]") -> None:
     수집 단계에서 막으면 그 리그만 이번 틱을 건너뛰고, 다음 틱에 다시 시도한다.
     카드에 코드가 찍혀 나가는 것보다 낫다.
     """
-    bad = unknown_team_codes(games)
+    # 소스가 한글 이름을 주는 리그는 **표 대신 판독성을 본다**(위 주석).
+    # 목적이 같으므로 게이트가 약해지지 않는다 — 오히려 표가 낡는 사고를 없앤다.
+    unreadable = [(g.league, c) for g in games
+                  if g.league in NAME_IS_ALREADY_KO
+                  for c in (g.home.team_code, g.away.team_code)
+                  if not is_readable_ko(c)]
+    if unreadable:
+        raise GateError(
+            "한국어로 읽을 수 없는 팀 이름입니다 — 카드에 그대로 찍힙니다: "
+            + " · ".join(f"{lg.value}:{c}" for lg, c in unreadable[:6])
+            + ". 소스 표기가 바뀌었을 수 있습니다(어댑터의 NAME_FIX를 보세요).")
+
+    bad = [(lg, c) for lg, c in unknown_team_codes(games)
+           if lg not in NAME_IS_ALREADY_KO]
     if bad:
         raise GateError(
             "표에 없는 팀 코드입니다 — 이대로면 카드에 코드가 그대로 찍힙니다: "
@@ -2993,7 +3484,8 @@ REGULAR_SEASON_GAMES: dict[League, Optional[int]] = {
     League.KBL: 54, League.VLEAGUE_M: 36, League.VLEAGUE_W: 36,
     League.KL1: 38, League.EPL: 38, League.LALIGA: 38, League.SERIEA: 38,
     League.BUNDESLIGA: 34, League.LIGUE1: 34,
-    League.UCL: None, League.LCK: None, League.INTL_LOL: None,
+    League.UCL: None, League.UEL: None, League.MLS: None,
+    League.LCK: None, League.INTL_LOL: None,
 }
 
 # 리그별 팀 수 — 순위표 완전성 검사용. 한 팀이라도 빠지면 게이트가 막는다.
@@ -3002,7 +3494,8 @@ LEAGUE_TEAM_COUNT: dict[League, Optional[int]] = {
     League.KBL: 10, League.VLEAGUE_M: 7, League.VLEAGUE_W: 7,
     League.KL1: 12, League.EPL: 20, League.LALIGA: 20, League.SERIEA: 20,
     League.BUNDESLIGA: 18, League.LIGUE1: 18,
-    League.UCL: None, League.LCK: None, League.INTL_LOL: None,
+    League.UCL: None, League.UEL: None, League.MLS: None,
+    League.LCK: None, League.INTL_LOL: None,
 }
 
 

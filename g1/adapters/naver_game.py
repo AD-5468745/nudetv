@@ -391,6 +391,20 @@ class NaverGameAdapter(NoticeMixin):
         todo = [g for g in games
                 if g.status is Status.FINAL and g.score is not None
                 and not g.meta.line_score and not g.meta.goals]
+        # ★ **최신 경기부터 채운다 (fix54, 2026-09-07).**
+        #
+        # 전에는 `games` 순서(날짜 오름차순) 그대로였다. 그래서 시즌 초부터
+        # 차례로 채웠고 **오늘 경기가 대기줄 맨 뒤**에 섰다. 실측: KBO 보강
+        # 대기 115건 · 한 틱 12건 → 오늘 경기 차례까지 **약 50분(10틱)**.
+        # 정리판은 마지막 경기 종료 +30분에 나가므로 **그날 흐름이 못 들어간다.**
+        #
+        # 그 증거가 2026-09-05 KBO 정리판이다. 삼성 4:3 LG는 실제로
+        # **11회 연장 역전**이었는데 카드에는 "1점 차"라고만 적혔다 —
+        # 역전·연장은 이닝 기록이 있어야 판정되는데 그 시점에 없었기 때문이다.
+        # 규칙이 빈약했던 것이 아니라 **재료가 제때 도착하지 않았다.**
+        #
+        # 지난 경기도 결국 다 채워진다. 순서만 뒤집을 뿐 총량은 같다.
+        todo.sort(key=lambda g: g.start_utc, reverse=True)
         # **한 틱에 몇 개까지 볼지는 부르는 쪽이 정한다 (fix49).**
         # 예전엔 tick이 이 모듈의 전역 `MAX_GAMES_PER_TICK`을 덮어썼다 —
         # 한 번 덮으면 되돌아오지 않아, 같은 프로세스의 다른 사용처(검증·기록)도

@@ -435,6 +435,54 @@ expect("캡션 1024자 초과 차단",
        lambda: Payload(photos=photos(1), caption="가" * 1100).gate())
 expect("텍스트 4096자 초과 차단", lambda: Payload(text="가" * 5000).gate())
 
+# ══ J-2. 브랜드 버튼 (v1.15d — 대표님 지시) ═══════════════════
+print("\nJ-2. 카드에 붙는 버튼")
+import contract as _C                                             # noqa: E402
+
+_btn = _C.brand_button()
+check("★ 계약이 버튼을 만든다 (URL이 한 곳에서만 나온다)",
+      _btn and _btn[0][0]["url"].startswith("https://"), str(_btn))
+check("  ↳ 문구가 비어 있지 않다", bool(_btn[0][0]["text"]), str(_btn))
+check("★ 킥오프가 버튼 대상이다", "kickoff" in _C.BUTTON_CONTENT_TYPES,
+      str(sorted(_C.BUTTON_CONTENT_TYPES)))
+
+_p1 = Payload(photos=photos(1), caption="x", buttons=_btn)
+_p1.gate()
+check("사진 1장 + 버튼은 게이트를 지난다", True)
+check("★ reply_markup이 실제로 만들어진다",
+      _p1.markup_params() == {"reply_markup": {"inline_keyboard": _btn}},
+      str(_p1.markup_params()))
+check("버튼이 없으면 아무것도 안 붙는다 (지금까지와 같다)",
+      Payload(photos=photos(1), caption="x").markup_params() == {})
+
+# ★★ 앨범은 버튼을 못 단다 — **조용히 빼지 않고 막는다**
+expect("★★ 버튼 + 사진 2장 이상은 차단 (앨범은 버튼을 못 단다)",
+       lambda: Payload(photos=photos(2), caption="x", buttons=_btn).gate())
+expect("URL이 없는 버튼은 차단",
+       lambda: Payload(photos=photos(1), buttons=[[{"text": "x"}]]).gate())
+expect("http(비암호화) URL은 차단",
+       lambda: Payload(photos=photos(1),
+                       buttons=[[{"text": "x", "url": "http://a.b"}]]).gate())
+
+# ★★ 배선 — 발송기가 정말 reply_markup을 실어 보내는가 (상수만 두고 잊으면 소용없다)
+_fb = Fake()
+_led_b, _snd_b = fresh(tmp, "btn", _fb)
+_snd_b.send(q(ContentType.KICKOFF, "KBO:2026-09-08@18:30"),
+            Payload(photos=photos(1), caption="곧 시작", buttons=_btn))
+_sent = [c for c in _fb.calls if c[0] == "sendPhoto"]
+check("★★ sendPhoto에 reply_markup이 실린다 (배선을 잊으면 버튼이 안 보인다)",
+      bool(_sent) and "reply_markup" in _sent[0][1], str(_sent[0][1].keys()) if _sent else "")
+check("  ↳ 그 안에 대표님 주소가 들어 있다",
+      bool(_sent) and _C.BRAND_URL in str(_sent[0][1].get("reply_markup")),
+      str(_sent[0][1].get("reply_markup")) if _sent else "")
+# ★★ 변이시험 — 버튼을 빼면 reply_markup이 사라진다 (이 검사가 헛돌지 않는다)
+_fb2 = Fake()
+_led_b2, _snd_b2 = fresh(tmp, "btn2", _fb2)
+_snd_b2.send(q(ContentType.KICKOFF, "KBO:2026-09-08@19:00"),
+             Payload(photos=photos(1), caption="곧 시작"))
+check("★★ 변이시험 — 버튼이 없으면 reply_markup도 없다",
+      "reply_markup" not in [c for c in _fb2.calls if c[0] == "sendPhoto"][0][1])
+
 # ══ K. 웹훅 서명 (S-5) ══════════════════════════════════════
 print("\nK. 웹훅 서명 검증")
 sec = Secret(new_webhook_secret())
@@ -707,17 +755,88 @@ import contract as _C                                            # noqa: E402
 # v1.13까지 하루 상한이 폭주 차단기와 **같은 상수**(60)였다. 그대로 켰으면
 # 61번째 카드부터 전부 "다음 날 재시도"로 밀렸을 것이다 — 오류도 안 나고,
 # 로그에는 조용히 건너뜀만 쌓인다(약점 34와 같은 얼굴).
-_LEAGUE_MAX_GAMES = {          # 지금 켜진 9개 리그의 하루 최대 경기 수(실측·상한)
+# MLS 상한은 리그 규모가 아니라 **한국 선수 표**가 정한다 — 표를 늘리면
+# 최악 발송량도 같이 는다. 숫자를 베껴 적으면 표만 늘고 계산은 안 늘어난다.
+from adapters.naver_football import KOREAN_PLAYERS as _KOREAN_PLAYERS  # noqa: E402
+
+# 하루 최대 경기 수. **전부 실측이다** — 짐작한 값을 여기 적으면 벽 계산
+# 전체가 거짓이 된다(어제 대항전 공백을 '한 주'로 짐작했다가 실측 42일에
+# 여섯 배로 뒤집힌 적이 있다).
+_LEAGUE_MAX_GAMES = {
+    # 국내·미주·일본 7개 (롤 2개는 발행에서 뺐다 — `DISABLED_LEAGUES`)
     "MLB": 18, "NPB": 6, "KBO": 5, "KL1": 6, "KBL": 3,
-    "VLEAGUE_M": 2, "VLEAGUE_W": 2, "LCK": 3, "INTL_LOL": 3,
+    "VLEAGUE_M": 2, "VLEAGUE_W": 2,
+    # 유럽 7개 (v1.15). 2025-08~2026-06 전 일정을 **한국 날짜 기준으로** 세어
+    # 리그별 하루 최대를 뽑았다(2026-09-07 실측).
+    "EPL": 10, "LALIGA": 10, "SERIEA": 6, "BUNDESLIGA": 9, "LIGUE1": 9,
+    # ⚠️ 대항전이 가장 크다. 리그 페이즈 최종 라운드는 **36팀이 동시에 뛴다**
+    # → 하루 18경기. 실측: UCL 2026-01-29 · 유로파 2026-01-30, 둘 다 18.
+    # 5대리그(10)를 보고 대항전도 비슷하려니 하면 계산이 1.8배 어긋난다.
+    "UCL": 18, "UEL": 18,
+    # MLS는 **리그 전체가 아니라 한국 선수 경기만** 들어온다(대표님 지시).
+    # 그래서 상한이 리그 규모가 아니라 **표에 적힌 선수 수**로 정해진다 —
+    # 지금 둘(손흥민·김기희)이고, 둘이 서로 다른 팀이라 같은 날 최대 2경기다.
+    # 선수를 추가하면 이 숫자도 같이 올려야 한다.
+    "MLS": len(_KOREAN_PLAYERS),
 }
 _games = sum(_LEAGUE_MAX_GAMES.values())
-_per_game = _games * 2                       # 킥오프 + 속보
-_per_league = len(_LEAGUE_MAX_GAMES) * 3     # 모닝 + 시간표 + 결과 요약
-_worst_day = _per_game + _per_league + 2 + 1 + 2 + 1   # 순위표·부문·분석·나이트
+# **킥오프는 이제 경기가 아니라 '같은 시각 묶음'마다 한 장이다** (2026-09-07
+# 대표님: "같은시간에 시작하는 경기는 묶어서"). 상한으로는 여전히 경기 수를
+# 쓴다 — 시각이 전부 다른 리그(MLB)가 있어서 묶음 = 경기가 될 수 있다.
+# 실제로는 훨씬 적다(KBO 5→1 · 유로파 18→2). **상한을 낙관적으로 낮추지 않는다.**
+_per_game = _games * 2                       # 킥오프(묶음 ≤ 경기) + 속보
+# **리그 단위 카드가 두 번 바뀌었다 (2026-09-07).**
+#  ① 나이트 브리핑을 껐다 — 결과 정리판이 그 역할을 맡는다
+#  ② 경기 예고가 **시간대 덩어리마다 한 장**이 됐다(대표님: "시간대별로 쪼갠다")
+# ②가 발송량을 늘린다. 실측 최악은 리그1의 **3묶음**이다
+# (09-13: 00:15 · 03:45 · 22:00). 유럽 5대리그는 대개 2묶음, 국내는 1묶음.
+_PREVIEW_MAX_BUCKETS = 3
+_per_league = len(_LEAGUE_MAX_GAMES) * (_PREVIEW_MAX_BUCKETS + 1)   # 예고 + 정리판
+# **분석은 이제 그날 전 경기를 묶음마다 한 장이다** (2026-09-07 대표님:
+# *"경기 분석도 모든 팀 알림으로 변경하자"*). 전에는 리그당 1장이라 `2`를
+# 적어 뒀는데, 그 숫자를 그대로 두면 검사가 옛 동작을 정상이라 보증한다
+# (약점 98). **계산으로 바꾼다** — `ANALYSIS_PER_CARD`를 고치면 여기가 따라온다.
+import math as _math                                              # noqa: E402
+import pipeline as _Pan                                           # noqa: E402
+# ★ **목록을 손으로 적지 않는다.** v1.16에서 분석이 MLB·K리그로 넓어졌는데
+# 여기 `("KBO","NPB")`가 박혀 있어 검사가 옛 동작을 정상이라 보증했다 —
+# 내가 바로 앞 절에서 적은 약점 157이 같은 파일에서 재발했다.
+_ANALYSIS_LEAGUES = tuple(sorted(l.value for l in _Pan.ANALYSIS_LEAGUES))
+_missing_cap = [k for k in _ANALYSIS_LEAGUES if k not in _LEAGUE_MAX_GAMES]
+check("★★ 분석 리그가 전부 경기 수 상한 표에 있다 (없으면 발송량 계산이 헛돈다)",
+      not _missing_cap, str(_missing_cap))
+_an_cards = sum(_math.ceil(_LEAGUE_MAX_GAMES[k] / _Pan.ANALYSIS_PER_CARD)
+                for k in _ANALYSIS_LEAGUES if k in _LEAGUE_MAX_GAMES)
+# ★ **선발 라인업(v1.17)도 발송량이다** — 넣지 않으면 약점 161의 세 번째 재발이다.
+# 경기마다 한 장이고(22명이라 묶을 수 없다), 대상은 라인업을 받아 오는 어댑터가
+# 맡은 리그 전부다. **여기서도 목록을 손으로 적지 않는다** — 어댑터의 표에서 뽑아
+# 리그를 늘리면 이 계산이 저절로 따라오게 한다.
+from adapters.naver_football import CATEGORY as _NF_CATEGORY          # noqa: E402
+_LINEUP_LEAGUES = tuple(sorted(l.value for l in _NF_CATEGORY)) if _C.LINEUP_ENABLED \
+    else ()
+_missing_lu = [k for k in _LINEUP_LEAGUES if k not in _LEAGUE_MAX_GAMES]
+check("★★ 라인업 리그가 전부 경기 수 상한 표에 있다 (없으면 발송량 계산이 헛돈다)",
+      not _missing_lu, str(_missing_lu))
+# **낙관적으로 낮추지 않는다.** 실제로는 명단이 늦게 뜬 경기(킥오프 15분 안)는
+# 카드가 안 나가고, 발표 자체가 없는 경기도 있다 — 그래서 이 값은 상한이다.
+_lu_cards = sum(_LEAGUE_MAX_GAMES.get(k, 0) for k in _LINEUP_LEAGUES)
+_worst_day = (_per_game + _per_league + 2 + 1 + _an_cards
+              + _lu_cards)                                 # 순위표·부문·분석·라인업
 check(f"★★ 하루 상한({_C.DAILY_MAX_MESSAGES})이 최악 발송량({_worst_day}장)보다 크다",
       _C.DAILY_MAX_MESSAGES > _worst_day,
-      f"경기 {_games}개 → 경기별 {_per_game} + 리그 {_per_league} + 기타 6")
+      f"경기 {_games}개 → 경기별 {_per_game} + 리그 {_per_league} "
+      f"+ 분석 {_an_cards} + 기타 3")
+check(f"★ 분석이 그날 전 경기를 덮는다 ({_an_cards}장 · {len(_ANALYSIS_LEAGUES)}리그 "
+      f"— 한 장 {_Pan.ANALYSIS_PER_CARD}경기)",
+      _an_cards >= len(_ANALYSIS_LEAGUES)
+      and _an_cards * _Pan.ANALYSIS_PER_CARD >= sum(
+          _LEAGUE_MAX_GAMES[k] for k in _ANALYSIS_LEAGUES if k in _LEAGUE_MAX_GAMES),
+      " · ".join(f"{k} {_LEAGUE_MAX_GAMES.get(k, '?')}경기" for k in _ANALYSIS_LEAGUES))
+# 예고가 몇 장까지 늘 수 있는지는 **계약이 정한 묶음 간격**이 정한다.
+# 간격을 좁히면 장수가 늘어나므로, 그 상수를 바꾸면 이 계산도 다시 해야 한다.
+check("★ 예고 묶음 간격이 실측 기준(3시간) 그대로다 — 좁히면 발송량이 는다",
+      _C.PREVIEW_BUCKET_GAP_SECONDS == 3 * 3600,
+      str(_C.PREVIEW_BUCKET_GAP_SECONDS))
 check("★ 하루 상한과 폭주 차단기 상한이 서로 다른 상수다 (하나를 올릴 때 다른 하나가 딸려오면 안 된다)",
       _C.DAILY_MAX_MESSAGES != _C.BURST_MAX_MESSAGES,
       f"하루 {_C.DAILY_MAX_MESSAGES} · 10분 {_C.BURST_MAX_MESSAGES}")
@@ -732,8 +851,36 @@ check("발송기가 실제로 그 하루 상한을 쓴다 (상수만 고치고 �
 _burst_worst = (5 + 6 + 3 + 2 + 2)      # KBO·NPB·KBL·V남·V여 속보가 동시에
 _burst_worst += 5                        # 그 리그들의 결과 요약
 _burst_worst += 2                        # 순위표
+# **유럽 최악은 대항전 최종 라운드다** — 18경기가 같은 시각에 끝난다
+# (실측 2026-01-29 05:00 KST 동시 시작 18경기 → 약 06:50 동시 종료).
+# 실제로는 그 시각에 국내 경기가 없어 둘이 겹치지 않지만, **겹치지 않는다는
+# 보장은 소스가 하는 것이지 우리가 하는 것이 아니다.** 더해서 센다.
+_burst_worst += 18 + 1                   # 대항전 속보 18 + 결과 요약 1
+# ★ **선발 라인업(v1.17)도 몰린다.** 대항전 18경기가 같은 시각에 시작하면
+# 명단도 그 한 시간쯤 전에 거의 동시에 발표된다. 다만 18장이 한꺼번에 나가진
+# 않는다 — **어댑터의 한 틱 조회 상한이 자연히 창을 나눈다**(리그당 8건).
+# 위 주석과 같은 논리로 **두 대항전이 겹치지 않는다는 보장은 소스가 하는 것이
+# 아니므로** 더해서 센다.
+from adapters.naver_football import LINEUP_MAX_PER_TICK as _LU_TICK    # noqa: E402
+if _C.LINEUP_ENABLED:
+    _burst_worst += _LU_TICK * 2         # UCL·유로파 명단이 같은 틱에 몰릴 때
+check("★ 라인업이 한 틱에 무제한으로 쏟아지지 않는다 (조회 상한이 창을 나눈다)",
+      0 < _LU_TICK <= 12, str(_LU_TICK))
 check(f"★ 가장 몰리는 10분({_burst_worst}건)이 폭주 차단기({_C.BURST_MAX_MESSAGES}건) 안이다",
       _burst_worst < _C.BURST_MAX_MESSAGES, f"{_burst_worst} vs {_C.BURST_MAX_MESSAGES}")
+# **23:00 KST에 나이트가 한꺼번에 나간다.** 리그별로 나뉘면서 생긴 새 봉우리다 —
+# 예전에는 1장이었고 지금은 경기가 있는 리그 수만큼이다. 정각 하나에 몰리므로
+# 다른 콘텐츠와 겹치지 않아도 그 자체로 벽을 만든다.
+# 나이트(23시 정각 동시 발송)는 껐다. 정리판은 리그마다 시각이 달라
+# 한 자리에 몰리지 않는다 — 그게 고정 시각을 버린 덤이다.
+# 대신 **예고**가 몰릴 수 있다: 심야 회피가 걸린 리그들이 전부 22:00으로 간다.
+_preview_worst = len(_LEAGUE_MAX_GAMES)      # 최악 = 모든 리그가 같은 시각으로 밀림
+check(f"★ 심야 회피로 예고가 한 시각에 몰려도({_preview_worst}장) 폭주 차단기 안이다",
+      _preview_worst < _C.BURST_MAX_MESSAGES,
+      f"{_preview_worst} vs {_C.BURST_MAX_MESSAGES}")
+check("  ↳ 그 위에 다른 콘텐츠가 겹쳐도 견딘다",
+      _preview_worst + _burst_worst < _C.BURST_MAX_MESSAGES,
+      f"{_preview_worst + _burst_worst} vs {_C.BURST_MAX_MESSAGES}")
 
 # ── 벽 ③ 페이서 (텔레그램 속도 제한) ──────────────────────────
 #
@@ -747,10 +894,22 @@ check("★★ 킥오프가 페이서 최우선이다 (뒤로 밀리면 창 9분�
       str(_C.PACER_PRIORITY[ContentType.KICKOFF]))
 _window_min = _C.GRACE_SECONDS[ContentType.KICKOFF] / 60
 _pacer_capacity = int(_window_min * _C.PACER_MSG_PER_MINUTE)
-_kick_worst = 5 + 3 + 2 + 2              # KBO·KBL·V 남녀가 같은 시각에 시작
+# ⚠️ **여기가 묶기의 값어치가 드러나는 자리다 (2026-09-07).**
+# 예전에는 동시 시작 경기마다 한 장이라 대항전 최종 라운드에서 **18장**이
+# 한 창에 몰렸다(실측 2026-01-29 05:00 · 2026-01-30 05:00).
+# 이제는 같은 시각이면 리그당 **한 장**이다 — 최악은 '몇 리그가 같은 시각에
+# 시작하는가'가 되고, 그건 리그 수를 넘을 수 없다.
+_kick_worst = len(_LEAGUE_MAX_GAMES)     # 전 리그가 같은 분에 시작하는 최악
 check(f"★ 킥오프 창({_window_min:.0f}분)에 페이서가 {_pacer_capacity}건을 소화한다 — "
       f"최악 동시 킥오프 {_kick_worst}건보다 많다",
       _pacer_capacity > _kick_worst, f"{_pacer_capacity} vs {_kick_worst}")
+# **묶기가 실제로 켜져 있는가.** 상수만 있고 배선을 잊으면 위 계산이 거짓이 된다.
+import inspect as _insp2                                          # noqa: E402
+import pipeline as _P2                                            # noqa: E402
+_kick_src = _insp2.getsource(_P2.build_queue)
+_kick_blk = _kick_src.split("① 킥오프", 1)[-1].split("② 결과 속보", 1)[0]
+check("★★ 킥오프가 시각 버킷으로 묶여 큐에 오른다 (배선을 잊으면 18장이 그대로 나간다)",
+      "start_alert_bucket" in _kick_blk, _kick_blk[:160])
 
 # ── 벽 ④ 한 틱 안에 다 그리고 보내는가 ────────────────────────
 #

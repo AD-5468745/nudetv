@@ -63,6 +63,18 @@ REQUEST_GAP_SECONDS = 1.2          # 연속 요청 사이 최소 간격
 
 CATEGORY = {League.MLB: "mlb", League.NPB: "npb"}
 
+# ── 팀 기록(지표)만 받는 리그 (v1.16, 2026-09-07 대표님 지시) ──────
+#
+# *"모든리그 기록수집을 정확하게 하고, 모든리그 분석 ... 상세하게"*
+#
+# `CATEGORY`는 **순위·부문까지** 이 소스에서 받는 리그다. 아래는 순위를 다른
+# 곳에서 받되 **팀 지표만** 여기서 빌리는 리그 — KBO는 이미 공식 소스로 순위를
+# 받고 있고, K리그도 마찬가지다. 순위까지 이쪽으로 옮기면 그 리그가 검증된
+# 경로를 잃는다(약점 74: 대조 소스는 1차와 공급망이 달라야 의미가 있다).
+STATS_CATEGORY: dict = dict(CATEGORY)
+STATS_CATEGORY[League.KBO] = "kbo"
+STATS_CATEGORY[League.KL1] = "kleague"
+
 # ── 네이버 팀코드 → 우리 코드 ────────────────────────────────
 #
 # **같은 두 글자가 리그마다 다른 팀이다** — MLB의 `SF`는 샌프란시스코,
@@ -84,7 +96,52 @@ TEAM_CODE_MAP: dict[League, dict[str, str]] = {
         "NH": "NIP", "OX": "ORI", "RT": "RAK", "SE": "SEI", "SF": "SOF",
         "YA": "YAK", "YK": "DEN", "YO": "YOG",
     },
+    # KBO는 네이버 코드가 **우리 코드와 같다** (실측 2026-09-07: SS·KT·LG·HT·
+    # OB·NC·HH·SK·LT·WO 10/10 일치). 그래도 표를 비워 두지 않는다 —
+    # 소스가 코드를 바꾸면 여기가 바뀌었다는 것을 알려주는 자리다.
+    League.KBO: {c: c for c in ("SS", "KT", "LG", "HT", "OB",
+                                "NC", "HH", "SK", "LT", "WO")},
+    # K리그는 네이버가 두 자리 숫자(`09`)를 주고 우리는 `K09`를 쓴다
+    # (실측 12/12 일치). 규칙이 단순해도 **표로 못박는다** — 접두어를 코드로
+    # 붙이면 소스가 세 자리를 주는 날 조용히 어긋난다.
+    League.KL1: {n: f"K{n}" for n in ("01", "03", "04", "05", "09", "10",
+                                      "18", "21", "22", "26", "27", "35")},
 }
+
+# ── 팀 지표 — **종목마다 다른 것을 뭉개지 않는다** ────────────────
+#
+# (우리 키, 소스 필드, 높을수록 좋은가, 소수 자릿수)
+# 야구 셋(KBO·MLB·NPB)은 소스 스키마가 같다. 축구는 완전히 다르다.
+TEAM_STAT_FIELDS_BASEBALL = (
+    ("avg", "offenseHra", True, 3),
+    ("ops", "offenseOps", True, 3),
+    ("hr", "offenseHr", True, 0),
+    ("run", "offenseRun", True, 0),
+    ("era", "defenseEra", False, 2),
+    ("whip", "defenseWhip", False, 2),
+    ("kk", "defenseKk", True, 0),
+)
+# 축구 칸은 **실측으로 골랐다** (2026-09-07 K리그 응답 76칸 중 값이 있는 37칸).
+# `cleanSheets`·`shotsOnTargetPerGame`은 이름만 있고 늘 비어 있었다 —
+# 대신 소스가 실제로 채우는 `noGoalConcededGames`·`shotsOnTarget`을 쓴다.
+# **필드 존재 ≠ 데이터 존재**(약점 6).
+TEAM_STAT_FIELDS_FOOTBALL = (
+    ("gf", "goalsPerGame", True, 2),
+    ("ga", "goalsConcededPerGame", False, 2),
+    ("gd", "goalsDifference", True, 0),
+    ("sot", "shotsOnTarget", True, 0),
+    ("pos", "possession", True, 1),
+    ("cs", "noGoalConcededGames", True, 0),
+)
+
+
+def team_stat_fields(league: League):
+    """그 리그의 팀 지표 표. 모르는 종목이면 빈 튜플 — **지어내지 않는다.**"""
+    if league in (League.KBO, League.MLB, League.NPB):
+        return TEAM_STAT_FIELDS_BASEBALL
+    if league is League.KL1:
+        return TEAM_STAT_FIELDS_FOOTBALL
+    return ()
 
 # ── 부문 ─────────────────────────────────────────────────────
 #
@@ -139,10 +196,14 @@ class NaverStatsAdapter(NoticeMixin):
     """한 리그의 팀 순위 + 부문 순위. 요청 2건, 30분 캐시."""
 
     def __init__(self, league: League, *, opener=None, sleep=time.sleep):
-        if league not in CATEGORY:
-            raise GateError(f"네이버 통계는 MLB·NPB만 지원합니다 (요청: {league.value})")
+        if league not in STATS_CATEGORY:
+            raise GateError(
+                f"네이버 통계가 지원하지 않는 리그입니다 (요청: {league.value}) — "
+                f"지원: {', '.join(sorted(l.value for l in STATS_CATEGORY))}")
         self.league = league
-        self.category = CATEGORY[league]
+        self.category = STATS_CATEGORY[league]
+        # 순위·부문까지 이 소스에서 받는 리그인가, **팀 지표만** 빌리는 리그인가.
+        self.full = league in CATEGORY
         self._opener = opener or self._urlopen
         self._sleep = sleep
         self._last_request = 0.0
@@ -210,6 +271,11 @@ class NaverStatsAdapter(NoticeMixin):
 
     # ── 팀 순위 ───────────────────────────────────────────
     def fetch_standings(self, season: int) -> list[Standing]:
+        if not self.full:
+            raise GateError(
+                f"{self.league.value}의 순위는 이 소스에서 받지 않습니다 — "
+                f"팀 지표(fetch_team_stats)만 씁니다. 한 리그의 순위를 두 소스에서 "
+                f"받으면 어느 쪽이 진실인지 판정할 곳이 없습니다.")
         data = self._get(f"/statistics/categories/{self.category}/seasons/{season}/teams",
                          {}, f"teams_{season}")
         rows = ((data or {}).get("result") or {}).get("seasonTeamStats") or []
@@ -251,6 +317,86 @@ class NaverStatsAdapter(NoticeMixin):
         # 그룹 안에서 순위순, 그룹끼리는 이름순. 표시 단위를 나누는 것은 렌더의 몫이다.
         out.sort(key=lambda s: (s.group or "", s.rank))
         self._assert_groups(out)
+        return out
+
+    # ── 축구 순위 (v1.16) ─────────────────────────────────
+    def fetch_standings_football(self, season: int) -> list[Standing]:
+        """K리그 순위. **야구와 필드가 완전히 달라 파서를 나눈다.**
+
+        축구는 승점(`points`)으로 줄을 세우고 승차 개념이 없다. 없는 것을
+        지어내지 않는다 — `games_behind`에는 **선두와의 승점 차**를 넣고,
+        그것이 승차가 아니라는 것은 카드가 라벨로 말한다.
+        """
+        data = self._get(
+            f"/statistics/categories/{self.category}/seasons/{season}/teams",
+            {}, f"teams_{season}")
+        rows = ((data or {}).get("result") or {}).get("seasonTeamStats") or []
+        if not rows:
+            raise GateError(f"네이버 축구 순위 0건 ({self.category} {season})")
+        top = max((int(r.get("points") or 0) for r in rows), default=0)
+        out: list[Standing] = []
+        for r in rows:
+            w = int(r.get("wins") or 0)
+            l = int(r.get("losses") or 0)
+            d = int(r.get("draws") or 0)
+            pts = int(r.get("points") or 0)
+            gp = int(r.get("matchesPlayed") or (w + l + d))
+            kind, ln = _streak(r.get("continuousGameResult"))
+            out.append(Standing(
+                league=self.league, season=str(season),
+                team_code=self._team(r.get("teamId")),
+                rank=int(r.get("rank") or 0),
+                games=gp,
+                record=WLD(win=w, loss=l, draw=d),
+                # **축구의 '승률'은 승점률이다.** 무승부가 있는 종목에서
+                # 승/(승+패)를 쓰면 무승부가 통째로 사라진다.
+                pct=_fmt(pts / (gp * 3), 3) if gp else "0.000",
+                games_behind=str(top - pts),          # 선두와의 **승점** 차
+                last10=None,                          # 소스에 없다 — 지어내지 않는다
+                streak_kind=kind, streak_len=ln,
+                home=None, away=None, group=None))
+        out.sort(key=lambda s: s.rank)
+        return out
+
+    # ── 팀 지표 (v1.16) ───────────────────────────────────
+    def fetch_team_stats(self, season: int) -> dict[str, dict]:
+        """`{우리 팀코드: {지표키: 값}}`. **종목이 정한 칸만 담는다.**
+
+        분석 카드가 좌우로 비교할 값이다. 순위·승률은 순위표에서 오므로 여기
+        담지 않는다 — 같은 값을 두 곳에서 받으면 시점이 어긋난다(약점 131).
+
+        **소스에 없는 칸은 넣지 않는다.** 빈 칸을 만들면 카드가 고장난 것처럼
+        보이고(약점 94), 0으로 채우면 거짓이 된다.
+        """
+        fields = team_stat_fields(self.league)
+        if not fields:
+            return {}
+        data = self._get(
+            f"/statistics/categories/{self.category}/seasons/{season}/teams",
+            {}, f"teams_{season}")
+        rows = ((data or {}).get("result") or {}).get("seasonTeamStats") or []
+        if not rows:
+            raise GateError(f"네이버 팀 지표 0건 ({self.category} {season}) — "
+                            f"시즌 경계이거나 응답 구조가 바뀌었습니다")
+        out: dict[str, dict] = {}
+        missing: set = set()
+        for r in rows:
+            code = self._team(r.get("teamId"))
+            row: dict = {}
+            for key, src, _hi, digits in fields:
+                v = r.get(src)
+                if v is None or v == "":
+                    missing.add(src)
+                    continue
+                try:
+                    row[key] = round(float(v), digits) if digits else int(float(v))
+                except (TypeError, ValueError):
+                    missing.add(src)
+            if row:
+                out[code] = row
+        if missing:
+            # **조용히 비우지 않는다.** 소스가 칸 이름을 바꾸면 여기서 알게 된다.
+            self.note("팀 지표 일부 없음", ", ".join(sorted(missing))[:120])
         return out
 
     # ── 순위 단위 ─────────────────────────────────────────
@@ -369,9 +515,18 @@ class NaverStatsAdapter(NoticeMixin):
 
     # ── 한 번에 ───────────────────────────────────────────
     def fetch(self, season: int) -> RecordBook:
+        """그 리그의 기록 한 벌. **종목에 따라 파서가 갈린다.**
+
+        축구(K리그)는 순위 필드가 완전히 다르고 부문 순위는 이 경로에 없다 —
+        없는 것을 지어내지 않고 순위만 담는다.
+        """
         self.reset_notices()
-        standings = self.fetch_standings(season)
-        leaders = self.fetch_leaders(season)
+        if self.league is League.KL1:
+            standings = self.fetch_standings_football(season)
+            leaders: dict = {}
+        else:
+            standings = self.fetch_standings(season)
+            leaders = self.fetch_leaders(season)
         return RecordBook(
             league=self.league,
             season=str(season),

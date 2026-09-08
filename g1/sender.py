@@ -598,6 +598,16 @@ class Payload:
     # 스크롤 없이 알게 한다. 원본 message_id는 대장에 있다.
     reply_to_message_id: Optional[int] = None
 
+    # **카드에 붙는 인라인 버튼 (v1.15d).** `[[{"text":..., "url":...}]]` 꼴.
+    # 비어 있으면 아무것도 붙지 않는다 — 지금까지와 완전히 같다.
+    buttons: list = field(default_factory=list)
+
+    def markup_params(self) -> dict:
+        """텔레그램 `reply_markup`. 버튼이 없으면 빈 dict."""
+        if not self.buttons:
+            return {}
+        return {"reply_markup": {"inline_keyboard": self.buttons}}
+
     def reply_params(self) -> dict:
         """텔레그램 답장 파라미터. 답장 대상이 없으면 빈 dict.
 
@@ -632,6 +642,20 @@ class Payload:
         if self.follow_texts and not self.photos:
             raise GateError("이어지는 텍스트는 사진이 있을 때만 쓴다 "
                             "(사진 없으면 text 하나로 보낸다)")
+        # ★ **앨범은 버튼을 못 단다 (텔레그램 제약).**
+        # sendMediaGroup에는 `reply_markup`이 없다. 여기서 조용히 빼면 대표님이
+        # 지시한 버튼이 **어느 날 소리 없이 사라진다** — 그러느니 시끄럽게 막는다.
+        # 킥오프 카드는 언제나 1장이라 실제로는 걸리지 않는다.
+        if self.buttons and len(self.photos) > 1:
+            raise GateError(
+                f"버튼은 사진 1장일 때만 붙는다 (지금 {len(self.photos)}장). "
+                "앨범(sendMediaGroup)에는 텔레그램이 버튼을 허용하지 않는다.")
+        for row in self.buttons:
+            for b in row:
+                if not b.get("text") or not b.get("url"):
+                    raise GateError(f"버튼에 문구나 URL이 없다: {b}")
+                if not str(b["url"]).startswith("https://"):
+                    raise GateError(f"버튼 URL은 https여야 한다: {b['url']}")
 
     @classmethod
     def from_parts(cls, photos, parts: list[str]) -> "Payload":
@@ -1039,7 +1063,9 @@ class Sender:
                                        {"chat_id": self.chat_id,
                                         "parse_mode": TELEGRAM_PARSE_MODE,
                                         **({"caption": cap} if cap else {}),
-                                        **(reply if not ids else {})},
+                                        **(reply if not ids else {}),
+                                        # 버튼은 **첫 파트에만** — 캡션과 같은 규칙이다.
+                                        **(p.markup_params() if not ids else {})},
                                        files={"photo": (name, data)})
                     ids.append(res["message_id"])
                 else:

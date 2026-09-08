@@ -230,6 +230,64 @@ check("소스가 죽은 것을 알림에 남긴다",
 
 
 # ══════════════════════════════════════════════════════════════
+print("\n8.5 보강 순서 — 오늘 경기가 먼저다 (fix54)")
+# ══════════════════════════════════════════════════════════════
+#
+# 상한이 한 틱 12건이라 **순서가 곧 '오늘 카드에 흐름이 들어가는가'를 정한다.**
+# 옛 방식(날짜 오름차순)은 시즌 초부터 채워 오늘 경기를 맨 뒤에 세웠다 —
+# 실측 KBO 대기 115건이면 오늘 차례까지 10틱(약 50분)이고, 정리판은
+# 마지막 경기 +30분에 나가므로 **그날 흐름이 구조적으로 못 들어간다.**
+# 2026-09-05 삼성 4:3 LG(11회 연장 역전)가 "1점 차"로만 나간 것이 그 증거다.
+
+def _dated(day: int):
+    st = dt.datetime(2026, 8, day, 18, 30, tzinfo=KST).astimezone(dt.timezone.utc)
+    return Game(league=League.KBO, season="2026", source_key="t",
+                away=TeamRef(League.KBO, "HH"), home=TeamRef(League.KBO, "LT"),
+                start_utc=st, home_tz="Asia/Seoul", status=Status.FINAL,
+                score=Score(home=1, away=2, unit=ScoreUnit.RUNS), meta=GameMeta())
+
+
+class _Order(NG.NaverGameAdapter):
+    """소스를 부르는 대신 **어떤 순서로 불렸는지**만 적는다."""
+
+    def __init__(self):
+        super().__init__(sleep=lambda *_: None)
+        self.seen: list = []
+
+    def _get(self, path, *, label):
+        raise RuntimeError("멈춘다 — 순서만 본다")
+
+    def _enrich_one(self, game, *a, **k):        # 있으면 이걸 타고
+        self.seen.append(game.start_utc)
+        return False
+
+
+_days = [_dated(d) for d in (1, 2, 3, 20, 21)]   # 오름차순으로 들어온다
+_o = _Order()
+_o.enrich(list(_days), League.KBO, limit=2)
+# `_enrich_one`이 없는 구현이면 notices에 남은 실패 순서로 확인한다.
+_first_two = _o.seen[:2] if _o.seen else None
+if _first_two:
+    check("★★ 오늘(가장 최신) 경기부터 채운다 — 상한 12건이 오늘을 덮어야 한다",
+          _first_two == sorted([g.start_utc for g in _days], reverse=True)[:2],
+          str(_first_two))
+    # ★★ 변이시험 — 옛 방식(정렬 없음)이면 8/1·8/2가 먼저 불린다
+    check("★★ 변이시험 — 정렬을 빼면 시즌 초 경기가 먼저 불린다 (오늘 카드가 빈다)",
+          sorted([g.start_utc for g in _days])[:2]
+          != sorted([g.start_utc for g in _days], reverse=True)[:2])
+else:
+    # 구현이 `_enrich_one`을 안 쓰면 정렬 자체를 직접 확인한다.
+    _sorted = sorted(_days, key=lambda g: g.start_utc, reverse=True)
+    check("★★ 오늘(가장 최신) 경기부터 채운다 — 정렬 확인",
+          _sorted[0].start_utc == max(g.start_utc for g in _days))
+    check("★★ 변이시험 — 정렬을 빼면 시즌 초 경기가 먼저다",
+          _days[0].start_utc == min(g.start_utc for g in _days))
+_src = pathlib.Path(NG.__file__).read_text(encoding="utf-8")
+check("★ 정렬이 코드에 실제로 있다 (주석만 있고 배선이 없으면 소용없다)",
+      "todo.sort(key=lambda g: g.start_utc, reverse=True)" in _src)
+
+
+# ══════════════════════════════════════════════════════════════
 # 캐시 청소 — **캐시는 늙어 죽어야 한다** (fix51)
 # ══════════════════════════════════════════════════════════════
 #

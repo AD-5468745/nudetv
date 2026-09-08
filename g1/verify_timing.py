@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+from dataclasses import replace
+
 import contract as C  # noqa: E402
 import pipeline as P  # noqa: E402
 from contract import (KST, Game, GameMeta, League, Score, ScoreUnit,  # noqa: E402
@@ -181,12 +183,53 @@ if res:
           f"종료 {ends.astimezone(KST):%m-%d %H:%M}")
     check("진행 중인데 '지금'으로 앞당기지 않는다", res[0].scheduled_utc > now)
 
-# 전부 종결이면 기다리지 않는다 (대표님 지시: 마지막 경기 종료 후 1시간 이내)
+# ── 정리판은 **마지막 경기 종료 + 30분** (2026-09-07 대표님 확정) ──
+#
+# 옛 기대는 "전부 끝났으면 즉시"였다. 지금은 경기마다 종료 속보가 따로 나가고,
+# 이 카드는 그 뒤의 정리판이다: *"마지막경기 경기결과 카드가 나간 30분 후"*.
+# 사이를 벌리지 않으면 속보와 정리판이 겹쳐 읽힌다.
 done_now = max(g.start_utc for g in MLB) + timedelta(hours=4)
+
+# 속보가 실제로 나간 날 — 그 시각을 기준으로 30분 뒤여야 한다.
+_flashed = [replace(g, meta=C.GameMeta(
+    gender=g.meta.gender,
+    first_final_at=(g.start_utc + timedelta(hours=3)).isoformat()))
+    for g in MLB]
+_last_flash = max(g.start_utc for g in MLB) + timedelta(hours=3)
+_at_flash = _last_flash + timedelta(minutes=1)      # 막 알아챈 순간
+_qf = P.build_queue(_flashed, _at_flash, "ch", floor_hours=0, horizon_hours=48)
+_rf = [i for i in _qf if i.content_type is C.ContentType.LEAGUE_RESULT]
+check(f"★★ 정리판은 마지막 속보 + {P.RESULT_AFTER_LAST_FLASH_SECONDS // 60}분이다",
+      bool(_rf) and _rf[0].scheduled_utc
+      == _last_flash + timedelta(seconds=P.RESULT_AFTER_LAST_FLASH_SECONDS),
+      str([str(i.scheduled_utc) for i in _rf]))
+check("  ↳ 속보 직후에는 아직 내지 않는다 (두 카드가 겹쳐 읽히면 안 된다)",
+      bool(_rf) and _rf[0].scheduled_utc > _at_flash)
+
+# **30분이 이미 지난 날에는 더 기다리지 않는다.** 시계가 밀려 늦게 알아챈 날에
+# 30분을 또 얹으면 그만큼 더 늦어질 뿐이다(2026-09-06 실측: 종료 감지가
+# 9시간 39분에 걸쳐 흩어졌다).
+_much_later = _last_flash + timedelta(hours=3)
+_q2 = P.build_queue(_flashed, _much_later, "ch", floor_hours=0, horizon_hours=48)
+_res2 = [i for i in _q2 if i.content_type is C.ContentType.LEAGUE_RESULT]
+check("★ 늦게 알아챈 날에는 30분을 또 얹지 않는다",
+      bool(_res2) and _res2[0].scheduled_utc <= _much_later,
+      str([str(i.scheduled_utc) for i in _res2]))
+
+# **속보가 없었던 날에는 늦추지 않는다** — 기준이 없기 때문이다.
+# 그리고 예약이 **틱마다 앞으로 도망가지 않아야** 한다(그러면 영영 안 나간다).
 q = P.build_queue(MLB, done_now, "ch", floor_hours=0, horizon_hours=48)
 res = [i for i in q if i.content_type is C.ContentType.LEAGUE_RESULT]
-check("전부 끝났으면 즉시 발송", res and res[0].scheduled_utc == done_now,
+check("★ 속보가 없던 날은 곧바로 낸다 (없는 기준을 흉내 내지 않는다)",
+      bool(res) and res[0].scheduled_utc == done_now,
       str([str(i.scheduled_utc) for i in res]))
+_q3 = P.build_queue(MLB, done_now + timedelta(minutes=5), "ch",
+                    floor_hours=0, horizon_hours=48)
+_res3 = [i for i in _q3 if i.content_type is C.ContentType.LEAGUE_RESULT]
+check("★★ 5분 뒤 틱에서도 예약이 앞으로 도망가지 않는다",
+      bool(_res3) and _res3[0].scheduled_utc
+      <= done_now + timedelta(minutes=5),
+      str([str(i.scheduled_utc) for i in _res3]))
 
 # ── 5. 시작 알림 — '오늘'을 발송 시점 한국 날짜로 말하는가 ───────────────
 print("5. 시작 알림 — 문구가 실제와 맞는가")
@@ -470,18 +513,25 @@ slate = [mk(League.MLB, "2026-09-10", 13, 5, tz="America/New_York", h="ATL", a="
 first_utc = min(g.start_utc for g in slate)
 q1 = P.build_queue(slate, first_utc - timedelta(hours=5), "ch",
                    floor_hours=0, horizon_hours=72)
-sa1 = [i for i in q1 if i.content_type is C.ContentType.START_ALERT]
-check("시작 알림이 큐에 있다", bool(sa1))
-# 첫 경기가 시작돼 FINAL이 되어도 예약 시각은 그대로여야 한다
+# 시작 알림은 껐다(같은 목록을 이미지·텍스트로 두 번 말했다). 그 자리를
+# **경기 예고**가 맡는다 — 지켜야 할 성질은 그대로다:
+# **경기가 시작돼도 예약 시각이 뒤로 밀리지 않는다.**
+# (옛 사고: 시작한 경기가 집합에서 빠지면서 예약이 틱마다 미끄러져,
+#  실측 MLB 08-29에 첫 경기 02:05인데 09:00에도 처리 대상이었다.)
+sa1 = [i for i in q1 if i.content_type is C.ContentType.MORNING]
+check("경기 예고가 큐에 있다", bool(sa1))
+check("  ↳ 끈 시작 알림은 큐에 없다",
+      not [i for i in q1 if i.content_type is C.ContentType.START_ALERT])
 started = [mk(League.MLB, "2026-09-10", 13, 5, tz="America/New_York", h="ATL", a="SF",
               status=Status.FINAL, score=Score(1, 2, ScoreUnit.RUNS)),
            slate[1]]
 q2 = P.build_queue(started, first_utc + timedelta(hours=3), "ch",
                    floor_hours=0, horizon_hours=72)
-sa2 = [i for i in q2 if i.content_type is C.ContentType.START_ALERT]
-check("경기가 시작돼도 예약 시각이 밀리지 않는다",
-      (not sa2) or sa1[0].scheduled_utc == sa2[0].scheduled_utc,
-      f"{sa1[0].scheduled_utc} vs {sa2[0].scheduled_utc if sa2 else None}")
+sa2 = [i for i in q2 if i.content_type is C.ContentType.MORNING]
+check("★ 경기가 시작돼도 예약 시각이 밀리지 않는다",
+      bool(sa1) and ((not sa2) or sa1[0].scheduled_utc == sa2[0].scheduled_utc),
+      f"{sa1[0].scheduled_utc if sa1 else None} vs "
+      f"{sa2[0].scheduled_utc if sa2 else None}")
 
 # (4) 결과 카드: 전 경기 취소 / 취소 건수 / 없는 기능 안내 제거
 cx_day = [mk(League.KBO, "2026-08-05", 18, 30, tz="Asia/Seoul", h="OB", a="LG",
@@ -825,45 +875,70 @@ check("아직 안 끝난 날은 순위표가 일찍 열리지 않는다",
 # 텍스트에는 2시간 전 알림이라고 적혀 있어."
 # 원인: 큐는 심야 회피까지 계산해 예약하는데, 카드는 설정값(120분)만 보고
 # "2시간 전"이라 적었다. MLB 실측 — 첫 경기 03:10, 실제 예약 전날 22:00.
-print("\n15. 시작 알림 — 카드와 큐가 같은 시각을 말하는가")
+print("\n15. 경기 예고 — 예약 시각이 흔들리지 않는가")
 
-# **꼬리말은 시각을 약속하지 않는다 (v1.11p).** 두 번 틀렸다:
-#   ① "2시간 전 알림" — 심야 회피가 걸리면 5시간 10분 전이었다
-#   ② "알림 16:30" — 그건 예약 시각이고, 앞창 2.5시간·유예 1시간 55분 안
-#      어디서든 나간다(14:00~18:25). 문형만 바꿔서는 안 낫는 병이었다.
-# 이제 지킬 수 있는 것만 말한다. 예약 계산(start_alert_at)은 큐와 공유한다.
-def _sa_case(name, gs, now):
-    at = C.start_alert_at(gs)
+# **시작 알림은 껐다** (2026-09-07). 같은 목록을 이미지·텍스트로 두 번 말했다.
+# 그 자리를 **경기 예고**가 맡는다 — 첫 경기 30분 전, 리그 하루 한 장.
+#
+# 옛 절이 지키던 성질 둘은 그대로 지킨다:
+#   ① 예약 시각이 **그날 전 경기** 기준이어야 한다 — '열리는 경기'만 보면
+#      첫 경기가 취소된 날 예약이 뒤로 밀린다(약점 64).
+#   ② 경기가 시작돼 집합에서 빠져도 예약이 미끄러지지 않아야 한다
+#      (실측 MLB 08-29: 첫 경기 02:05인데 09:00에도 처리 대상이었다).
+def _pv_case(name, gs, now, *, quiet_shifted=False):
+    """`quiet_shifted`면 심야 회피로 **더 앞당겨진** 경우다.
+
+    한국시각 새벽에 열리는 경기(MLB·유럽)는 2시간 전이 새벽 3시라
+    전날 밤으로 옮긴다 — 새벽에 울리는 알림은 정보가 아니라 소음이다.
+    """
+    _first = min(g.start_utc for g in gs)
+    at = C.shift_out_of_quiet_hours(
+        _first - timedelta(seconds=P.PREVIEW_BEFORE_FIRST_SECONDS))
     q = [i for i in P.build_queue(gs, now, "chtest", floor_hours=0)
-         if i.content_type is ContentType.START_ALERT]
+         if i.content_type is ContentType.MORNING]
     check(f"{name}: 큐에 오른다", len(q) == 1, f"{len(q)}건")
     if q:
-        check(f"{name}: 카드 계산 = 큐 예약", at == q[0].scheduled_utc,
-              f"{at} vs {q[0].scheduled_utc}")
-    _note = C.start_alert_notice(gs, now)
-    check(f"{name}: 꼬리말이 시각을 약속하지 않는다",
-          ":" not in _note and "시간 전" not in _note, _note)
-    check(f"{name}: 그래도 무엇을 하는지는 말한다", "시간표" in _note, _note)
+        check(f"{name}: 계약이 계산한 시각과 큐 예약이 같다",
+              at == q[0].scheduled_utc, f"{at} vs {q[0].scheduled_utc}")
+        _gap = (_first - q[0].scheduled_utc).total_seconds() / 60
+        check(f"{name}: 첫 경기보다 적어도 "
+              f"{P.PREVIEW_BEFORE_FIRST_SECONDS // 60}분 앞선다",
+              _gap >= P.PREVIEW_BEFORE_FIRST_SECONDS / 60 - 1, f"{_gap:.0f}분")
+        if quiet_shifted:
+            check(f"  ↳ {name}: 심야를 피해 더 일찍 나간다 "
+                  f"(새벽 알림은 소음이다)",
+                  _gap > P.PREVIEW_BEFORE_FIRST_SECONDS / 60 + 1
+                  and not (C.START_ALERT_QUIET_FROM_HOUR
+                           <= q[0].scheduled_utc.astimezone(KST).hour
+                           < C.START_ALERT_QUIET_TO_HOUR),
+                  f"{q[0].scheduled_utc.astimezone(KST):%m-%d %H:%M} · {_gap:.0f}분 전")
+
 
 _n = datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc)
-_sa_case("낮 경기", [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")], _n)
-_sa_case("심야 회피", [mk(League.MLB, "2026-09-04", 14, 10, tz="America/New_York",
-                        h="CLE", a="DET")], _n)
+_pv_case("국내 저녁 경기",
+         [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")], _n)
+_pv_case("한국시각 새벽 경기",
+         [mk(League.MLB, "2026-09-04", 14, 10, tz="America/New_York",
+             h="CLE", a="DET")], _n, quiet_shifted=True)
 
-# **첫 경기가 취소돼도 카드와 큐가 갈리지 않는다.**
-# 큐는 예약 시각이 흔들리지 않도록 그날 전 경기 기준으로 잡는다(약점 64번).
-# 카드가 '열리는 경기'만 보면 첫 경기 취소일에 둘이 어긋난다.
+# **첫 경기가 취소돼도 예약이 밀리지 않는다.**
+# 취소된 경기도 그날 편성의 일부다 — 빼고 세면 예약이 뒤로 간다(약점 64).
 _cx = [mk(League.KBO, "2026-09-04", 17, 0, tz="Asia/Seoul", h="SS", a="KT",
           status=Status.CANCELED),
        mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")]
-check("첫 경기가 취소된 날도 카드와 큐가 같은 시각",
-      C.start_alert_at(_cx)
-      == [i for i in P.build_queue(_cx, _n, "chtest", floor_hours=0)
-          if i.content_type is ContentType.START_ALERT][0].scheduled_utc)
-_mhtml = P.render_morning(_cx, "2026-09-04", now=_n)
-check("그 날 모닝 카드 꼬리말도 시각을 약속하지 않는다",
-      C.start_alert_at(_cx).astimezone(KST).strftime("%H:%M") not in _mhtml
-      and "시간표" in _mhtml)
+_cx_q = [i for i in P.build_queue(_cx, _n, "chtest", floor_hours=0)
+         if i.content_type is ContentType.MORNING]
+check("★ 첫 경기가 취소된 날도 그 경기 기준으로 잡는다 (예약이 뒤로 안 밀린다)",
+      bool(_cx_q) and _cx_q[0].scheduled_utc
+      == C.shift_out_of_quiet_hours(
+          min(g.start_utc for g in _cx)
+          - timedelta(seconds=P.PREVIEW_BEFORE_FIRST_SECONDS)),
+      str([str(i.scheduled_utc) for i in _cx_q]))
+
+# 끈 콘텐츠가 되살아나지 않았는지 — 같은 데이터로 확인한다.
+check("  ↳ 시작 알림은 큐에 없다 (껐다)",
+      not [i for i in P.build_queue(_cx, _n, "chtest", floor_hours=0)
+           if i.content_type is ContentType.START_ALERT])
 
 # ─────────────────────────────────────────────────────────────
 # (16) 시간표 목록 — 한국시각이 주, 현지시각을 매 줄에 (v1.11n)

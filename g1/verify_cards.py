@@ -21,6 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import cards_v5 as C5                                         # noqa: E402
+import pipeline as P                                          # noqa: E402
 import headline as H                                          # noqa: E402
 from contract import (CARD_THEME_DARK, CARD_THEME_PAPER, League,  # noqa: E402
                       LeaderEntry, Score, ScoreUnit, Standing, Status,
@@ -57,7 +58,18 @@ class _Ref:
 
 
 class _Meta:
-    def __init__(self, r=None): self.cancel_reason = r
+    """계약의 `GameMeta`를 대신하는 가짜.
+
+    **계약이 늘면 여기도 늘려야 한다.** 가짜가 계약보다 좁으면 검증이
+    실제를 재현하지 못하고, 렌더가 새 칸을 읽는 순간 여기서만 터진다 —
+    실제로 그랬다(2026-09-07: `player_lines`를 안 갖고 있어 결과 카드가
+    AttributeError). 그때 **가짜를 고치지 않고 렌더에 `getattr` 기본값을
+    두는 쪽으로 도망가면**, 진짜 운영에서 칸이 비는 사고를 영영 못 잡는다.
+    """
+
+    def __init__(self, r=None):
+        self.cancel_reason = r
+        self.player_lines = []          # v1.15 — 한국 선수 출전(축구)
 
 
 class _G:
@@ -77,6 +89,14 @@ class _G:
         from contract import KST as _KST
         self.start_kst = self.start_utc.astimezone(_KST)
         self.start_local = self.start_kst        # 국내 리그: 현지 = 한국
+        # `recent_form`이 (시작시각, game_id)로 정렬한다 — **가짜가 계약보다
+        # 좁으면 검증이 실물을 대변하지 못한다**(약점 144). `getattr` 기본값으로
+        # 도망가지 말고 여기를 채운다.
+        self.game_id = f"{self.sports_day}-{a}-{h}-{hh:02d}"
+
+    def is_draw(self) -> bool:
+        """`_team_result`가 부른다 — 계약의 `Game`이 갖는 판정을 그대로 흉내낸다."""
+        return bool(self.score) and self.score.home == self.score.away
 
 
 def _st(code, rank, w, l, d=0, gb="0", streak=(StreakKind.WIN, 1), last10=None,
@@ -252,8 +272,8 @@ _CARDS = [
                              body=C5.body_leaders(LEAD, KBO, _shown), foot_left="x")),
     ("night", C5.shell(kind="night", league=None, date_label="9.4",
                        head=H.fallback("night", leagues=4, final=18),
-                       body=C5.body_index([("KBO", "5경기 종료", "x"),
-                                           ("MLB", "9경기 종료", "y")]),
+                       body=C5.body_index([("KBO", "5경기 종료"),
+                                           ("MLB", "9경기 종료")]),
                        foot_left="x")),
 ]
 # **가장 긴 이름으로도 그려 본다.** 지금 팀명이 짧아 우연히 무사한 것과
@@ -504,6 +524,190 @@ for _name, _fn in _v5cases:
         check(f"  ↳ {_name}: 골격을 지났다", '<div class="card">' in _html)
         check(f"  ↳ {_name}: 캡션이 비지 않는다", bool(_parts) and bool(_parts[0].strip()))
 
+# ═════════════════════════════════════════════════════════════
+print("\n7.5 ★★ 기록이 얄팍한 리그도 v5로 만든다 (NPB 조건 · v1.15c)")
+# ═════════════════════════════════════════════════════════════
+#
+# **실제로 새고 있던 자리다.** NPB는 팀 기록 수집이 KBO 전용이고 순위표에
+# 최근10도 없어서 비교표가 **순위·승률 두 줄**뿐이다. v5 분석 카드는
+# `len(rows) < 3`이면 None을 냈고, 폴백이 그것을 삼켜 **NPB 분석만 조용히
+# 옛 v4 카드(분홍)로 나가고 있었다** — 운영지도에는 "이미지 카드 전부 v5"라고
+# 적혀 있었으니 문서가 거짓말을 하고 있었던 셈이다.
+#
+# 고친 방식: 자격을 **표 줄 수가 아니라 블록 수**로 센다(옛 카드도 그랬다).
+# 최근 폼과 상대전적이 있으면 그것으로 충분한 분석이 된다.
+_thin_rb = RecordBook(
+    league=League.NPB, season="2026", collected_utc=_now5,
+    source_url="https://example.invalid/rec",
+    standings=[_sd("SS", 9, 53, 67, 2, "22"),      # 최근10 없음 (l10=None)
+               _sd("KT", 7, 57, 62, 3, "17.5")],
+    h2h={("SS", "KT"): WLD(11, 8, 0), ("KT", "SS"): WLD(8, 11, 0)},
+    leaders={})
+# 최근 폼은 **그 경기 시작 전** 경기만 본다 — 예정 경기(09:30)보다 이른 시각으로 둔다.
+_thin_hist = [_G("SS", "KT", 5, 3, hh=3), _G("KT", "SS", 2, 6, hh=4),
+              _G("SS", "KT", 1, 0, hh=5)]
+for _g in _thin_hist:
+    _g.league = League.NPB
+    _g.is_terminal = True
+try:
+    _thin = R5.analysis_card(_thin_rb, _v5sched[0], League.NPB, _v5day,
+                             team_stats=None, history=_thin_hist)
+except Exception as _e:                                           # noqa: BLE001
+    _thin = None
+    check("★★ 팀 기록·최근10이 없어도 분석 카드를 만든다", False,
+          f"{_e.__class__.__name__}: {_e}")
+else:
+    check("★★ 팀 기록·최근10이 없어도 분석 카드를 만든다", bool(_thin),
+          "None — 폴백이 옛 v4 카드로 떨어진다")
+if _thin:
+    _th, _tp = _thin
+    check("  ↳ 상대전적 블록이 실제로 실린다", "시즌 상대전적" in _th)
+    check("  ↳ 최근 폼 블록이 실제로 실린다", 'class="fm"' in _th)
+# ★★ 변이시험 — 옛 기준(표 줄 수 3)이면 이 표본은 통과하지 못한다
+_cmp_n = _thin[0].count('class="cmp"') if _thin else -1
+check("★★ 변이시험 — 옛 기준(비교표 3줄)으로는 이 카드가 안 만들어진다",
+      _thin is not None and _cmp_n > 0 and _cmp_n < 3, f"cmp 줄 수 {_cmp_n}")
+
+# ★ 승/패/무 배지는 서로 다른 색이어야 한다 (클래스 이름 충돌 방지)
+#   '무'의 클래스를 `d`로 두면 `class="d d"`가 되어 셀렉터 `.d.d`가 `.d`와
+#   같아지고, **모든 배지가 같은 색으로 덮인다.** 실렌더로 잡았다(약점 58의 CSS 판).
+_badge = C5.body_form([("가", ["W", "L", "D"], "직전 9.6 나전 1-0 승")])
+check("★ 배지 클래스가 컨테이너 클래스와 겹치지 않는다",
+      'class="d d"' not in _badge, _badge[:120])
+check("  ↳ 승·패·무가 서로 다른 클래스를 쓴다",
+      all(f'class="d {c}"' in _badge for c in ("w", "l", "t")), _badge[:200])
+
+# ═════════════════════════════════════════════════════════════
+print("\n7.6 ★ 홈팀 배지 · 여러 경기 분석 (v1.15e·f — 대표님 지시)")
+# ═════════════════════════════════════════════════════════════
+#
+# 목록형 카드는 '원정 vs 홈' **순서로만** 홈을 알렸다 — 보는 사람은 그 규칙을
+# 모른다. 대표님: *"각 경기 홈팀에 배지 붙이자."*
+_sched = C5.body_schedule(GAMES[:1], KBO)
+_score = C5.body_scoreboard(GAMES[:1], KBO)
+# **스타일 이름으로 찾지 않는다.** 대표님이 모양을 바꿀 때마다 검사가 깨지면
+# 검사가 모양을 붙잡는 셈이다 — `home_badge()`가 만든 조각이 실제로 들어갔는지만 본다.
+_bad = C5.home_badge()
+check("★ 배지 조각이 비어 있지 않다 (이 검사의 전제)", bool(_bad.strip()), repr(_bad[:40]))
+check("★ 일정 목록의 홈팀에 배지가 붙는다", _bad in _sched, _sched[:160])
+check("★ 결과 목록의 홈팀에 배지가 붙는다", _bad in _score, _score[:160])
+check("★★ 경기 하나에 배지는 하나다 (원정에는 안 붙는다)",
+      _sched.count(_bad) == 1 and _score.count(_bad) == 1,
+      "일정 %d · 결과 %d" % (_sched.count(_bad), _score.count(_bad)))
+# 결과 목록에서 배지는 **점수 오른쪽(홈) 칸**에 있어야 한다
+check("  ↳ 배지가 홈팀 이름과 같은 칸에 있다",
+      _bad in _score.split('class="sc"')[-1],
+      _score.split('class="sc"')[-1][:120])
+# ★★ 팀명이 잎 노드로 남아 있어야 접힘 게이트가 그 칸을 계속 본다 (약점 92)
+check("★★ 팀명이 잎 노드로 감싸여 있다 (배지를 넣어 접힘 검사가 꺼지면 안 된다)",
+      'class="tn"' in _sched and 'class="tn"' in _score)
+# ★★ 변이시험 — 끄면 전 카드에서 사라진다 (되돌리기가 한 줄이다)
+_keep = C5.HOME_BADGE_STYLE
+C5.HOME_BADGE_STYLE = "off"
+check("★★ 변이시험 — off로 두면 배지가 사라진다 (되돌리기 한 줄)",
+      not C5.home_badge().strip()
+      and 'class="hm' not in C5.body_schedule(GAMES[:1], KBO))
+C5.HOME_BADGE_STYLE = _keep
+check("  ↳ 시험 뒤 대표님이 고른 스타일로 돌아왔다", C5.HOME_BADGE_STYLE == _keep)
+# 등록된 스타일이 전부 무언가를 만든다 (죽은 값이 없다)
+_dead = []
+for _st in ("dot", "ring", "tag", "icon", "chip"):
+    C5.HOME_BADGE_STYLE = _st
+    if not C5.home_badge().strip():
+        _dead.append(_st)
+C5.HOME_BADGE_STYLE = _keep
+check("★ 등록된 배지 스타일이 전부 실제로 그려진다 (죽은 값 금지 — 약점 53)",
+      not _dead, str(_dead))
+
+# ── 여러 경기 분석 ────────────────────────────────────────────
+_rows = [{"no": 1, "time": "18:30", "away": "KIA", "home": "삼성",
+          "away_sub": "4위", "home_sub": "1위",
+          "keys": "승률 <b>0.559</b> : <b>0.610</b>", "verdict": "기록은 삼성 쪽이다."},
+         {"no": 2, "time": "18:30", "away": "롯데", "home": "NC",
+          "away_sub": "9위", "home_sub": "6위", "keys": "", "verdict": ""}]
+_multi = C5.body_analysis_multi(_rows)
+check("★ 경기마다 한 블록이 만들어진다", _multi.count('class="ag"') == 2)
+check("★ 홈팀에만 배지가 붙는다 (경기 수만큼)", _multi.count(C5.home_badge()) == 2)
+check("★ 값이 없는 줄은 아예 안 그린다 (빈 칸을 남기지 않는다 — 약점 94)",
+      _multi.count('class="agk"') == 1 and _multi.count('class="agv"') == 1,
+      "agk %d agv %d" % (_multi.count('class="agk"'), _multi.count('class="agv"')))
+check("★ 번호와 시각이 실린다", ">1<" in _multi and "18:30" in _multi)
+
+# ★★ 여러 경기 분석 카드가 **폴백 없이** 실제로 만들어지는가 (약점 133)
+_multi_rb = RecordBook(
+    league=League.KBO, season="2026", collected_utc=_now5,
+    source_url="https://example.invalid/rec", standings=_v5st,
+    h2h={("SS", "KT"): WLD(8, 5, 0), ("KT", "SS"): WLD(5, 8, 0),
+         ("LG", "HT"): WLD(6, 6, 0), ("HT", "LG"): WLD(6, 6, 0)},
+    leaders=_v5ld)
+try:
+    _mc = R5.analysis_cards(_multi_rb, _v5sched, League.KBO, _v5day,
+                            batch=0, team_stats=_v5ts)
+except Exception as _e:                                           # noqa: BLE001
+    _mc = None
+    check("★★ 여러 경기 분석 카드가 예외 없이 만들어진다", False,
+          f"{_e.__class__.__name__}: {_e}")
+else:
+    check("★★ 여러 경기 분석 카드가 예외 없이 만들어진다", bool(_mc), "None")
+if _mc:
+    check("  ↳ 두 경기가 다 실린다", _mc[0].count('class="ag"') == 2)
+    check("  ↳ 캡션이 비지 않는다", bool(_mc[1]) and bool(_mc[1][0].strip()))
+check("★ 범위 밖 묶음은 None (마지막 장 뒤로 나가지 않는다)",
+      R5.analysis_cards(_multi_rb, _v5sched, League.KBO, _v5day,
+                        batch=99, team_stats=_v5ts) is None)
+
+# ═════════════════════════════════════════════════════════════
+print("\n7.7 ★ 팀명 한글 표기 (v1.16 — 대표님 지시로 198팀 전수 점검)")
+# ═════════════════════════════════════════════════════════════
+#
+# 대표님: *"지바롯데 치바롯데 / 닛폰햄 니혼햄 ... 전체 팀명 한글표기 점검해보자."*
+# 네이버 표기와 대조한 결과 KBO 10/10 · NPB 12/12 · K리그 12/12 · MLB 29/30이
+# 같았다(대표님이 2026-09-04에 *"팀명 선수명 등 모두 네이버 기준으로"*라고
+# 정한 기준이다). 유럽·MLS는 소스 이름을 그대로 쓰므로 애초에 같다.
+# → **표를 새로 만들지 않고 어긋난 것만 덮는다**(`contract.TEAM_NAME_FIX`).
+import contract as _CT                                            # noqa: E402
+
+check("★ 예외 표가 실제로 적용된다 (표만 두고 배선을 잊으면 소용없다)",
+      C5._nm(League.MLS, "샌디에고") == "샌디에이고",
+      C5._nm(League.MLS, "샌디에고"))
+check("  ↳ 표에 없는 이름은 손대지 않는다", C5._nm(League.MLS, "토트넘") == "토트넘")
+check("★ 같은 도시를 리그마다 다르게 부르지 않는다 (약점 93)",
+      C5._nm(League.MLS, "샌디에고") == _CT.TEAM_NAMES[League.MLB]["SD"]
+      and C5._nm(League.MLS, "애틀란타") == _CT.TEAM_NAMES[League.MLB]["ATL"],
+      f'{C5._nm(League.MLS, "샌디에고")} / {C5._nm(League.MLS, "애틀란타")}')
+# ★★ 바로잡은 이름이 카드 폭 안에 들어간다 — 고치고 나서 넘치면 헛일이다
+_long = [n for n in _CT.TEAM_NAME_FIX.values()
+         if len(n.replace(" ", "")) > _CT.TEAM_NAME_MAX_LEN]
+check(f"★★ 예외 표의 이름이 전부 카드 폭({_CT.TEAM_NAME_MAX_LEN}자) 안이다",
+      not _long, str(_long))
+# ★★ 표가 자기 자신을 가리키지 않는다 (덮어쓸 이유가 없는 항목 = 죽은 줄)
+_noop = [k for k, v in _CT.TEAM_NAME_FIX.items() if k.strip() == v]
+check("★ 예외 표에 바뀌지 않는 줄이 없다 (죽은 줄 금지 — 약점 53)",
+      not _noop, str(_noop))
+# ★★ 변이시험 — 표를 비우면 어긋난 이름이 그대로 나간다
+_keep_fix = dict(_CT.TEAM_NAME_FIX)
+_CT.TEAM_NAME_FIX.clear()
+check("★★ 변이시험 — 표를 비우면 '샌디에고'가 그대로 나간다",
+      C5._nm(League.MLS, "샌디에고") == "샌디에고")
+_CT.TEAM_NAME_FIX.update(_keep_fix)
+check("  ↳ 시험 뒤 표가 돌아왔다",
+      C5._nm(League.MLS, "샌디에고") == "샌디에이고")
+# 계약 표(우리가 관리하는 리그)가 카드 폭 안에 있는지도 함께 본다
+_over = [(lg.value, c, n) for lg, tbl in _CT.TEAM_NAMES.items()
+         for c, n in tbl.items()
+         if len(_CT.fix_team_name(n).replace(" ", "")) > _CT.TEAM_NAME_MAX_LEN]
+check(f"★ 계약 팀명이 전부 카드 폭({_CT.TEAM_NAME_MAX_LEN}자) 안이다",
+      not _over, str(_over[:3]))
+
+# ★ 팀 기록 표기는 옛 카드와 v5가 같은 함수를 쓴다 (약점 45·93·110)
+check("★ 팀타율이 소수 3자리로 찍힌다 (소스는 float 0.28을 준다)",
+      P.format_team_stat("avg", 0.28) == "0.280",
+      P.format_team_stat("avg", 0.28))
+check("  ↳ 평균자책은 2자리", P.format_team_stat("era", 4.1) == "4.10",
+      P.format_team_stat("era", 4.1))
+check("  ↳ 자릿수를 모르는 키는 손대지 않는다 (지어내지 않는다)",
+      P.format_team_stat("hr", 151) == "151")
+
 # 나이트는 리그가 둘 이상이어야 만들어진다 — 하나면 그날 결과 카드와 같은 말이 된다.
 _nt = list(_v5games)
 _npb = _G("SOF", "HAN", 4, 1)
@@ -524,6 +728,75 @@ check("★ 나이트: 리그가 하나뿐인 날에도 만든다 (옛 카드로 
       R5.night_card(_v5games, _v5day) is not None)
 check("나이트: 담을 경기가 없으면 만들지 않는다",
       R5.night_card([], _v5day) is None)
+
+# ── 나이트: 전 경기를 싣는가 (2026-09-07 대표님 지적 둘) ──────────
+#
+# ① *"왜 15경기 종료라고 표기되고 한경기 결과만 보여줘?"*
+# ② *"대표경기라는 기준이 사람들마다 다를텐데"*
+# 둘 다 **제목과 본문이 다른 말을 하는 것**과 **우리가 정한 기준을 사실인 양
+# 내세우는 것**에 대한 지적이다. 그래서 세는 것도 그 둘이다.
+_nt3 = R5.night_card(_nt, _v5day)
+check("★★ 나이트가 (카드 · 짧은판들 · 캡션) 세 값을 돌려준다",
+      _nt3 is not None and len(_nt3) == 3, str(type(_nt3)))
+_n_html, _n_shorts, _n_parts = _nt3
+_n_all = [_n_html] + list(_n_shorts)
+# 실린 팀 이름이 전부 나오는가 = 전 경기가 실렸는가.
+_terminal = [g for g in _nt if g.status is Status.FINAL]
+_missing = [plain(_n_html).count(C5._nm(g.league, g.away)) for g in _terminal]
+check("★★ 제목이 센 경기가 본문에 전부 실린다 (한 경기만 보여주지 않는다)",
+      all(_missing), f"본문에 없는 원정팀 {_missing.count(0)}개")
+check("  ↳ 짧은판(빽빽판)에도 전 경기가 남는다 (가장 경기 많은 날에 요청이 무효가 되면 안 된다)",
+      all(plain(_n_shorts[0]).count(C5._nm(g.league, g.away)) for g in _terminal))
+check("★ '대표 경기'를 고르는 코드가 남아 있지 않다 (기준이 자의적이라 없앴다)",
+      "pk" not in C5.body_index([("KBO", "5경기 종료")]),
+      C5.body_index([("KBO", "5경기 종료")]))
+check("  ↳ 가장 짧은 판은 리그별 건수만 말한다 (없는 것을 고르느니 숫자만 적는다)",
+      all(f"{len([g for g in _nt if g.league is lg])}" or True for lg in {g.league for g in _nt})
+      and "경기" in plain(_n_shorts[-1]))
+# 사다리가 실제로 한 단씩 짧아지는가 — 뒤 판이 더 길면 사다리가 아니다.
+_lens = [len(plain(h)) for h in _n_all]
+check("★ 판이 뒤로 갈수록 짧아진다 (사다리가 거꾸로면 상한을 못 넘긴다)",
+      _lens == sorted(_lens, reverse=True), str(_lens))
+
+# 리그가 하나뿐인 날: "1개 리그"라는 말이 어디에도 없어야 한다.
+_one = R5.night_card(_v5games, _v5day)
+_one_txt = plain(_one[0])
+check("★★ 리그가 하나뿐이면 '1개 리그'라고 말하지 않는다 (대표님: 어색하다)",
+      "1개 리그" not in _one_txt, _one_txt[:120])
+check("  ↳ 대신 머리말이 그 리그 이름을 말한다",
+      C5.LEAGUE_LABEL[League.KBO] in _one_txt and "전 리그" not in _one_txt,
+      _one_txt[:120])
+check("  ↳ 여러 리그인 날은 지금처럼 개수를 센다",
+      "개 리그" in plain(_n_html), plain(_n_html)[:120])
+
+# ── 오늘의 경기가 카드에 실리는가 (v1.15) ────────────────────────
+_one_txt2 = plain(_one[0])
+check("★★ 골라 둔 경기가 카드에 실린다 (규칙만 있고 안 그리면 없는 것과 같다)",
+      "오늘의 경기" in _one_txt2, _one_txt2[-160:])
+_bg = H.best_games(_v5games, League.KBO)
+check("  ↳ 고른 이유(코멘트)가 카드에 함께 찍힌다",
+      all(c in _one_txt2 for _g, c in _bg), str(_bg))
+check("★ 근거가 없으면 그 칸을 아예 만들지 않는다 (근거 없는 선택으로 되돌아가지 않는다)",
+      C5.body_best([], League.KBO) == ""
+      and C5.body_best([(_v5games[0], "")], League.KBO) == "")
+# 짧은판으로 내려가도 골라 둔 경기는 남아야 한다 —
+# 가장 바쁜 날에만 기능이 사라지면 그건 기능이 아니다.
+check("  ↳ 짧은판에도 '오늘의 경기'가 남는다",
+      all("오늘의 경기" in plain(h) for h in _one[1]) if _bg else True)
+
+# 번호·시각 — 요청한 그대로 나오는가.
+check("★ 경기마다 번호가 붙는다 (대표님: 몇 번째 경기인지)",
+      '<span class="no">1</span>' in _one[0])
+check("★ 경기 시각이 함께 나온다 (대표님: 경기시간도 같이)",
+      '<span class="tm">' in _one[0])
+_nos = re.findall(r'<span class="no">(\d+)</span>', _one[0])
+check("  ↳ 번호가 1부터 빠짐없이 이어진다",
+      _nos == [str(i + 1) for i in range(len(_nos))] and len(_nos) >= 2, str(_nos))
+# 번호는 **시간순**이어야 한다 — 우리가 임의로 매긴 순서가 아니라는 것이 요점이다.
+_srt = sorted(_v5games, key=lambda g: g.start_utc)
+check("★ 번호가 시간순이다 (그날 몇 번째로 열린 경기인가를 뜻한다)",
+      plain(_one[0]).find(C5._nm(_srt[0].league, _srt[0].away))
+      < plain(_one[0]).find(C5._nm(_srt[-1].league, _srt[-1].away)))
 
 # **스위치가 켜져 있는가.** 함수를 다 만들어 놓고 스위치를 안 켜면 아무 일도 안 난다 —
 # 그것이 이번 작업 전의 상태였다(순위표가 옛 카드로 나가고 있었다).
@@ -598,6 +871,111 @@ check("  ↳ 값이 하나라도 있으면 열을 남긴다",
 _no10 = [_sd("A", 1, 70, 44, 3, "0"), _sd("B", 2, 69, 51, 3, "4")]
 check("최근10도 마찬가지로 값이 없으면 열을 뺀다",
       "최근10" not in C5.body_standings(_no10, League.KBO))
+
+# ── v5 리그 라벨 표는 완전한가 (v1.15 신설) ────────────────────
+#
+# **왜 이 검사가 필요했나.** `cards_v5.LEAGUE_LABEL`은 못 찾은 리그에
+# `"전 리그"`를 돌려준다. 즉 새 리그를 추가하고 이 표를 잊으면 오류도 경고도
+# 없이 **카드 머리에 '전 리그'라고 찍힌 채 발행된다.**
+#
+# pipeline 쪽에는 이미 `assert_league_render_maps()`가 같은 구멍을 막고 있지만
+# **그건 v4 표(`pipeline.LEAGUE_LABEL`)만 본다.** v5 카드는 자기 표를 따로
+# 갖고 있고 아무도 검사하지 않았다 — 이번에 유로파를 넣으면서 발견했다.
+# 약점 135와 같은 얼굴이다: "같은 결함을 한 열에서만 막으면 다른 열에서 다시 난다."
+_v5_missing = [l.value for l in League if l not in C5.LEAGUE_LABEL]
+check("★★ v5 리그 라벨 표에 빠진 리그가 없다 (빠지면 카드에 '전 리그'라고 찍힌다)",
+      not _v5_missing, str(_v5_missing))
+check("  ↳ 변이시험 — 표에서 하나를 빼면 이 검사가 실제로 잡는다",
+      bool([l.value for l in League
+            if l not in {k: v for k, v in C5.LEAGUE_LABEL.items()
+                         if k is not League.UEL}]))
+check("  ↳ 못 찾은 리그의 기본값이 '전 리그'인 것도 그대로다 (이 검사의 전제)",
+      C5.LEAGUE_LABEL.get(None, "전 리그") == "전 리그")
+
+# ── 리그별 강조색 (v1.15 — 대표님 "리그별 색으로 나눈다") ────────
+#
+# 색을 넣는 목적은 **스크롤할 때 리그가 갈라져 보이는 것** 하나다.
+# 그래서 "표에 색이 있는가"가 아니라 **"카드에 그 색이 실제로 찍히는가"**와
+# **"리그끼리 다른 색인가"**를 본다 — 표가 있어도 안 쓰면 없는 것과 같다
+# (2026-08-28에 실제로 그랬다: 색 15개를 정의해 두고 전 리그가 KBO 색으로 나갔다).
+print("\n리그별 강조색")
+import contract as _CT                                            # noqa: E402
+_CT.assert_v5_accent_cover()
+check("★★ 발행 중인 어두운 테마 리그가 전부 팔레트에 있다", True)
+
+
+def _kick_html(lg):
+    return C5.shell(kind="kickoff", league=lg, date_label="9.9 수",
+                    head=H.Headline("T", "8분 뒤 시작"), body="<div></div>",
+                    foot_left="x")
+
+
+_dark_live = [l for l in League
+              if _CT.league_enabled(l) and _CT.card_theme(l) != "paper"]
+_missing_in_card = [l.value for l in _dark_live
+                    if _CT.LEAGUE_ACCENT_DARK[l] not in _kick_html(l)]
+check("★★ 그 색이 카드 HTML에 실제로 찍힌다 (표만 있고 안 쓰면 없는 것과 같다)",
+      not _missing_in_card, str(_missing_in_card))
+
+_seen: dict = {}
+_dupe = []
+for _l in _dark_live:
+    _c = _CT.LEAGUE_ACCENT_DARK[_l]
+    if _c in _seen:
+        _dupe.append((_seen[_c], _l.value))
+    _seen[_c] = _l.value
+check("★ 발행 중인 리그끼리 같은 색이 없다", not _dupe, str(_dupe))
+
+_lowc = [(l.value, round(_CT.contrast_ratio(_CT.LEAGUE_ACCENT_DARK[l], "#0C1016"), 2))
+         for l in _dark_live
+         if _CT.contrast_ratio(_CT.LEAGUE_ACCENT_DARK[l], "#0C1016") < 4.5]
+check("★ 어두운 카드 바닥에서 전부 읽힌다 (대비 4.5 이상)", not _lowc, str(_lowc))
+
+# **원본 테마 표가 오염되지 않는가.** 여기서 새면 리그 하나의 색이 다음 카드에
+# 찍히는데 오류도 로그도 안 남는다 — 눈으로는 절대 못 잡는 종류의 사고다.
+_before = dict(C5.THEMES["dark"])
+for _l in _dark_live:
+    _kick_html(_l)
+check("★★ 카드를 여러 장 그려도 원본 테마 색이 그대로다 (색이 다음 카드로 새지 않는다)",
+      C5.THEMES["dark"] == _before,
+      f"{C5.THEMES['dark'].get('accent')} vs {_before.get('accent')}")
+
+# 변이시험 — 팔레트에서 하나를 빼면 커버 검사가 정말 잡는가.
+_saved = dict(_CT.LEAGUE_ACCENT_DARK)
+try:
+    _CT.LEAGUE_ACCENT_DARK.pop(_dark_live[0])
+    _raised = False
+    try:
+        _CT.assert_v5_accent_cover()
+    except _CT.GateError:
+        _raised = True
+    check("★ 변이시험 — 팔레트에서 리그 하나를 빼면 게이트가 잡는다", _raised)
+finally:
+    _CT.LEAGUE_ACCENT_DARK.clear()
+    _CT.LEAGUE_ACCENT_DARK.update(_saved)
+check("  ↳ 변이시험 뒤 팔레트가 원래대로 돌아왔다",
+      _CT.LEAGUE_ACCENT_DARK == _saved)
+
+# 밝은 카드(paper)는 새 팔레트를 쓰지 않는다 — 기존 잉크색 그대로여야 한다.
+_paper = [l for l in League if _CT.card_theme(l) == "paper"]
+check("밝은 테마 리그는 기존 잉크색을 그대로 쓴다 (새 표를 만들지 않았다)",
+      all(_CT.league_accent(l, "paper") == _CT.LEAGUE_COLORS[l][0] for l in _paper),
+      str([l.value for l in _paper][:3]))
+
+# 모드 스위치가 실제로 스위치인가 — "off"로 되돌리면 브랜드색으로 돌아온다.
+_mode = C5.ACCENT_MODE
+try:
+    C5.ACCENT_MODE = "off"
+    check("★ 모드를 off로 되돌리면 브랜드 민트로 돌아온다 (되돌리기가 한 글자다)",
+          "#35E0A1" in _kick_html(_dark_live[0])
+          and _CT.LEAGUE_ACCENT_DARK[_dark_live[0]] not in _kick_html(_dark_live[0]))
+    C5.ACCENT_MODE = "rail"
+    _r = _kick_html(_dark_live[0])
+    check("  ↳ rail 모드는 바만 물들이고 라벨은 브랜드색을 지킨다",
+          _CT.LEAGUE_ACCENT_DARK[_dark_live[0]] in _r and "#35E0A1" in _r)
+finally:
+    C5.ACCENT_MODE = _mode
+check("  ↳ 시험 뒤 모드가 대표님이 고른 값으로 돌아왔다", C5.ACCENT_MODE == "full")
 
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

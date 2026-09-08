@@ -25,8 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from contract import (League, ScoreUnit, SCORE_UNIT_BY_LEAGUE, Status,
-                      StreakKind, TEAM_NAMES, josa)
+from contract import (League, REGULAR_PERIODS, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
+                      Status, StreakKind, TEAM_NAMES, cancel_reason_text, josa)
 
 
 @dataclass(frozen=True)
@@ -159,7 +159,13 @@ def for_result(games: list, league: League, *, standings: list | None = None
 
     # ③ 취소·연기 — 사실이고, 구독자가 가장 먼저 궁금해하는 것이다.
     if off:
-        reasons = {(g.meta.cancel_reason or "").strip() for g in off if g.meta}
+        # ★ **사유는 계약의 번역 함수를 거친다** (2026-09-07 실렌더로 잡음).
+        # 전에는 소스 원문을 그대로 썼다 — NPB 카드에 **"1경기 中止"**가 나갔다.
+        # 한국어 채널에 일본어 원문이 제목으로 올라간 셈이다(약점 32의 재발).
+        # `cancel_reason_text()`가 이미 그것을 막고 있었는데 **여기만 안 썼다**
+        # (약점 45·110: 같은 병을 앓는 곳을 전부 훑지 않았다).
+        reasons = {cancel_reason_text(g.meta.cancel_reason, g.status)
+                   for g in off if g.meta}
         reasons.discard("")
         # 사유가 하나로 모이면 그것을 쓴다. 여럿이면 뭉뚱그리지 않는다.
         why = reasons.pop() if len(reasons) == 1 else "취소·연기"
@@ -289,6 +295,154 @@ def for_start_alert(minutes_left: int, first_label: str) -> Headline:
                     facts={"minutes": m, "hours": h, "rest_minutes": mm})
 
 
+# ── 오늘의 경기 (v1.15 — 대표님: "베스트 경기를 뽑아 간단히 코멘트") ──
+#
+# ⚠️ **오늘 아침에 '대표 경기'를 없앴다가 다시 만드는 것이 아니다.**
+# 없앤 것은 *"가장 점수차가 큰 경기"* 하나를 **아무 설명 없이** 올리던 것이다.
+# 대표님 지적이 정확했다 — *"대표경기라는 기준이 사람들마다 다를텐데."*
+# 기준이 안 보이니 자의적이었다.
+#
+# 여기서 달라지는 것은 **왜 골랐는지를 카드가 말한다**는 점이다.
+# "9회 역전"·"연장 11회"·"1점 차"는 **데이터에서 읽히는 사실**이지 우리 감상이
+# 아니다. 근거를 함께 적으면 고른 이유가 검증 가능해진다 — 그러면 그것은
+# 자의적 선택이 아니라 규칙이다(이 파일 전체가 그 원리로 서 있다).
+#
+# **지어낸 형용사는 하나도 쓰지 않는다.** "명승부"·"짜릿한"은 없다.
+# 규칙에 걸리는 것이 없으면 **아무것도 고르지 않는다.**
+BEST_MAX = 2                      # 대표님: "한두경기정도"
+BIG_TOTAL_RUNS = 15               # 야구·농구가 아닌 '합계' 종목의 대량 득점 임계
+BIG_TOTAL_GOALS = 6               # 축구
+
+
+def _cum_lead_flip(seq_home, seq_away) -> "int | None":
+    """구간별 득점으로 **역전이 일어난 구간**을 찾는다. 없으면 None.
+
+    한 번이라도 뒤졌던 팀이 최종 승리했으면 역전이다.
+    돌려주는 값은 **마지막으로 앞뒤가 뒤바뀐 구간 번호**(1부터).
+    """
+    h = a = 0
+    lead = 0                      # +1 홈 우세 · -1 원정 우세 · 0 동점
+    flip_at = None
+    for i, (hv, av) in enumerate(zip(seq_home, seq_away), start=1):
+        h += hv or 0
+        a += av or 0
+        cur = 1 if h > a else (-1 if a > h else 0)
+        if cur and lead and cur != lead:
+            flip_at = i
+        if cur:
+            lead = cur
+    return flip_at
+
+
+def _period_word(league) -> str:
+    """구간을 뭐라 부르나. 종목이 다르면 이름도 다르다."""
+    unit = SCORE_UNIT_BY_LEAGUE.get(league)
+    if unit is ScoreUnit.RUNS:
+        return "회"
+    if unit is ScoreUnit.POINTS:
+        return "쿼터"
+    if unit is ScoreUnit.SETS:
+        return "세트"
+    return ""
+
+
+def best_games(games: list, league) -> list:
+    """오늘 눈여겨볼 경기 최대 `BEST_MAX`개. `[(경기, 코멘트)]`.
+
+    규칙은 순서대로 본다 — 위에 있을수록 강한 근거다:
+      ① **역전**   경기 중 뒤졌던 팀이 이겼다 (구간 점수·득점 시각으로 확인)
+      ② **연장**   정규 구간을 넘겼다
+      ③ **1점 차** 끝까지 한 점 싸움이었다
+      ④ **대량 득점** 두 팀 합계가 임계를 넘었다
+    한 경기가 여러 규칙에 걸리면 코멘트를 **모아서** 적는다.
+    걸리는 것이 없으면 **빈 목록** — 억지로 채우지 않는다.
+    """
+    done = [g for g in games if g.status is Status.FINAL and g.score]
+    if not done:
+        return []
+    pw = _period_word(league)
+    unit = SCORE_UNIT_BY_LEAGUE.get(league)
+    scored: list = []
+    for g in done:
+        bits: list[str] = []
+        rank = 0
+        meta = getattr(g, "meta", None)
+        rows = list(getattr(meta, "line_score", ()) or ()) if meta else []
+        goals = list(getattr(meta, "goals", ()) or ()) if meta else []
+
+        # ① 역전
+        flip = None
+        if rows:
+            flip = _cum_lead_flip([r[0] for r in rows], [r[1] for r in rows])
+            if flip and pw:
+                bits.append(f"{flip}{pw} 역전")
+                rank = max(rank, 4)
+        elif goals:
+            seq_h = [1 if x.side == "home" else 0 for x in sorted(goals, key=lambda x: x.minute)]
+            seq_a = [1 if x.side == "away" else 0 for x in sorted(goals, key=lambda x: x.minute)]
+            flip = _cum_lead_flip(seq_h, seq_a)
+            if flip:
+                mins = sorted(x.minute for x in goals)
+                bits.append(f"{mins[flip - 1]}분 역전")
+                rank = max(rank, 4)
+
+        # ② 연장 — 구간 수가 정규를 넘었다
+        reg = REGULAR_PERIODS.get(unit)
+        if rows and reg and len(rows) > reg and pw:
+            bits.append(f"연장 {len(rows)}{pw}")
+            rank = max(rank, 3)
+
+        # ③ 1점 차 (세트·맵 종목은 '한 세트 차'가 흔해 세지 않는다)
+        diff = abs(g.score.home - g.score.away)
+        if diff == 1 and unit in (ScoreUnit.RUNS, ScoreUnit.POINTS, ScoreUnit.GOALS):
+            bits.append("1점 차" if unit is not ScoreUnit.GOALS else "한 골 차")
+            rank = max(rank, 2)
+
+        # ④ 대량 득점
+        total = g.score.home + g.score.away
+        cap = BIG_TOTAL_GOALS if unit is ScoreUnit.GOALS else BIG_TOTAL_RUNS
+        if unit in (ScoreUnit.RUNS, ScoreUnit.POINTS, ScoreUnit.GOALS) and total >= cap:
+            bits.append(f"두 팀 합계 {total}{'골' if unit is ScoreUnit.GOALS else '점'}")
+            rank = max(rank, 1)
+
+        if bits:
+            # 같은 순위끼리는 **점수차가 작은 쪽**을 앞에 둔다 — 접전이 먼저다.
+            scored.append((rank, -diff, total, g, " · ".join(bits)))
+    scored.sort(key=lambda x: (-x[0], -x[1], -x[2]))
+    return [(g, c) for _r, _d, _t, g, c in scored[:BEST_MAX]]
+
+
+def korean_player_sub(lines) -> str:
+    """한국 선수 출전 한 줄. 없으면 빈 문자열 (v1.15).
+
+    **왜 필요한가.** MLS는 리그 전체가 아니라 한국 선수가 뛰는 경기만 실린다
+    (대표님 지시). 그런데 카드가 그 말을 안 하면 시청자는 왜 이 한 경기만
+    올라왔는지 모른다 — **고른 이유가 카드에 없으면 고른 것이 아니다.**
+
+    **소스가 준 것만 말한다.** 출전 시간·평점은 소스에 없으므로 쓰지 않는다.
+    라인업을 못 본 경기는 `lines`가 비어 있고, 그러면 아무 말도 안 한다 —
+    대표님 결정: *"그냥 보낸다 (출전 언급 없이)"*.
+    """
+    out: list[str] = []
+    for pl in lines or ():
+        sc = getattr(pl, "soccer", None)
+        if not sc:
+            # 축구 칸이 없는 줄(야구 코리안리거)이다. **축구 말로 옮기지 않는다** —
+            # 옮기면 이정후가 '교체 명단'이 된다. 모르는 것은 말하지 않는다.
+            continue
+        bits = ["선발" if sc.get("start") else "교체 명단"]
+        g = int(sc.get("goals") or 0)
+        if g:
+            bits.append(f"{g}골")
+        og = int(sc.get("own_goals") or 0)
+        if og:
+            bits.append(f"자책골 {og}" if og > 1 else "자책골")
+        if sc.get("card"):
+            bits.append(str(sc["card"]))
+        out.append(f"{pl.name_ko} {' · '.join(bits)}")
+    return " / ".join(out)
+
+
 def for_kickoff(minutes_left: int) -> Headline:
     """경기별 킥오프 알림 (v1.14). **'곧'이라고 쓰지 않는다** — 108의 규칙.
 
@@ -301,6 +455,28 @@ def for_kickoff(minutes_left: int) -> Headline:
     m = max(1, int(minutes_left))
     return Headline(rule="K-COUNTDOWN", text=f"{m}분 뒤 시작",
                     facts={"minutes": m})
+
+
+def for_lineup(away_name: str, home_name: str, minutes_left: int) -> Headline:
+    """선발 라인업 카드 머리말 (v1.17).
+
+    **남은 시간을 분으로 못 박지 않는다.** 킥오프 카드와 달리 이 카드의 창은
+    넓다(라인업 발표는 킥오프 1시간 전 언저리이고 우리는 본 즉시 보낸다).
+    "37분 뒤"처럼 적으면 페이서가 미루는 동안 그대로 거짓이 되고, 이 카드는
+    킥오프 카드처럼 창이 좁지도 않아 어긋날 여지가 더 크다.
+
+    그래서 **시간은 구간으로만 말한다.** 한 시간이 넘게 남았으면 아예 말하지
+    않는다 — 정확히 알 수 없는 것을 숫자로 적는 것보다 안 적는 편이 정직하다.
+    """
+    m = max(0, int(minutes_left))
+    if m >= 60:
+        tail = ""
+    elif m >= 30:
+        tail = " · 1시간 이내 시작"
+    else:
+        tail = " · 곧 시작"
+    return Headline(rule="L-STARTING", text=f"선발 라인업 발표{tail}",
+                    facts={"minutes": m, "away": away_name, "home": home_name})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -351,8 +527,17 @@ def for_standings(standings: list, league: League, *, group: str | None = None
             best_pair = (d, rows[i], rows[i + 1])
     if best_pair is not None:
         d, a, b = best_pair
-        txt = (f"{a.rank}·{b.rank}위 공동" if d == 0
-               else f"{a.rank}·{b.rank}위 {d:g}경기 차")
+        # ★ **'공동'은 순위가 같을 때만 쓴다 (2026-09-07 실렌더로 잡음).**
+        # 전에는 승차 차이 `d == 0`이면 '공동'이라 적었다. 그런데 승차가 같아도
+        # 순위는 다를 수 있다 — 실측 NPB 9/8: 세이부 .574 2위 · 닛폰햄 .573 3위,
+        # 둘 다 승차 6.0. 카드가 "2·3위 공동"이라 적었는데 **'공동'은 같은 순위를
+        # 뜻하는 낱말**이라 그 자리에서 거짓이 된다.
+        # 승차가 같고 순위가 다르면 옆 문형과 똑같이 '0경기 차'로 적는다 —
+        # 새 낱말을 만들지 않는다.
+        if a.rank == b.rank:
+            txt = f"공동 {a.rank}위"
+        else:
+            txt = f"{a.rank}·{b.rank}위 {d:g}경기 차"
         return Headline(
             rule="S-RACE", text=txt,
             sub=f"{_nm(league, a.team_code)} · {_nm(league, b.team_code)}",
@@ -523,6 +708,20 @@ def fallback(kind: str, **kw) -> Headline:
                         facts={})
     if kind == "night":
         lg, n = kw.get("leagues", 0), kw.get("final", 0)
+        # **리그가 하나면 "1개 리그"라고 세지 않는다** (2026-09-07 대표님:
+        # *"1개리그 라는 단어가 어색해"*). 하나뿐인 것을 "1개"라고 세는 것은
+        # 정보가 아니라 소음이다.
+        #
+        # 리그 이름은 **머리말(`group_label`)이 맡는다.** 제목에 넣어 봤더니
+        # 제목·본문 배지·꼬리말에 같은 이름이 세 번 나왔다 —
+        # 대표님이 두 형태를 보고 머리말 쪽을 골랐다. 결과·순위표 카드와
+        # 같은 구조라 채널 전체가 한 결로 읽힌다.
+        # 그래서 제목은 숫자만 말하고, `facts`에는 리그를 남긴다(게이트가 되짚는다).
+        label = (kw.get("league_label") or "").strip()
+        if lg == 1 and label:
+            return Headline(rule="N-ONE", text=f"{n}경기 종료",
+                            sub=kw.get("sub", ""),
+                            facts={"leagues": 1, "final": n, "league": label})
         return Headline(rule="N-COUNT", text=f"{lg}개 리그 {n}경기 종료",
                         sub=kw.get("sub", ""), facts={"leagues": lg, "final": n})
     raise ValueError(f"모르는 종류: {kind}")
@@ -616,8 +815,15 @@ class Verdict:
     pick: str = ""          # 카드 배지에 찍히는 한 줄 — "삼성 우세" · "팽팽"
 
 
+PREVIEW_MAX_LINES = 6
+"""분석글 최대 줄 수. 넘치면 카드가 세로로 무너진다 — **길이도 사실의 일부다.**"""
+
+
 def for_preview(*, away_name: str, home_name: str, metrics: list,
-                h2h_text: str = "") -> Optional[Verdict]:
+                h2h_text: str = "", h2h_full: bool = True,
+                form: tuple | None = None,
+                streak: tuple | None = None, ranks: tuple | None = None,
+                h2h_recent: str = "") -> Optional[Verdict]:
     """관전 포인트를 만든다. 항목이 셋보다 적으면 만들지 않는다.
 
     **숫자가 갈리면 갈렸다고 쓴다.** 억지로 한쪽을 고르지 않는다 —
@@ -659,17 +865,23 @@ def for_preview(*, away_name: str, home_name: str, metrics: list,
                      f"{len(lead)}대 {len(trail)}.")
         return _verdict(rule="V-SPLIT", lines=lines, facts=facts, lead=lead,
                         trail=trail, trail_name=trail_name, h2h_text=h2h_text,
-                        pick="팽팽")
+                        pick="팽팽", away_name=away_name, home_name=home_name,
+                        form=form, streak=streak, ranks=ranks,
+                        h2h_recent=h2h_recent, h2h_full=h2h_full)
     word = _edge_word(len(lead), len(trail))
     facts["edge"] = word
     lines.append(f"기록은 {lead_name} 쪽이다. "
                  f"{n}개 항목 중 {len(lead)}개를 가져간다.")
     return _verdict(rule="V-EDGE", lines=lines, facts=facts, lead=lead,
                     trail=trail, trail_name=trail_name, h2h_text=h2h_text,
-                    pick=f"{lead_name} {word}")
+                    pick=f"{lead_name} {word}", away_name=away_name,
+                    home_name=home_name, form=form, streak=streak,
+                    ranks=ranks, h2h_recent=h2h_recent, h2h_full=h2h_full)
 
 
-def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick):
+def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick,
+             away_name="", home_name="", form=None, streak=None, ranks=None,
+             h2h_recent="", h2h_full=True):
     """첫 줄 뒤는 규칙이 갈리지 않는다 — 격차·반대 근거·맞대결은 늘 같은 순서다."""
 
     pool = [m for m in lead if m.can_headline] or lead
@@ -691,9 +903,51 @@ def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick):
         lines.append(f"다만 {t.label}{josa(t.label, '은', '는')} "
                      f"{trail_name}{josa(trail_name, '이', '가')} 낫다 — "
                      f"{t.away_text} 대 {t.home_text}.")
+    # ── 근거를 두껍게 (v1.16 — 대표님: *"분석글을 상세하게"*) ────────
+    #
+    # **확률을 지어내지 않는다.** 우리에겐 모델이 없다. 대신 **근거의 각도**를
+    # 늘린다 — 팀 지표(위)에 더해 최근 흐름·연속 기록·맞대결·순위 격차를
+    # 각각 한 줄로 적는다. 전부 수집한 값에서 나오고, 문장에 찍힌 수는
+    # 빠짐없이 `facts`에 남는다(게이트가 되짚는다).
+    #
+    # **없으면 그 줄을 안 쓴다.** 리그마다 소스가 주는 것이 달라서, 있는 척하면
+    # 그 리그에서만 카드가 거짓말을 한다.
+    if form and all(form):
+        (aw, al, ad), (hw, hl, hd) = form
+        _a = f"{aw}승 {al}패" + (f" {ad}무" if ad else "")
+        _h = f"{hw}승 {hl}패" + (f" {hd}무" if hd else "")
+        facts["form_away"], facts["form_home"] = _a, _h
+        facts["form_n"] = max(aw + al + ad, hw + hl + hd)
+        lines.append(f"최근 {facts['form_n']}경기는 "
+                     f"{away_name} {_a}, {home_name} {_h}.")
+    if streak:
+        for _nm_, _kind, _len in streak:
+            if not _kind or _len < STREAK_NOTABLE:
+                continue
+            _w = "연승" if _kind is StreakKind.WIN else "연패"
+            facts.setdefault("streaks", []).append([_nm_, _kind.value, _len])
+            lines.append(f"{_nm_}{josa(_nm_, '은', '는')} {_len}{_w} 중이다.")
     if h2h_text:
         facts["h2h"] = h2h_text
-        lines.append(f"올해 맞대결은 {h2h_text}.")
+        # ★ **'올해'는 시즌 전체를 셌을 때만 쓴다.** 우리가 스냅샷에서 센 것은
+        # 가진 범위일 뿐이다(실측: MLB 스냅샷은 일주일치). 범위를 모르면
+        # 범위를 말하지 않는 편이 정확하다 — 약점 108.
+        facts["h2h_full"] = bool(h2h_full)
+        _tail = f" 최근 흐름은 {h2h_recent}." if h2h_recent else ""
+        if h2h_recent:
+            facts["h2h_recent"] = h2h_recent
+        _when = "올해" if h2h_full else "최근"
+        lines.append(f"{_when} 맞대결은 {h2h_text}.{_tail}")
+    if ranks and all(ranks) and abs(ranks[0] - ranks[1]) >= RANK_GAP_NOTABLE:
+        facts["rank_away"], facts["rank_home"] = ranks
+        facts["rank_gap"] = abs(ranks[0] - ranks[1])
+        lines.append(f"순위는 {ranks[0]}위와 {ranks[1]}위 — "
+                     f"{facts['rank_gap']}계단 차다.")
+    # **길이도 사실의 일부다.** 넘치면 카드가 무너지므로 앞에서 자른다 —
+    # 줄 순서가 곧 중요도 순서라 뒤가 잘리는 것이 옳다.
+    if len(lines) > PREVIEW_MAX_LINES:
+        facts["lines_dropped"] = len(lines) - PREVIEW_MAX_LINES
+        lines = lines[:PREVIEW_MAX_LINES]
     return Verdict(rule=rule, lines=tuple(lines), facts=dict(facts), pick=pick)
 
 
@@ -702,7 +956,7 @@ def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick):
 ALL_RULES = frozenset({
     "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-COUNT",
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
-    "A-COUNTDOWN", "K-COUNTDOWN",
+    "A-COUNTDOWN", "K-COUNTDOWN", "L-STARTING", "N-ONE",
     "S-GAP", "S-RACE", "S-LEAD", "S-STREAK", "S-LAST10", "S-RANK",
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
