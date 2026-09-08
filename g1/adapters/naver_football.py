@@ -111,10 +111,46 @@ KOREAN_PLAYER_ONLY: frozenset = frozenset({League.MLS})
 # `team`은 **1차 거름망**이다. 경기 목록만 보고 후보를 좁혀 라인업 조회를
 # 아낀다(13일치 전 경기를 다 조회하면 65요청, 팀으로 좁히면 4~6개다).
 # 이적하면 라인업에서 다른 팀으로 잡히고, 그때 아래 `_note_transfer`가 알린다.
+#
+# **v1.17c (2026-09-08) — 대표님 지시로 유럽까지 넓혔다.**
+# *"한국선수 해외리그 출전하는 경기는 꼭 알림이 필요한데"*
+#
+# ⚠️ **`id`는 이제 선택이다.** 예전에는 MLS 둘뿐이라 실측으로 id까지 읽어
+# 적어 두었는데, 그 방식은 **선수를 못 만나면 표에 못 넣는다**는 뜻이었다.
+# 실제로 이강인(AT 마드리드)이 표에 없어서 못 잡고 있었고, 그것을 발견한
+# 것은 우리 감시가 아니라 라인업을 눈으로 훑다가였다.
+# 이름만 있으면 라인업에서 만나는 순간 소스가 id를 준다 — 표가 id를
+# 기다릴 이유가 없다.
+#
+# ⚠️ **`team`은 1차 거름망일 뿐 판정 기준이 아니다.** MLS는 이것으로
+# 조회를 아끼지만(전 경기를 다 볼 수 없으므로), 유럽은 어차피 전 경기
+# 라인업을 받으므로 **이름만으로 찾는다.** 그래서 이적해도 자동으로 따라가고,
+# 팀이 어긋나면 `_note_transfer`가 알린다.
+#
+# 출처: 2026-09-08 기사 두 건(스포츠경향 09-02 · 뉴스핌 08-26)에서 명단을
+# 얻고, **우리 소스의 라인업에서 표기를 실제로 확인한 것에 ✓를 붙였다.**
+# 확인 못 한 선수는 그 경기에 선발이 아니었을 뿐이라 그대로 둔다 —
+# 라인업에서 만나면 그때 잡힌다. **못 잡는 것은 거짓이 아니지만,
+# 지어낸 표기를 적으면 그건 거짓이다.**
 KOREAN_PLAYERS: dict = {
-    # 2026-09-07 라인업 실측으로 확인한 둘. id·팀 모두 실제 응답에서 읽었다.
+    # ── MLS (2026-09-07 실측 — id·팀 모두 실제 응답에서 읽었다) ──
     "손흥민": {"id": "439351", "team": "LAFC"},
     "김기희": {"id": "PxcfTi3R", "team": "시애틀"},
+    # ── 유럽 (2026-09-08) ──
+    "김민재": {"team": "바이에른 뮌헨"},      # ✓ 라인업 실측 확인
+    "이재성": {"team": "마인츠"},             # ✓ 라인업 실측 확인
+    "이강인": {"team": "AT 마드리드"},        # ✓ 라인업 실측 확인 (2026-09-07)
+    "정우영": {"team": "우니온 베를린"},
+    "설영우": {"team": "아우크스부르크"},
+    "황희찬": {"team": "샬케"},
+    "홍현석": {"team": "마인츠"},
+    "김지수": {"team": "브렌트퍼드"},
+    "박승수": {"team": "뉴캐슬"},
+    # 대항전(UCL·유로파)으로 우리 카드에 들어오는 선수들.
+    # 소속 리그 자체는 우리가 발행하지 않지만, 대항전 경기는 발행한다.
+    "황인범": {"team": "포르투"},
+    "이한범": {"team": "클럽 브뤼헤"},
+    "오현규": {"team": "베식타시"},
 }
 
 # 라인업을 조회할 경기 수 상한(한 틱). 남의 소스다 — 필요한 것만 본다.
@@ -416,7 +452,9 @@ class NaverFootballAdapter(NoticeMixin):
                 self._note_transfer(name, rec, pl, team_code)
                 start = str(pl.get("substitute")) == "0"
                 found.append(PlayerLine(
-                    player_id=str(pl.get("playerId") or rec["id"]),
+                    # **표에 id가 없어도 된다** (v1.17c) — 소스가 주는 값이
+                    # 원본이고, 표는 '누가 한국 선수인가'만 안다.
+                    player_id=str(pl.get("playerId") or rec.get("id") or ""),
                     name_ko=name, team=TeamRef(self.league, team_code),
                     played=True,
                     # 선발이 아니면 **명단에는 있다**는 뜻이다. 소스는 교체
@@ -459,11 +497,13 @@ class NaverFootballAdapter(NoticeMixin):
         사라지는데**, 오류도 경고도 없다. 그래서 라인업에서 어긋남을 보는
         순간 소리를 낸다.
         """
-        if team_code != rec["team"]:
+        # **표에 적힌 것과 어긋날 때만 말한다.** 표에 없는 칸(id·team)은
+        # 어긋날 것도 없다 — v1.17c에서 id를 선택으로 바꿨기 때문이다.
+        if rec.get("team") and team_code != rec["team"]:
             self.note("한국 선수 소속팀이 표와 다름 (이적 의심 · 표를 고쳐야 함)",
                       f"{name}: 표 {rec['team']} · 실제 {team_code}")
         pid = str(pl.get("playerId") or "")
-        if pid and pid != rec["id"]:
+        if rec.get("id") and pid and pid != rec["id"]:
             self.note("한국 선수 ID가 표와 다릅니다 (소스가 ID를 바꿨을 수 있습니다)",
                       f"{name}: 표 {rec['id']} · 실제 {pid}")
 
@@ -545,6 +585,22 @@ class NaverFootballAdapter(NoticeMixin):
         lu = ((d.get("result") or {}).get("lineUpData") or {}).get("lineup")
         if not lu:
             return None
+
+        # ── 한국 선수를 여기서 함께 잡는다 (v1.17c, 2026-09-08) ──────
+        #
+        # 대표님: *"한국선수 해외리그 출전하는 경기는 꼭 알림이 필요한데"*
+        #
+        # **조회가 늘지 않는다** — 이미 받은 이 응답을 한 번 더 읽을 뿐이다.
+        # 그전까지 한국 선수 표시는 MLS에만 붙었다(`_korean_only` 경로).
+        # 유럽은 전 경기를 수집하면서도 `player_lines`를 아무도 안 채워
+        # **한국 선수가 뛰어도 카드에 아무 표시가 없었다.**
+        #
+        # 명단이 반쯤 찼거나 못 읽는 경우에도 이건 해 둔다 — 카드에 명단을
+        # 싣지 못하더라도 '누가 나온다'는 사실은 알릴 값어치가 있다.
+        lines = self._korean_lines(g, lu)
+        if lines:
+            g.meta.player_lines = lines
+
         out: dict = {}
         for side in ("home", "away"):
             rows = self._lineup_rows(lu.get(side))
@@ -552,9 +608,44 @@ class NaverFootballAdapter(NoticeMixin):
                 return None                    # 반쯤 찬 명단은 명단이 아니다
             fm = str((lu.get(side) or {}).get("formation") or "").strip()
             out[side] = {"formation": fm, "rows": self._face_gk_first(rows, fm)}
-        if len(out) != 2:
+        if not all(s in out for s in ("home", "away")):
             return None
+        # **한국 선수도 여기 담아 함께 저장한다** (v1.17c).
+        # 카드는 메모리가 아니라 되읽은 스냅샷으로 그린다(fix49). `player_lines`는
+        # 스냅샷에 담지 않는 칸이라(야구 기록 경로가 매 틱 새로 채운다) 여기
+        # 실어야 살아남는다 — 축구 선발 명단은 발표되면 안 바뀌므로 저장이 안전하다.
+        if lines:
+            out["korean"] = [{"name": pl.name_ko, "team": pl.team.team_code,
+                              "id": pl.player_id, "dnp": pl.dnp_reason,
+                              "soccer": pl.soccer} for pl in lines]
         return out
+
+    def _korean_lines(self, g: Game, lu: dict) -> list:
+        """이 라인업 안의 한국 선수. 없으면 빈 목록.
+
+        `_lineup_korean`과 같은 일을 하지만 **이미 받아 둔 응답으로** 한다 —
+        그쪽은 MLS를 거르려고 스스로 조회하는 경로이고, 이쪽은 유럽에서
+        이미 온 명단을 읽는다. 판정 규칙은 하나로 맞춘다.
+        """
+        found: list = []
+        for side in ("home", "away"):
+            team_code = g.home.team_code if side == "home" else g.away.team_code
+            for pl in self._players(lu.get(side)):
+                name = (pl.get("name") or "").strip()
+                rec = KOREAN_PLAYERS.get(name)
+                if not rec:
+                    continue
+                self._note_transfer(name, rec, pl, team_code)
+                start = str(pl.get("substitute")) == "0"
+                found.append(PlayerLine(
+                    player_id=str(pl.get("playerId") or rec.get("id") or ""),
+                    name_ko=name, team=TeamRef(self.league, team_code),
+                    played=True,
+                    dnp_reason=None if start else "교체 명단",
+                    soccer={"start": start, "goals": _int(pl.get("goal")),
+                            "own_goals": _int(pl.get("ownGoal")),
+                            "card": _card_label(pl)}))
+        return found
 
     @staticmethod
     def _lineup_rows(side: "dict | None") -> list:

@@ -1275,6 +1275,21 @@ def _load_games(name: str) -> list:
                           # v1.17 — 없으면 None이라 옛 스냅샷도 그냥 읽힌다.
                           lineup=d.get("lineup") or None,
                           lineup_seen_at=d.get("lineup_seen_at"))))
+    # **저장된 라인업 안의 한국 선수를 되살린다** (v1.17c).
+    # `player_lines`는 스냅샷에 담지 않는 칸이라(야구 기록 경로의 몫) 축구는
+    # `lineup["korean"]`에 실어 저장했다. 여기서 되돌리지 않으면 카드가
+    # "이재성 선발"을 말할 재료를 잃는다 — fix49와 같은 자리다.
+    for _g, _d in zip(out, json.loads(p.read_text(encoding="utf-8"))):
+        _kr = (_d.get("lineup") or {}).get("korean") or []
+        if not _kr:
+            continue
+        from contract import PlayerLine
+        _g.meta.player_lines = [
+            PlayerLine(player_id=str(k.get("id") or ""), name_ko=k["name"],
+                       team=TeamRef(_g.league, k.get("team") or ""),
+                       played=True, dnp_reason=k.get("dnp"),
+                       soccer=k.get("soccer"))
+            for k in _kr if k.get("name")]
 
     # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
     # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나

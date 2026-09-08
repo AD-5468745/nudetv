@@ -62,7 +62,15 @@ def mkgame(*, hh: int = 23, status=Status.SCHEDULED, score=None,
 
 
 def _row(*names) -> list:
-    return [{"name": n, "playerId": f"p{i}", "goal": 0} for i, n in enumerate(names)]
+    """실제 응답의 선발 한 줄.
+
+    ⚠️ **`substitute`를 빼면 가짜가 계약보다 좁아진다.** 소스는 선발에
+    `substitute: "0"`을 주고 우리 코드가 그것으로 선발/교체를 가른다.
+    이 필드 없이 만든 표본은 선발을 전부 '교체 명단'으로 읽게 해서,
+    검사가 멀쩡한 코드를 틀렸다고 잡는다(실제로 한 번 그렇게 걸렸다).
+    """
+    return [{"name": n, "playerId": f"p{i}", "goal": 0, "substitute": "0"}
+            for i, n in enumerate(names)]
 
 
 # 4-2-3-1 — GK가 첫 줄인 **정방향** 응답
@@ -428,6 +436,68 @@ mutate("시작 후에도 SCHEDULED로 두면 지난 경기 카드가 나간다",
        R, "lineup_card",
        lambda game, league, *, now: R._lineup_body(game, league, with_goals=False)
        and ("x", ["y"]), _probe_after)
+
+# ── 9. 한국 선수 해외 경기 (v1.17c) ─────────────────────────
+#
+# 대표님 지시(2026-09-08): *"한국선수 해외리그 출전하는 경기는 꼭 알림이 필요한데"*
+#
+# 그전까지 한국 선수 표시는 **MLS에만** 붙었다. 유럽은 전 경기를 수집하면서도
+# `player_lines`를 아무도 안 채워, 이강인이 뛰어도 카드에 아무 표시가 없었다.
+print("\n9. 한국 선수 — 유럽 라인업에서 잡히는가")
+import adapters.naver_football as NF                          # noqa: E402
+
+_KR_ROWS = [_row("오블락"), _row("르노르망", "히메네스", "갈란"),
+            _row("몰리나", "바리오스", "코케", "이강인", "갈리아르도"),
+            _row("그리즈만", "훌리안 알바레스")]
+_kg = mkgame()
+_kad = Fake({"/schedule/games/abc123/lineup": lineup_payload(_KR_ROWS, FWD,
+                                                             hf="4321")})
+_kad.fill_lineups([_kg], NOW)
+check("★★ 표에 있는 한국 선수가 라인업에서 잡힌다",
+      any(pl.name_ko == "이강인" for pl in _kg.meta.player_lines),
+      str([pl.name_ko for pl in _kg.meta.player_lines]))
+import headline as _H                                          # noqa: E402
+check("  ↳ 카드에 실을 한 줄이 만들어진다 ('이강인 선발')",
+      "이강인" in _H.korean_player_sub(_kg.meta.player_lines),
+      _H.korean_player_sub(_kg.meta.player_lines))
+check("★ 조회가 늘지 않는다 (이미 받은 명단을 다시 읽을 뿐)",
+      len(_kad.calls) == 1, str(_kad.calls))
+check("★ 표에 없는 이름은 잡지 않는다 (이름으로 국적을 추정하지 않는다)",
+      all(pl.name_ko in NF.KOREAN_PLAYERS for pl in _kg.meta.player_lines),
+      str([pl.name_ko for pl in _kg.meta.player_lines]))
+# **저장 왕복** — `player_lines`는 스냅샷에 담지 않는 칸이라, 라인업 안에
+# 실어야 살아남는다. 여기서 새면 카드가 되읽을 때 표시가 사라진다(fix49).
+_saved = (_kg.meta.lineup or {}).get("korean")
+check("★★ 한국 선수가 라인업 칸에 실려 저장된다 (fix49와 같은 자리)",
+      bool(_saved) and _saved[0]["name"] == "이강인", str(_saved))
+check("  ↳ 카드가 쓰는 값이 다 실린다 (이름 · 축구 칸)",
+      bool(_saved) and _saved[0].get("soccer", {}).get("start") is True,
+      str(_saved))
+# 한국 선수가 없는 경기는 아무 말도 안 한다
+_ng = mkgame()
+Fake({"/schedule/games/abc123/lineup": lineup_payload(FWD, REV)}
+     ).fill_lineups([_ng], NOW)
+check("★ 한국 선수가 없으면 아무 말도 안 한다",
+      not _ng.meta.player_lines and not (_ng.meta.lineup or {}).get("korean"))
+
+# **변이시험** — 표에서 이름을 빼면 못 잡는가 (표가 진짜 판정 기준인가)
+def _probe_kr():
+    g = mkgame()
+    Fake({"/schedule/games/abc123/lineup":
+          lineup_payload(_KR_ROWS, FWD, hf="4321")}).fill_lineups([g], NOW)
+    return any(pl.name_ko == "이강인" for pl in g.meta.player_lines)
+
+
+_orig_tbl = dict(NF.KOREAN_PLAYERS)
+try:
+    NF.KOREAN_PLAYERS.pop("이강인", None)
+    _bad = _probe_kr()
+finally:
+    NF.KOREAN_PLAYERS.clear()
+    NF.KOREAN_PLAYERS.update(_orig_tbl)
+check("변이: 표에서 이름을 빼면 못 잡는다 (표가 실제 판정 기준이다)",
+      _bad is False, "표에 없는데도 잡았다 — 이름으로 추정하고 있다")
+check("  ↳ 변이 뒤 표가 원래대로 돌아왔다", "이강인" in NF.KOREAN_PLAYERS)
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)
