@@ -1110,8 +1110,34 @@ check("시계 간격 상수가 실측값을 담는다 (설정값이 아니라)",
 # 도는 지금의 현실이 아니다. 실측 중앙 5.4분 · 최대 12.2분(2026-09-05, 24시간).
 check("실측 정상 범위(9분)에서 게이트가 조용하다",
       _no_raise(lambda: assert_send_windows(9 * 60, T.LOOKAHEAD_SECONDS)))
-check("★ 시계가 이음매(12분)로 뜸해지면 킥오프를 경고한다 — 그건 사실이므로 경고가 맞다",
-      not _no_raise(lambda: assert_send_windows(13 * 60, T.LOOKAHEAD_SECONDS)))
+# **v1.18에서 이 검사의 전제가 바뀌었다 (2026-09-08).**
+# 킥오프 창을 9분 → 29분으로 넓혔으므로 13분 공백에는 이제 경고가 뜨지 않는다.
+# **그게 옳다** — 대표님 지시("누락되는 알림이 절대 발생되면 안되")에 따라
+# 흔한 공백을 창으로 덮었기 때문이다. 검사는 **덮은 만큼 조용하고 그 밖에서
+# 시끄러운지**를 본다.
+check("★ 실측 최대 공백(13분)에서 이제 게이트가 조용하다 (창을 넓혀 덮었다)",
+      _no_raise(lambda: assert_send_windows(13 * 60, T.LOOKAHEAD_SECONDS)))
+check("★ 그보다 뜸해지면(31분) 여전히 경고한다 — 창 밖은 사실이므로 경고가 맞다",
+      not _no_raise(lambda: assert_send_windows(31 * 60, T.LOOKAHEAD_SECONDS)))
+# ── ★ 누락 절대 금지 — 대표님 지시 (2026-09-08) ──────────────
+#
+# *"누락되는 알림이 절대 발생되면 안되"*
+# 이 지시를 계약이 어떻게 지키는지를 여기서 못 박는다.
+from contract import (MUST_ALERT_ON_MISS, KICKOFF_LEAD_SECONDS,       # noqa: E402
+                      GRACE_SECONDS as _GS, NARROW_BY_DESIGN as _NBD,
+                      SAFETY_NET_FOR as _SNF)
+check("★★★ 킥오프 창이 실측 최대 공백(12.2분)을 덮는다 (전에는 9분이라 뚫렸다)",
+      send_window_seconds(ContentType.KICKOFF, T.LOOKAHEAD_SECONDS) >= 13 * 60,
+      f"{send_window_seconds(ContentType.KICKOFF, T.LOOKAHEAD_SECONDS) // 60}분")
+check("  ↳ 그래도 경기 시작 이후 발송은 여전히 불가능하다 (유예 < 리드)",
+      _GS[ContentType.KICKOFF] < KICKOFF_LEAD_SECONDS,
+      f"유예 {_GS[ContentType.KICKOFF]}초 · 리드 {KICKOFF_LEAD_SECONDS}초")
+check("★★★ 창이 좁은 콘텐츠는 안전망을 갖거나 놓쳤을 때 반드시 알린다",
+      _NBD <= (frozenset(_SNF) | MUST_ALERT_ON_MISS),
+      str(sorted(c.value for c in _NBD - (frozenset(_SNF) | MUST_ALERT_ON_MISS))))
+check("  ↳ 킥오프가 그 목록에 있다 (안전망이 없으므로 알림이 유일한 방어다)",
+      ContentType.KICKOFF in MUST_ALERT_ON_MISS)
+
 check("모닝 브리핑은 일찍 나가지 않는다 (앞창 0)",
       lookahead_for(ContentType.MORNING, 90 * 60) == 0,
       str(lookahead_for(ContentType.MORNING, 90 * 60)))
@@ -1145,7 +1171,8 @@ for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
 # **경기별 2종은 여기서 뺀다.** 창을 넓힐 수 없는 콘텐츠라서다(계약 주석 참조).
 # 그냥 빼면 구멍이 되므로, **짝이 되는 안전망이 최악 간격을 견디는지**를
 # 대신 확인한다 — 안전망 없이 좁은 창을 두면 그건 대가가 아니라 누락이다.
-from contract import NARROW_BY_DESIGN, SAFETY_NET_FOR                   # noqa: E402
+from contract import (NARROW_BY_DESIGN, SAFETY_NET_FOR,               # noqa: E402
+                      DISABLED_CONTENT_TYPES)
 _narrow = [f"{ct.value} {send_window_seconds(ct, T.LOOKAHEAD_SECONDS) // 60}분"
            for ct in QUEUED_CONTENT_TYPES - NARROW_BY_DESIGN
            if send_window_seconds(ct, T.LOOKAHEAD_SECONDS)
@@ -1159,6 +1186,19 @@ for _nc, _net in sorted(SAFETY_NET_FOR.items(), key=lambda kv: kv[0].value):
           _nw >= _WORST_OBSERVED_TICK_SECONDS, f"{_nw // 60}분")
     check(f"  ↳ {_net.value}는 설계상 좁은 목록에 없다 (안전망이 안전망을 못 가진다)",
           _net not in NARROW_BY_DESIGN)
+    # ★★★ **안전망이 실제로 발행 중인가** (2026-09-08 신설, 코덱스 협업에서 확정).
+    #
+    # 이 검사가 없어서 오늘 실제 사고가 났다. 계약은
+    # `SAFETY_NET_FOR[KICKOFF] = START_ALERT`라고 적어 두었는데 START_ALERT는
+    # 2026-09-07에 **꺼졌다**(`DISABLED_CONTENT_TYPES`). 그래서 킥오프를 놓친
+    # 경기는 아무 데도 실리지 않는데, 검사는 창 넓이만 보고 통과시켰다.
+    # 2026-09-08 KBO 5경기(18:30)의 시작 알림이 한 장도 안 나갔고 경고도 없었다.
+    #
+    # **꺼진 콘텐츠는 안전망이 아니다.** 창이 아무리 넓어도 안 나가기 때문이다.
+    check(f"  ↳ ★★★ {_net.value}가 실제로 발행 중이다 (꺼진 콘텐츠는 안전망이 아니다)",
+          _net not in DISABLED_CONTENT_TYPES and _net in QUEUED_CONTENT_TYPES,
+          f"{_net.value}: 꺼짐={_net in DISABLED_CONTENT_TYPES} "
+          f"큐에있음={_net in QUEUED_CONTENT_TYPES}")
 # **결과 카드를 일찍 보내면 경기가 빠진다.** 예약 시각은 '마감'이고, 렌더는
 # "한 경기라도 끝났으면" 카드를 만든다. 앞창을 열면 5경기 중 1경기만 끝난
 # 시점에 카드가 나가고 나머지는 영영 빠진다(멱등키가 재발송을 막으므로).

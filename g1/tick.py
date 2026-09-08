@@ -52,7 +52,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       content_digest, correction_key_from, idem_key,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
-                      LINEUP_ENABLED)
+                      LINEUP_ENABLED, MUST_ALERT_ON_MISS)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
@@ -2540,6 +2540,38 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         # 시계가 뜸해지면 여기가 먼저 알려준다.
         # **이건 '상태'가 아니라 '콘텐츠가 사라진 것'이다** → 아래 lost로 올린다.
         lost.append(f"시각을 놓쳐 취소 {len(missed)}건 — " + " · ".join(missed[:2]))
+
+    # ── ★ 창이 지났는데 **대장에 흔적조차 없는** 항목 (v1.18 신설) ──────
+    #
+    # 대표님 지시(2026-09-08): *"누락되는 알림이 절대 발생되면 안되"*
+    #
+    # **위 `missed`로는 이것을 못 잡는다.** 그건 '처리 대상에 들어온 뒤 지각인 것'만
+    # 센다. 처리 대상에 **아예 안 들어온** 항목은 아무도 세지 않고, 대장에도
+    # 아무 줄이 안 남는다 — 그래서 **완전히 조용하다.**
+    #
+    # 2026-09-08이 정확히 그랬다: KBO 5경기(18:30)의 킥오프가 큐에는 생성됐고
+    # 렌더도 됐는데, 대장에 시도 흔적조차 없이 사라졌고 경고도 없었다.
+    # 원인은 아직 모른다. **모르는 채로 두더라도, 일어났다는 사실은 알아야 한다.**
+    #
+    # 조용한 누락은 다음 두 가지를 동시에 뜻한다:
+    #   · 그 카드가 안 나갔다 (고칠 수 있는 문제)
+    #   · 우리가 그것을 모른다 (고칠 기회가 없는 문제)
+    # 두 번째가 더 나쁘다.
+    _ghost: list[str] = []
+    for _it in items:
+        if _it.content_type not in MUST_ALERT_ON_MISS:
+            continue
+        if not is_late(_it.scheduled_utc, now, _it.content_type):
+            continue                      # 아직 창 안이거나 창 전 — 사라진 게 아니다
+        if led.get(_it.idem_key) is not None:
+            continue                      # 대장에 결과가 있다(발송·폐기 무엇이든)
+        _ghost.append(f"{_it.content_type.value} {_it.scope} "
+                      f"(예약 {_it.scheduled_utc.astimezone(KST):%H:%M})")
+    if _ghost:
+        lost.append(
+            f"★ 창이 지났는데 대장에 흔적조차 없는 항목 {len(_ghost)}건 — "
+            + " · ".join(_ghost[:3])
+            + " · 발송도 폐기도 기록되지 않았습니다(원인 조사 필요)")
     if stale_notes:
         lines += [f"묵은 데이터 — {n}" for n in stale_notes[:3]]
     if adapter_notes:
