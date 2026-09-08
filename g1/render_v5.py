@@ -907,6 +907,31 @@ def _foot(games: list, league: League) -> str:
 
 SEND_JPEG_QUALITY = 88
 
+# ── v5가 옛 카드로 떨어진 기록 (v1.17b, 2026-09-08) ──────────────
+#
+# **이 사고의 본질은 결함이 아니라 그 결함이 조용했다는 것이다.**
+# 게이트에 걸린 v5 카드는 오류를 내지 않고 옛 v4 카드로 **조용히** 대체된다.
+# 그래서 검증 1,450건이 전부 통과하는 동안에도 채널에는 옛 디자인이 나갔고,
+# 그것을 잡은 것은 우리 감시가 아니라 **대표님 눈**이었다
+# (2026-09-08: *"디자인 변경이 아직 안된 것 같던데"*).
+#
+# 폴백은 **있어야 하는 장치다** — 깨진 카드를 내보내는 것보다 낫다. 다만
+# 그것이 일어났다는 사실은 반드시 사람에게 닿아야 한다. 여기 쌓아 두면
+# 틱이 매번 거둬 운영 알림에 싣는다(`tick._drain_v5_fallbacks`).
+_FALLBACKS: list = []
+
+
+def note_fallback(why: str) -> None:
+    """v5 → 옛 카드 대체를 기록한다. 화면 출력은 로그에만 남고 아무도 안 본다."""
+    _FALLBACKS.append(why)
+
+
+def take_fallbacks() -> list:
+    """쌓인 기록을 **비우면서** 돌려준다 — 안 비우면 다음 틱에 또 알린다."""
+    out = list(_FALLBACKS)
+    _FALLBACKS.clear()
+    return out
+
 
 def render_png(card_html: str, out: pathlib.Path,
                shorter_html: str | None = None) -> tuple[int, int, int] | None:
@@ -978,9 +1003,12 @@ def _render_once(card_html: str, out: pathlib.Path):
             b.close()
     except Exception as e:                                   # noqa: BLE001
         print(f"  ⚠️ [v5] 렌더 실패: {e.__class__.__name__}")
+        note_fallback(f"카드를 그리지 못해 옛 카드로 나갔습니다: {e.__class__.__name__}")
         return None
     if problems:
-        print("  ⚠️ [v5] 카드 결함 — 옛 카드로 대신합니다: " + " | ".join(problems[:3]))
+        _why = " | ".join(problems[:3])
+        print("  ⚠️ [v5] 카드 결함 — 옛 카드로 대신합니다: " + _why)
+        note_fallback(f"카드 검사에 걸려 옛 카드로 나갔습니다: {_why}")
         return None
     im = Image.open(out).convert("RGB")
     w, h = im.size
@@ -995,6 +1023,7 @@ def _render_once(card_html: str, out: pathlib.Path):
             print(f"  ⓘ [v5] 카드가 높이 상한을 넘었습니다: {e}")
             return TOO_TALL
         print(f"  ⚠️ [v5] 카드 크기가 계약을 벗어났습니다 — 옛 카드로 대신합니다: {e}")
+        note_fallback(f"카드 크기가 계약을 벗어나 옛 카드로 나갔습니다: {e}")
         return None
     jpg = out.with_suffix(".jpg")
     im.save(jpg, "JPEG", quality=SEND_JPEG_QUALITY, optimize=True)

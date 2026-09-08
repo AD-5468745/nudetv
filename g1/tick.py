@@ -2489,6 +2489,21 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines += [f"묵은 데이터 — {n}" for n in stale_notes[:3]]
     if adapter_notes:
         lines += [f"어댑터가 버림 — {n}" for n in adapter_notes[:3]]
+    # ── 새 카드가 옛 카드로 떨어진 것 (v1.17b, 2026-09-08) ──────────
+    #
+    # **폴백은 조용해서 위험하다.** 카드가 게이트에 걸리면 오류 없이 옛 v4
+    # 디자인으로 대체된다 — 검증 1,450건이 다 통과하는 동안 채널에는 옛
+    # 디자인이 나갔고, 그것을 잡은 것은 우리 감시가 아니라 대표님 눈이었다.
+    # 폴백 자체는 옳은 장치이므로 막지 않고, **일어났다는 사실을 알린다.**
+    try:
+        import render_v5 as _R5v
+        _fb = _R5v.take_fallbacks()
+    except Exception:                                        # noqa: BLE001
+        _fb = []
+    if _fb:
+        lines += [f"새 디자인 대신 옛 카드가 나갔습니다 — {n}" for n in _fb[:3]]
+        if len(_fb) > 3:
+            lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_fb)}건")
     if stale:
         ex = stale[0]
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
