@@ -94,7 +94,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 대장 최신화 — 실행 교대의 되감김을 막습니다 (fix48)
         # ─────────────────────────────────────────────────────────
@@ -139,14 +139,14 @@ jobs:
           # 교대 직후 이 줄의 값이 앞 실행 마지막 값과 같으면 되감김이 없는 것입니다.
           echo "대장 줄 수: $(wc -l < state/ledger.jsonl 2>/dev/null || echo 0)"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
 
       - name: 크로미움 캐시
         # 카드는 브라우저로 그립니다. 매번 내려받으면 회당 1분이 더 듭니다.
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-v1
@@ -179,7 +179,7 @@ jobs:
         #                      **대장(git)과 일부러 다른 저장소(캐시)에 둡니다.**
         #                      대장 커밋이 실패해 다음 실행의 대장이 되감기면,
         #                      이 표식이 그것을 잡아 발송을 통째로 보류합니다.
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             state/games
@@ -368,7 +368,7 @@ jobs:
         # 색·아이콘·폰트처럼 숫자 검증이 못 잡는 것은 사람이 봐야 압니다.
         # 실행 화면 아래 Artifacts에서 내려받아 보세요.
         if: always() && github.event_name == 'workflow_dispatch' && inputs.dry_run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: 카드-미리보기
           path: state/render/
@@ -382,7 +382,7 @@ jobs:
         #   또 한도에 걸림 → 영원히 못 빠져나옴.
         # 실제로 첫 실행이 정확히 이 덫에 걸렸습니다. 그래서 실패해도 저장합니다.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             state/games
