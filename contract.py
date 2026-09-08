@@ -1420,6 +1420,121 @@ MUST_ALERT_ON_MISS: frozenset = frozenset({
     ContentType.KICKOFF, ContentType.FINAL_FLASH, ContentType.LINEUP,
 })
 
+# ── 발행 의무 — **분모는 큐가 아니다** (v1.19, 2026-09-08) ─────────────
+#
+# v1.18이 "창이 지났는데 대장에 흔적조차 없는 항목"을 세게 했다. 그런데 그
+# 검사가 **큐를 분모로 썼다** — 큐에 담긴 것 중 결과가 없는 것을 센다.
+# 2026-09-08 KBO 5경기(18:30)가 정확히 그 구멍으로 빠졌다:
+#
+#   큐 생성부는 `g.status is Status.SCHEDULED`인 경기만 킥오프 묶음으로 만든다.
+#   그 시점에 KBO 경기가 SCHEDULED가 아니었다면 **큐 항목 자체가 없다.**
+#   큐에 없으니 is_late()도, render_for()도, 유령 감지도 그 항목을 모른다.
+#   대장에 한 줄도 안 남고, 알림도 없다. **완전한 침묵이다.**
+#
+# 실측으로 확인했다: 그날 대장의 `skipped_past_at_creation` 8건 어디에도
+# KBO 킥오프가 없다. 지각 폐기조차 안 됐다 = 큐에 들어온 적이 없다.
+#
+# **큐를 분모로 쓰면 "큐가 못 만든 것"은 영원히 안 보인다.**
+# 그래서 의무는 큐가 아니라 **경기 일정에서 직접** 도출한다. 이 함수는
+# 큐 생성 조건(status·지평선·유예)을 **일부러 쓰지 않는다** — 그 조건이
+# 곧 검사 대상이기 때문이다. 같은 조건을 쓰면 검사가 자기 자신을 통과시킨다.
+DUTY_ALERT_ENABLED = True
+
+# 취소된 경기에는 의무가 없다. 그 밖의 상태(예정·진행·종료)는 전부 의무가 있다 —
+# **"우리가 못 봐서 상태가 이상해진 것"과 "경기가 없어진 것"은 다르다.**
+DUTY_EXEMPT_STATUSES: frozenset = frozenset({"canceled", "postponed"})
+
+# 얼마나 지난 의무까지 되짚을 것인가. 너무 길면 어제 것을 매 틱 다시 알려
+# 소음이 되고(약점 112·126), 너무 짧으면 밤사이 난 누락을 아침에 못 본다.
+# 하루치를 본다 — 스냅샷이 담는 범위와 같고, 사람이 "어제 무슨 일이 있었나"를
+# 묻는 단위와도 같다.
+DUTY_LOOKBACK_SECONDS = 24 * 3600
+
+
+def kickoff_duties(games: list, *,
+                   lead_seconds: Optional[int] = None) -> dict[str, datetime]:
+    """킥오프 카드의 **발행 의무** — {버킷키: 예약시각}.
+
+    큐(`pipeline.build_queue`)와 독립적으로 계산한다. 큐가 만들지 못한 의무를
+    잡는 것이 목적이므로 큐의 조건을 재사용하면 안 된다(약점 181).
+
+    묶는 키는 큐와 **같은 함수**(`start_alert_bucket`)를 쓴다 — 여기는 달라도
+    되는 곳이 아니다. 키가 어긋나면 정상 발송을 누락으로 신고한다.
+    """
+    return {k: at for k, (at, _) in
+            kickoff_duty_groups(games, lead_seconds=lead_seconds).items()}
+
+
+def kickoff_duty_groups(games: list, *, lead_seconds: Optional[int] = None
+                        ) -> dict[str, tuple[datetime, list]]:
+    """{버킷키: (예약시각, 그 묶음의 경기들)}. 의무 계산의 본체."""
+    lead = KICKOFF_LEAD_SECONDS if lead_seconds is None else lead_seconds
+    duties: dict[str, list] = {}
+    for g in games:
+        st = getattr(getattr(g, "status", None), "value", None)
+        if st in DUTY_EXEMPT_STATUSES:
+            continue
+        duties.setdefault(start_alert_bucket(g), []).append(g)
+    return {k: (min(x.start_utc for x in v) - timedelta(seconds=lead), v)
+            for k, v in duties.items()}
+
+
+def legacy_kickoff_scope(game) -> str:
+    """v1.15b 이전의 킥오프 scope — **경기마다 한 장**이던 시절의 키.
+
+    **규격이 바뀌어도 옛 키는 대장에 남는다.** 2026-09-07 MLB 킥오프 11건이
+    `MLB:2026-09-07:MLB:2026:823175` 꼴로 남아 있는데, 지금 의무는 시각 버킷
+    (`MLB:2026-09-07@02:05`)으로 계산된다. 이 둘을 잇지 않으면 **정상 발송된
+    11건이 전부 '큐에조차 안 들어옴'으로 신고된다** — 실데이터로 확인했다.
+
+    오탐 하나가 감시를 통째로 꺼뜨린다(약점 112·126). 그래서 옛 키도 결과로 센다.
+    """
+    return f"{game.league.value}:{game.sports_day}:{game.game_id}"
+
+
+def kickoff_scopes_in_ledger(idem_keys) -> set:
+    """대장의 멱등키에서 킥오프 묶음 키(scope)만 뽑는다.
+
+    **발송만이 아니라 폐기·격리도 '결과'다.** 여기서 세는 것은 "그 의무에
+    대해 시스템이 무언가 말했는가"이지 "성공했는가"가 아니다 —
+    지각 폐기는 이미 다른 알림이 담당한다(중복해서 시끄럽게 하지 않는다).
+    """
+    out = set()
+    for k in idem_keys:
+        p = str(k).split(IDEM_SEP)
+        if len(p) >= 3 and p[1] == ContentType.KICKOFF.value:
+            out.add(p[2])
+    return out
+
+
+def unqueued_kickoffs(games: list, idem_keys, now_utc: datetime, *,
+                      lookback_seconds: Optional[int] = None,
+                      lead_seconds: Optional[int] = None
+                      ) -> list[tuple[str, datetime]]:
+    """**큐에조차 들어오지 못한** 킥오프 의무 — [(버킷키, 예약시각)].
+
+    v1.18의 유령 감지는 큐를 분모로 써서 이 종류를 구조적으로 못 봤다.
+    여기서는 분모를 경기 일정에서 만든다(약점 181).
+
+    호출자는 발행 중단 리그·묶음 보류 리그를 미리 걸러서 넘긴다 —
+    그 판단은 시계가 갖고 있고 계약이 다시 흉내 내면 두 곳이 어긋난다.
+    """
+    back = DUTY_LOOKBACK_SECONDS if lookback_seconds is None else lookback_seconds
+    seen = kickoff_scopes_in_ledger(idem_keys)
+    out = []
+    for key, (at, gs) in kickoff_duty_groups(
+            games, lead_seconds=lead_seconds).items():
+        if not is_late(at, now_utc, ContentType.KICKOFF):
+            continue                      # 아직 창 안이거나 창 전
+        if (now_utc - at).total_seconds() > back:
+            continue                      # 너무 오래된 것은 매일 다시 알리지 않는다
+        if key in seen:
+            continue                      # 대장에 그 묶음의 결과가 있다
+        if any(legacy_kickoff_scope(g) in seen for g in gs):
+            continue                      # 옛 경기별 규격으로 이미 나갔다
+        out.append((key, at))
+    return sorted(out)
+
 # **정보가 실제로 보존되는 체인** (v1.18b).
 #
 # 한 경기에 대해 우리가 말하는 것은 세 가지다: 있다 · 하고 있다 · 끝났다.

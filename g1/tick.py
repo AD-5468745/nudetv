@@ -52,7 +52,9 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       content_digest, correction_key_from, idem_key,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
-                      LINEUP_ENABLED, MUST_ALERT_ON_MISS)
+                      LINEUP_ENABLED, MUST_ALERT_ON_MISS,
+                      DUTY_ALERT_ENABLED, unqueued_kickoffs,
+                      DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
                     SkipReason, Transport, load_token)
@@ -2549,9 +2551,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 센다. 처리 대상에 **아예 안 들어온** 항목은 아무도 세지 않고, 대장에도
     # 아무 줄이 안 남는다 — 그래서 **완전히 조용하다.**
     #
-    # 2026-09-08이 정확히 그랬다: KBO 5경기(18:30)의 킥오프가 큐에는 생성됐고
-    # 렌더도 됐는데, 대장에 시도 흔적조차 없이 사라졌고 경고도 없었다.
-    # 원인은 아직 모른다. **모르는 채로 두더라도, 일어났다는 사실은 알아야 한다.**
+    # 2026-09-08이 정확히 그랬다: KBO 5경기(18:30)의 킥오프가 대장에 시도 흔적조차
+    # 없이 사라졌고 경고도 없었다.
+    #
+    # ⚠️ **여기 적혀 있던 "큐에는 생성됐고 렌더도 됐다"는 틀렸다** (2026-09-08 밤 재조사).
+    # 대장의 지각 폐기 8건 어디에도 그 항목이 없다 = `is_late()`에 닿은 적이 없다
+    # = **큐에 들어온 적이 없다.** 큐 생성부가 `status is SCHEDULED`인 경기만
+    # 킥오프 묶음으로 담기 때문으로 좁혀졌다(KBO 소스는 진행 중 경기의 점수 칸을
+    # 자리표시자로 채운다 — 약점 47). 아래 '큐에조차 못 들어온 누락'이 그 짝이다.
     #
     # 조용한 누락은 다음 두 가지를 동시에 뜻한다:
     #   · 그 카드가 안 나갔다 (고칠 수 있는 문제)
@@ -2567,6 +2574,32 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             continue                      # 대장에 결과가 있다(발송·폐기 무엇이든)
         _ghost.append(f"{_it.content_type.value} {_it.scope} "
                       f"(예약 {_it.scheduled_utc.astimezone(KST):%H:%M})")
+
+    # ── ★ 큐에조차 들어오지 못한 누락 (v1.19, 2026-09-08) ──────────────
+    #
+    # **위 검사는 큐를 분모로 쓴다.** 그래서 "큐가 못 만든 것"은 못 잡는다 —
+    # 그리고 2026-09-08 KBO 5경기가 정확히 그랬다. 조사 결과 그날 킥오프는
+    # 큐에 생성되지 않았다(대장의 지각 폐기 8건에도 없다 = is_late에 닿은 적이
+    # 없다 = 큐에 없었다). 큐 생성부는 `status is SCHEDULED`인 경기만 담는데,
+    # KBO 소스는 진행 중 경기의 점수 칸을 자리표시자로 채운다(약점 47) —
+    # 그 순간 상태가 LIVE로 바뀌면 킥오프 묶음이 통째로 사라진다.
+    #
+    # **분모를 경기 일정에서 직접 만든다.** 큐의 조건을 재사용하지 않는다 —
+    # 그 조건이 곧 검사 대상이기 때문이다(같은 조건을 쓰면 자기 자신을 통과시킨다).
+    if (DUTY_ALERT_ENABLED
+            and ContentType.KICKOFF not in DISABLED_CONTENT_TYPES):
+        _pool = [g for gs in snaps.values() if gs for g in gs
+                 if g.league not in DISABLED_LEAGUES
+                 and g.league not in stale_block]
+        _unqueued = [f"{_k} (예약 {_a.astimezone(KST):%H:%M})"
+                     for _k, _a in unqueued_kickoffs(_pool, led.idem_keys(),
+                                                     now)]
+        if _unqueued:
+            lost.append(
+                f"★★ 큐에조차 들어오지 못한 킥오프 {len(_unqueued)}건 — "
+                + " · ".join(sorted(_unqueued)[:3])
+                + " · 경기는 편성돼 있는데 발행 항목이 만들어지지 않았습니다"
+                  "(2026-09-08 KBO와 같은 유형)")
     if _ghost:
         lost.append(
             f"★ 창이 지났는데 대장에 흔적조차 없는 항목 {len(_ghost)}건 — "

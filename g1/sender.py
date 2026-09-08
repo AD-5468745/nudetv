@@ -233,6 +233,16 @@ class Ledger:
     def get(self, key: str) -> Optional[SendRecord]:
         return self._rows.get(key)
 
+    def idem_keys(self) -> list[str]:
+        """대장에 있는 모든 멱등키 (읽기 전용 사본).
+
+        **키 하나를 물어보는 것과 "무엇이 들어 있나"를 묻는 것은 다르다.**
+        v1.19의 의무 대조는 후자가 필요하다 — 큐에 없는 의무를 잡으려면
+        큐가 아니라 대장 전체를 봐야 하기 때문이다. 사본을 주므로
+        부르는 쪽이 대장을 건드릴 수 없다.
+        """
+        return list(self._rows)
+
     def put(self, r: SendRecord) -> None:
         """append-only. 크래시 중간에 잘린 줄이 생겨도 앞선 줄은 살아 있다.
 

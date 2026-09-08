@@ -2131,6 +2131,99 @@ check("빼도 표·색·계약은 남아 있다 (되돌리기가 한 줄이어�
       all(lg in C.TEAM_NAMES and lg in C.SEASON_FORMAT_BY_LEAGUE
           for lg in C.DISABLED_LEAGUES))
 
+# ── ★★★ 큐에조차 들어오지 못한 누락 (v1.19 — 2026-09-08 KBO 사고) ────
+#
+# **분모가 큐면 "큐가 못 만든 것"은 영원히 안 보인다.**
+# 그날 KBO 5경기(18:30)의 킥오프는 대장에 한 줄도 없었다 — 지각 폐기 8건에도
+# 없었다. 즉 is_late()에 닿은 적이 없고, 그건 큐에 들어온 적이 없다는 뜻이다.
+# 원인은 큐 생성부가 `status is SCHEDULED`인 경기만 담기 때문으로 좁혀졌다
+# (KBO 소스는 진행 중 경기의 점수 칸을 자리표시자로 채운다 — 약점 47).
+#
+# 아래 검사는 **그날을 그대로 재현한다**: 상태가 SCHEDULED가 아니고,
+# 대장이 비어 있고, 창이 지난 상태.
+_UQ_DAY = "2026-09-08"
+
+
+class _UqG:
+    """의무 계산에 필요한 최소 계약. **가짜를 계약보다 좁게 만들지 않는다**(약점 172)."""
+
+    def __init__(self, gid, hhmm, status, day=_UQ_DAY, league=League.KBO):
+        self.game_id = gid
+        self.league = league
+        self.sports_day = day
+        self.status = status
+        self.start_utc = datetime.fromisoformat(f"{day}T{hhmm}:00+09:00")
+        self.start_kst = self.start_utc.astimezone(C.KST)
+
+
+_uq_live = [_UqG(f"g{i}", "18:30", Status.LIVE) for i in range(5)]
+_uq_at = _uq_live[0].start_utc - timedelta(seconds=C.KICKOFF_LEAD_SECONDS)
+_uq_now = _uq_at + timedelta(seconds=C.GRACE_SECONDS[ContentType.KICKOFF] + 60)
+_uq_key = C.start_alert_bucket(_uq_live[0])
+
+check("★★★ 그날 사고를 재현하면 잡힌다 — 상태가 '예정'이 아니라 큐에 못 담긴 킥오프",
+      [k for k, _ in C.unqueued_kickoffs(_uq_live, [], _uq_now)] == [_uq_key],
+      str(C.unqueued_kickoffs(_uq_live, [], _uq_now)))
+check("  ↳ 대장에 그 묶음의 결과가 있으면 조용하다 (발송된 것을 누락으로 신고하지 않는다)",
+      C.unqueued_kickoffs(
+          _uq_live,
+          [C.idem_key("-100test", ContentType.KICKOFF, _uq_key)],
+          _uq_now) == [])
+check("  ↳ 아직 창 안이면 조용하다 (사라진 게 아니다)",
+      C.unqueued_kickoffs(_uq_live, [], _uq_at + timedelta(seconds=60)) == [])
+check("  ↳ 취소된 경기에는 의무가 없다",
+      C.unqueued_kickoffs(
+          [_UqG(f"c{i}", "18:30", Status.CANCELED) for i in range(5)],
+          [], _uq_now) == [])
+check(f"  ↳ 되짚기 창({C.DUTY_LOOKBACK_SECONDS // 3600}시간)을 넘으면 매일 다시 알리지 않는다",
+      C.unqueued_kickoffs(
+          _uq_live, [],
+          _uq_now + timedelta(seconds=C.DUTY_LOOKBACK_SECONDS + 60)) == [])
+check("  ↳ 묶는 키가 큐와 **같은 함수**다 (달라지면 정상 발송을 누락으로 신고한다)",
+      set(C.kickoff_duties(_uq_live)) == {C.start_alert_bucket(g)
+                                          for g in _uq_live})
+check("  ↳ 되돌리는 길이 한 줄이다 (DUTY_ALERT_ENABLED)",
+      isinstance(C.DUTY_ALERT_ENABLED, bool))
+
+# ── ★ 변이시험 — 옛 방식(분모=큐)으로 되돌리면 못 잡는다 ──────────
+#
+# 큐 생성부의 조건(`status is Status.SCHEDULED`)을 의무 계산에도 넣어 본다.
+# 그러면 LIVE로 바뀐 경기가 통째로 빠져 의무가 0이 되고, 사고는 다시 침묵한다.
+# **이것이 v1.18이 이 사고를 못 잡은 이유 그 자체다.**
+_uq_mut = [g for g in _uq_live if g.status is Status.SCHEDULED]
+check("★★ (변이) 큐와 같은 조건으로 분모를 만들면 의무가 0이 되어 사고가 다시 조용해진다",
+      len(_uq_mut) == 0 and C.unqueued_kickoffs(_uq_mut, [], _uq_now) == [],
+      f"의무 {len(_uq_mut)}건")
+check("  ↳ 그래서 의무 계산은 큐의 상태 조건을 쓰지 않는다 (검사가 자기 자신을 통과시키지 않게)",
+      len(C.kickoff_duties(_uq_live)) == 1)
+
+# **정상 편성은 조용해야 한다** — 오탐 하나가 감시를 통째로 꺼뜨린다(약점 112·126).
+_uq_ok = [_UqG(f"s{i}", "18:30", Status.SCHEDULED) for i in range(5)]
+check("★ 예정 상태이고 아직 창 전이면 아무 말도 하지 않는다 (오탐 0)",
+      C.unqueued_kickoffs(_uq_ok, [], _uq_at - timedelta(hours=2)) == [])
+
+# ── ★★ 옛 규격으로 이미 나간 것을 누락으로 신고하지 않는다 ──────────
+#
+# **규격이 바뀌어도 옛 키는 대장에 남는다.** v1.15b 전에는 킥오프가 경기마다
+# 한 장이라 scope가 `MLB:2026-09-07:MLB:2026:823175` 꼴이었고, 지금 의무는
+# 시각 버킷(`MLB:2026-09-07@02:05`)으로 계산된다. 잇지 않으면 **정상 발송된
+# 11건이 전부 누락으로 신고된다** — 실데이터(대장 156키 · 경기 164건)로 확인했고,
+# 이 검사를 넣기 전에는 실제로 그렇게 났다.
+_uq_old = [_UqG("MLB:2026:823175", "02:05", Status.FINAL,
+                day="2026-09-07", league=League.MLB)]
+_uq_oldkeys = [C.idem_key("-100test", ContentType.KICKOFF,
+                          C.legacy_kickoff_scope(_uq_old[0]))]
+_uq_oldnow = (_uq_old[0].start_utc
+              - timedelta(seconds=C.KICKOFF_LEAD_SECONDS)
+              + timedelta(seconds=C.GRACE_SECONDS[ContentType.KICKOFF] + 60))
+check("★★ 옛 경기별 규격으로 나간 킥오프를 누락으로 신고하지 않는다 (실데이터 유형)",
+      C.unqueued_kickoffs(_uq_old, _uq_oldkeys, _uq_oldnow) == [])
+check("★★ (변이) 옛 키를 안 세면 정상 발송이 누락으로 신고된다 — 위 검사가 이것을 막는다",
+      len(C.unqueued_kickoffs(_uq_old, [], _uq_oldnow)) == 1)
+check("  ↳ 옛 규격 키를 만드는 함수가 계약에 있다 (두 곳에서 각자 만들면 어긋난다)",
+      C.legacy_kickoff_scope(_uq_old[0])
+      == f"{League.MLB.value}:2026-09-07:MLB:2026:823175")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
