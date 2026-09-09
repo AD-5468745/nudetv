@@ -3814,3 +3814,247 @@ def caption_analysis(rb: RecordBook, game: Game, day: str, *,
             + "\n<i>선발 예고는 싣지 않습니다</i>")
     return (_clip_parts(head, lines, tail, unit="줄") if as_parts
             else _clip(head, lines, tail, unit="줄"))
+
+
+# ══════════════════════════════════════════════════════════════
+# 분석 산문 (v1.24, 2026-09-09) — 대표님 지시
+# ══════════════════════════════════════════════════════════════
+#
+# *"사람이 직접 분석해서 기재해놓은 듯한 긴 문장으로 마지막에 분석글을 풀어적어두는것"*
+#
+# **설계 원칙 — 이게 전부다.**
+#   문장은 길어져도 되지만, **문장이 주장하는 사실은 전부 숫자에서 나와야 한다.**
+#
+#   · 문장 하나 = 규칙 하나. 조건이 안 맞으면 그 문장을 **안 쓴다**(약점 149).
+#   · 미래형·추천·확률·감상은 여전히 금지 — 우리에겐 모델이 없다.
+#     (`verify_claims`가 금지 낱말과 사실 대조를 되짚는다.)
+#   · 우리가 센 값에 '올해'를 붙이지 않는다(약점 160) — 창이 두 달이면 '최근'.
+#   · 표본이 모자라면 그 문단을 통째로 뺀다.
+#   · 조사는 `josa()`가 고른다. 문자열에 박지 않는다(약점 59).
+#
+# **왜 이게 필요했나.** 2026-09-07에 분석을 '한 경기 카드' → '여러 경기 한 장'으로
+# 바꾸면서 새 경로가 머리줄 한 줄짜리 캡션만 돌려주게 됐다. `caption_analysis()`가
+# 만들던 풍부한 텍스트는 **옛 카드로 떨어질 때만** 쓰이게 됐고, 그래서 대표님이
+# 받으시는 분석 메시지에는 사실상 텍스트가 없었다(약점 78·151의 재발).
+
+# 무승부가 이 비율을 넘으면 그 팀의 성격으로 말한다 (축구).
+PROSE_DRAW_HEAVY = 0.40
+PROSE_DRAW_LIGHT = 0.25
+# 최근 폼을 말하려면 이만큼은 있어야 한다.
+PROSE_FORM_MIN = 3
+
+
+def _prose_j(word: str, with_b: str, without_b: str) -> str:
+    return f"{word}{josa(word, with_b, without_b)}"
+
+
+def _prose_form(history: list[Game], code: str, before_utc: datetime,
+                league: "League") -> list[dict]:
+    out = []
+    for x in recent_form(history, code, before_utc):
+        home = x.home.team_code == code
+        me = x.score.home if home else x.score.away
+        op = x.score.away if home else x.score.home
+        out.append({"r": {"W": "승", "L": "패", "D": "무"}[_team_result(x, code)],
+                    "me": me, "op": op,
+                    "vs": team_name_of(league, (x.away if home else x.home).team_code)})
+    return out
+
+
+def analysis_prose(rb: RecordBook, game: Game, *,
+                   team_stats: dict[str, dict] | None = None,
+                   history: list[Game] | None = None,
+                   window_label: str = "최근") -> list[str]:
+    """경기 하나에 대한 **산문 문단 목록**. 재료가 없으면 짧아지고, 지어내지 않는다."""
+    league = rb.league
+    a, h = game.away.team_code, game.home.team_code
+    sa, sh = rb.team(a), rb.team(h)
+    if not sa or not sh:
+        return []                          # 순위표에 없는 팀 — 아무 말도 하지 않는다
+    na, nh = team_name_of(league, a), team_name_of(league, h)
+    ts = team_stats or {}
+    ta, th = ts.get(a) or {}, ts.get(h) or {}
+    soccer = league is League.KL1
+    para: list[str] = []
+
+    # ── ① 대진과 순위 ────────────────────────────────────────────
+    s = [f"{_prose_j(nh, '이', '가')} 안방에서 {_prose_j(na, '을', '를')} 맞는다."]
+    gap = abs(sa.rank - sh.rank)
+    if gap:
+        hi, lo = (sa, sh) if sa.rank < sh.rank else (sh, sa)
+        s.append(f"순위는 {_prose_j(team_name_of(league, hi.team_code), '이', '가')} "
+                 f"{hi.rank}위, "
+                 f"{_prose_j(team_name_of(league, lo.team_code), '이', '가')} "
+                 f"{lo.rank}위로 {gap}계단 차이다.")
+    else:
+        s.append(f"둘 다 공동 {sa.rank}위다.")
+    # 축구는 승점차, 야구는 승차 — **같은 칸이 종목마다 다른 뜻이다**(약점 95·159).
+    try:
+        ga, gh = float(sa.games_behind), float(sh.games_behind)
+        if ga != gh:
+            unit = "점" if soccer else "경기"
+            what = "선두와의 승점차" if soccer else "선두와의 승차"
+            # 한쪽이 선두면 "선두와의 차 0"이라고 쓰지 않는다 — 그게 선두다.
+            if ga == 0 or gh == 0:
+                _top, _tn, _bn, _bg = ((sa, na, nh, gh) if ga == 0
+                                       else (sh, nh, na, ga))
+                s.append(f"{_prose_j(_tn, '이', '가')} 선두이고, "
+                         f"{_prose_j(_bn, '은', '는')} {_bg:g}{unit} 뒤에 있다.")
+            else:
+                s.append(f"{what}는 {na} {ga:g}{unit}, {nh} {gh:g}{unit}"
+                         f"{josa(unit, '으로', '로')} "
+                         f"둘 사이가 {abs(ga - gh):g}{unit} 벌어져 있다.")
+    except (TypeError, ValueError):
+        pass
+    para.append(" ".join(s))
+
+    # ── ② 팀별 시즌 성적 ─────────────────────────────────────────
+    three = bool(sa.record.draw or sh.record.draw)
+    for st, nmx in ((sa, na), (sh, nh)):
+        rec = st.record
+        n = rec.win + rec.loss + rec.draw
+        # **산문에는 표기용 축약(`4-7-17`)을 쓰지 않는다** — 읽는 글이다.
+        _rt = (f"{rec.win}승 {rec.draw}무 {rec.loss}패" if three
+               else f"{rec.win}승 {rec.loss}패")
+        s = [f"{_prose_j(nmx, '은', '는')} 올 시즌 {n}경기에서 "
+             f"{_rt}를 기록했다."]
+        if soccer and n and rec.draw / n >= PROSE_DRAW_HEAVY:
+            s.append(f"무승부가 {rec.draw}번으로 전체의 "
+                     f"{rec.draw / n * 100:.0f}%다. "
+                     f"이기지도 지지도 않은 경기가 그만큼 많았다는 뜻이다.")
+        elif soccer and n and rec.draw / n <= PROSE_DRAW_LIGHT:
+            s.append("승과 패가 비교적 뚜렷하게 갈리는 편이다.")
+        if st.last10 and st.last10.total:
+            _l10 = st.last10
+            s.append("최근 10경기는 " + (
+                f"{_l10.win}승 {_l10.draw}무 {_l10.loss}패다."
+                if _l10.draw else f"{_l10.win}승 {_l10.loss}패다."))
+        if st.streak_kind is not StreakKind.NONE and st.streak_len:
+            # 1경기짜리 '연속'은 연속이 아니다 — 직전 경기로 말한다.
+            if st.streak_len == 1:
+                _w = {StreakKind.WIN: "승리", StreakKind.LOSS: "패배",
+                      StreakKind.DRAW: "무승부"}.get(st.streak_kind)
+                if _w:
+                    s.append(f"직전 경기는 {_w}였다.")
+            else:
+                s.append(f"지금은 {_streak(st)} 중이다.")
+        para.append(" ".join(s))
+
+    # ── ③ 지표가 갈리는 지점 ─────────────────────────────────────
+    def better(key: str, higher: bool):
+        """그 지표에서 앞선 쪽 → (코드, 이름, 내 값, 상대 이름, 상대 값)."""
+        if key not in ta or key not in th:
+            return None
+        try:
+            av, hv = float(ta[key]), float(th[key])
+        except (TypeError, ValueError):
+            return None
+        if av == hv:
+            return None
+        away_wins = (av > hv) == higher
+        if away_wins:
+            return (a, na, format_team_stat(key, ta[key]),
+                    nh, format_team_stat(key, th[key]))
+        return (h, nh, format_team_stat(key, th[key]),
+                na, format_team_stat(key, ta[key]))
+
+    won: dict[str, list[str]] = {a: [], h: []}
+    for key, label, higher in team_stat_labels(league):
+        b = better(key, higher)
+        if b:
+            won[b[0]].append(label)
+    s = []
+    if soccer:
+        pos, sot = better("pos", True), better("sot", True)
+        if pos and sot and pos[0] == sot[0]:
+            s.append(f"공을 더 쥔 쪽은 {_prose_j(pos[1], '이', '였')}었다. "
+                     f"점유율 {pos[2]}%로 {pos[3]}({pos[4]}%)보다 높고, "
+                     f"유효슈팅도 {sot[2]}개로 {sot[4]}개인 {sot[3]}보다 많다.")
+        elif pos:
+            s.append(f"점유율은 {_prose_j(pos[1], '이', '가')} {pos[2]}%로 "
+                     f"{pos[3]}({pos[4]}%)보다 높다.")
+        cs, ga2 = better("cs", True), better("ga", False)
+        if cs and ga2 and cs[0] == ga2[0]:
+            s.append(f"골문을 더 지킨 쪽은 {_prose_j(cs[1], '이', '')}다. "
+                     f"무실점 경기가 {cs[2]}번으로 {cs[3]}({cs[4]}번)보다 많고, "
+                     f"경기당 실점도 {ga2[2]}로 {ga2[4]}인 {ga2[3]}보다 적다.")
+        elif cs:
+            s.append(f"무실점 경기는 {_prose_j(cs[1], '이', '가')} {cs[2]}번으로 "
+                     f"{cs[3]}({cs[4]}번)보다 많다.")
+    else:
+        ops, era = better("ops", True), better("era", False)
+        if ops:
+            s.append(f"방망이가 더 무거운 쪽은 {_prose_j(ops[1], '이', '')}다. "
+                     f"팀 OPS {ops[2]}로 {ops[3]}({ops[4]})보다 높다.")
+        if era:
+            s.append(f"마운드는 {_prose_j(era[1], '이', '가')} 앞선다. "
+                     f"팀 평균자책 {era[2]}로 {era[4]}인 {era[3]}보다 낮다.")
+        if ops and era and ops[0] != era[0]:
+            s.append("치는 쪽과 막는 쪽이 갈린 대진이다.")
+    if won[a] or won[h]:
+        tot = len(won[a]) + len(won[h])
+        big, mine = ((na, won[a]) if len(won[a]) >= len(won[h]) else (nh, won[h]))
+        if len(mine) == tot:
+            s.append(f"비교한 {tot}개 항목을 "
+                     f"{_prose_j(big, '이', '가')} 전부 가져간다"
+                     f"({' · '.join(mine)}).")
+        else:
+            s.append(f"비교한 {tot}개 항목 중 "
+                     f"{_prose_j(big, '이', '가')} {len(mine)}개를 가져간다"
+                     f"({' · '.join(mine)}).")
+    if s:
+        para.append(" ".join(s))
+
+    # ── ④ 최근 흐름 ──────────────────────────────────────────────
+    for code, nmx in ((a, na), (h, nh)):
+        f = _prose_form(history or [], code, game.start_utc, league)
+        if len(f) < PROSE_FORM_MIN:
+            continue                       # 표본이 모자라면 말하지 않는다
+        w = sum(1 for x in f if x["r"] == "승")
+        d = sum(1 for x in f if x["r"] == "무")
+        l = len(f) - w - d
+        if w == 0:
+            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
+                    f"{d}무 {l}패로 승리가 없다.")
+        elif l == 0:
+            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
+                    f"{w}승 {d}무로 패배가 없다.")
+        else:
+            # 무승부가 없는 종목에서 '0무'를 적으면 눈에 걸린다
+            _mid = f"{w}승 {d}무 {l}패" if d else f"{w}승 {l}패"
+            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
+                    f"{_mid}다.")
+        seq = " → ".join(f"{x['r']} {x['me']}-{x['op']} {x['vs']}" for x in f)
+        para.append(f"{head} 오래된 순서로 {seq}.")
+
+    # ── ⑤ 맞대결 ─────────────────────────────────────────────────
+    wld = rb.between(a, h)
+    if wld is not None and wld.total:
+        _ht = (f"{wld.win}승 {wld.draw}무 {wld.loss}패" if wld.draw
+               else f"{wld.win}승 {wld.loss}패")
+        para.append(f"올 시즌 두 팀의 맞대결은 {wld.total}경기가 있었고 "
+                    f"{na} 기준 {_ht}였다.")
+
+    # ── ⑥ 총평 — **앞 문단의 요약일 뿐, 새 사실을 만들지 않는다** ──
+    #
+    # 여기서 예측·추천을 하면 그 순간 카드가 우리에게 없는 모델을 가진 척한다.
+    # 요약은 이미 말한 것을 다시 말하는 것이라 검사기가 되짚을 수 있다.
+    tail = []
+    if soccer:
+        pos, cs = better("pos", True), better("cs", True)
+        if pos and cs and pos[0] != cs[0]:
+            tail.append(f"{_prose_j(pos[1], '은', '는')} 공을 쥐고 두드리는 쪽이고, "
+                        f"{_prose_j(cs[1], '은', '는')} 골문을 지키는 쪽이다.")
+    winless = []
+    for code, nmx in ((a, na), (h, nh)):
+        f = _prose_form(history or [], code, game.start_utc, league)
+        if len(f) >= PROSE_FORM_MIN and not any(x["r"] == "승" for x in f):
+            winless.append(nmx)
+    if len(winless) == 2:
+        tail.append(f"두 팀 모두 {window_label} 경기에서 승리가 없다.")
+    elif winless:
+        tail.append(f"{_prose_j(winless[0], '은', '는')} {window_label} 경기에서 "
+                    f"승리가 없다.")
+    if tail:
+        para.append(" ".join(tail))
+    return para

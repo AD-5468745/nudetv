@@ -540,8 +540,36 @@ def analysis_cards(rb, games: list, league: League, day: str, *,
     html = C5.shell(kind="analysis", league=league, date_label=lab, head=head,
                     body=C5.body_analysis_multi(rows),
                     foot_left=f"{len(rows)}경기")
+
+    # ── ★ 분석 산문을 캡션에 싣는다 (v1.24) ──────────────────────
+    #
+    # **여기가 '밋밋함'의 원인이었다.** 2026-09-07에 분석이 '한 경기 카드' →
+    # '여러 경기 한 장'으로 바뀌면서 이 경로가 머리줄 한 줄짜리 캡션만
+    # 돌려주게 됐다. `caption_analysis()`가 만들던 풍부한 텍스트는 **옛 카드로
+    # 떨어질 때만** 쓰이게 됐고, 정상 경로에서는 한 번도 안 불렸다
+    # (약점 78·151: 새 경로가 옛 경로의 기능을 빠뜨리고 폴백이 그것을 가린다).
+    #
+    # 경기마다 소제목을 달고 문단 사이를 빈 줄로 띄운다 — 대표님 지시
+    # *"읽기편하도록 줄띄움도 맞춰서"*. 넘치면 `C5.caption`이 이어보낸다.
+    _extra: list[str] = []
+    for _g in gs:
+        try:
+            _pp = _P.analysis_prose(rb, _g, team_stats=team_stats,
+                                    history=history)
+        except Exception:                                    # noqa: BLE001
+            _pp = []          # 한 경기가 막혀도 나머지 산문은 나간다
+        if not _pp:
+            continue
+        if _extra:
+            _extra.append("")
+        _extra.append(f"■ {C5._nm(league, _g.away.team_code)} vs "
+                      f"{C5._nm(league, _g.home.team_code)}")
+        for _q in _pp:
+            _extra.append("")
+            _extra.append(_q)
     return html, list(C5.caption(kind="analysis", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab, extra_lines=_extra or None,
+                                 extra_title="경기 분석" if _extra else ""))
 
 
 def analysis_card(rb, game, league: League, day: str, *,

@@ -533,6 +533,129 @@ print(f"  (알림 라벨 {len(_found)}개 · 경고 "
       f"{sum(1 for v in _found.values() if v == 'warn')} · "
       f"정보 {sum(1 for v in _found.values() if v == 'info')})")
 
+
+# ══════════════════════════════════════════════════════════════
+# 분석 산문 — **문장이 주장하는 사실을 되짚는다** (v1.24)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시로 분석 캡션에 **사람이 쓴 것 같은 긴 글**이 실린다.
+# 길어지는 만큼 위험도 커진다 — 문장이 늘어나면 그중 하나가 숫자와
+# 어긋나기 쉽고, 그건 그 순간 카드가 거짓말을 하는 것이다(FACT_LOCK).
+#
+# 그래서 **산문의 모든 수치를 원본과 대조하고, 금지 낱말을 막는다.**
+# 새 문장을 넣으면 이 검사도 같이 늘린다(약점 4·107).
+
+print("\n분석 산문 (v1.24)")
+
+_PS_LG = League.KL1
+_ps_day = "2026-08-29"
+_ps_games = [
+    mk(_PS_LG, _ps_day, 19, tz="Asia/Seoul", h="K05", a="K35"),
+]
+
+# ── 금지 낱말 — 예측·추천·감상은 우리에게 없는 모델을 가진 척하는 것이다 ──
+PROSE_BANNED = (
+    "유리", "불리", "예상", "전망", "승산", "기대된다", "볼 만", "명승부",
+    "짜릿", "역대급", "우세", "무난", "낙승", "필승", "확률", "추천",
+    "것으로 보인다", "할 듯", "일 듯",
+)
+import inspect as _insp                                        # noqa: E402
+_ps_src = _insp.getsource(P.analysis_prose)
+_hit = [w for w in PROSE_BANNED if f'"{w}' in _ps_src or f"{w}" in
+        "".join(l for l in _ps_src.splitlines() if l.strip().startswith("s.append")
+                or "para.append" in l or "head = " in l)]
+check("★★★ 산문 문안에 예측·추천·감상 낱말이 없다 (우리에겐 모델이 없다)",
+      not _hit, f"걸린 낱말: {_hit}")
+
+# ── 조사를 문자열에 박지 않았는가 (약점 59) ──────────────────────
+#
+# **팀명 뒤만 본다.** 고정 낱말("선두와의 승점차는")은 받침이 안 변하므로
+# 박아도 된다 — 검사가 그것까지 잡으면 오탐이 되고, 오탐 하나가 검사를
+# 통째로 꺼뜨린다(약점 112·126·182).
+_TEAM_VARS = ("na", "nh", "nmx", "big", "_tn", "_bn",
+              "pos[1]", "cs[1]", "sot[1]", "ops[1]", "era[1]",
+              "ga2[1]", "winless[0]")
+_bad_josa = []
+for _line in _ps_src.splitlines():
+    _t = _line.strip()
+    if "_prose_j" in _t or "josa(" in _t:
+        continue
+    for _v in _TEAM_VARS:
+        for _p in ("은 ", "는 ", "이 ", "가 ", "을 ", "를 "):
+            if f"{{{_v}}}{_p}" in _t:
+                _bad_josa.append(_t[:70])
+                break
+check("★★ 팀명 뒤 조사를 문자열에 박지 않았다 (약점 59)",
+      not _bad_josa, " · ".join(_bad_josa[:3]))
+# 변이시험 — 검사가 실제로 잡는지 본다. 안 잡으면 이 검사는 장식이다.
+check("  ↳ (변이) 팀명 뒤에 조사를 박으면 잡힌다",
+      any(f"{{{_v}}}은 " in 'f"{na}은 올 시즌"' for _v in ("na",)))
+
+# ── 산문이 쓰는 재료가 계약에 다 있는가 ─────────────────────────
+check("산문이 종목별 지표 표를 계약에서 읽는다 (여기 다시 적지 않는다)",
+      "team_stat_labels(league)" in _ps_src)
+check("표본이 모자라면 그 문단을 뺀다 (지어내지 않는다)",
+      "PROSE_FORM_MIN" in _ps_src and "continue" in _ps_src)
+check("순위표에 없는 팀이면 아무 말도 하지 않는다",
+      "if not sa or not sh" in _ps_src and "return []" in _ps_src)
+
+# ── 실제 생성물 대조 — 문장의 수치가 원본과 같은가 ────────────────
+#
+# **이게 이 검사의 심장이다.** 위 검사들은 문안을 보지만, 이것은
+# 실제로 만들어진 문장에서 수를 뽑아 원본과 맞춘다.
+class _PSt:
+    def __init__(self, code, rank, w, d, l, pct, gb):
+        self.team_code, self.rank, self.pct, self.games_behind = code, rank, pct, gb
+        self.record = C.WLD(win=w, loss=l, draw=d)
+        self.last10 = None
+        self.streak_kind = C.StreakKind.NONE
+        self.streak_len = 0
+
+
+class _PRb:
+    league = _PS_LG
+    collected_utc = None
+
+    def __init__(self, rows):
+        self._r = {x.team_code: x for x in rows}
+        self.standings = rows
+
+    def team(self, code):
+        return self._r.get(code)
+
+    def between(self, a, b):
+        return None
+
+
+_ps_rows = [_PSt("K35", 11, 4, 17, 7, "0.345", "30"),
+            _PSt("K05", 8, 10, 6, 12, "0.429", "23")]
+_ps_g = _ps_games[0]
+_ps_out = P.analysis_prose(_PRb(_ps_rows), _ps_g,
+                           team_stats={"K35": {"pos": 51.4, "sot": 121},
+                                       "K05": {"pos": 49.4, "sot": 111}},
+                           history=[])
+_ps_txt = " ".join(_ps_out)
+check("산문이 실제로 만들어진다", bool(_ps_out), f"{len(_ps_out)}문단")
+check("★★★ 전적이 원본과 같다 (4승 17무 7패)",
+      "4승 17무 7패" in _ps_txt, _ps_txt[:160])
+check("★★★ 순위가 원본과 같다", "11위" in _ps_txt and "8위" in _ps_txt)
+check("★★ 계단 차이를 바르게 센다 (11위 vs 8위 = 3계단)",
+      "3계단" in _ps_txt, _ps_txt[:120])
+check("★★ 무승부가 많은 팀을 그 성격으로 말한다 (17/28 = 61%)",
+      "61%" in _ps_txt, _ps_txt[:200])
+check("★ 지표에서 앞선 쪽을 바르게 고른다 (점유율·유효슈팅 모두 K35)",
+      "51.4" in _ps_txt and "121" in _ps_txt)
+check("★★ 표본이 없으면 최근 폼을 말하지 않는다 (history 빈 채로 넣었다)",
+      "최근" not in _ps_txt or "경기에서" not in _ps_txt.split("최근")[-1][:20],
+      _ps_txt[-200:])
+# 변이시험 — 원본을 바꾸면 문장도 바뀌어야 한다. 안 바뀌면 이 검사는 헛돈다.
+_ps_rows2 = [_PSt("K35", 11, 9, 12, 7, "0.400", "30"),
+             _PSt("K05", 8, 10, 6, 12, "0.429", "23")]
+_ps_txt2 = " ".join(P.analysis_prose(_PRb(_ps_rows2), _ps_g,
+                                     team_stats={}, history=[]))
+check("★★ (변이) 원본 전적을 바꾸면 문장도 바뀐다 (검사가 헛돌지 않는다)",
+      "9승 12무 7패" in _ps_txt2 and "4승 17무 7패" not in _ps_txt2)
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:
