@@ -636,13 +636,42 @@ _ps_out = P.analysis_prose(_PRb(_ps_rows), _ps_g,
                            history=[])
 _ps_txt = " ".join(_ps_out)
 check("산문이 실제로 만들어진다", bool(_ps_out), f"{len(_ps_out)}문단")
-check("★★★ 전적이 원본과 같다 (4승 17무 7패)",
-      "4승 17무 7패" in _ps_txt, _ps_txt[:160])
+# ⚠️ **기대값이 표현을 따라간다** — v1.25에서 산문을 사람 글로 바꿨다
+# ("4승 17무 7패를 기록했다" → "네 번 이기고 열일곱 번 비겼다").
+# 검사의 **성질**(전적이 원본과 같은가)은 그대로고 기대값만 옮겼다(약점 197).
+check("★★★ 전적이 원본과 같다 (4승 17무)",
+      "네 번 이기고" in _ps_txt and "열일곱 번 비겼다" in _ps_txt, _ps_txt[:200])
 check("★★★ 순위가 원본과 같다", "11위" in _ps_txt and "8위" in _ps_txt)
 check("★★ 계단 차이를 바르게 센다 (11위 vs 8위 = 3계단)",
       "3계단" in _ps_txt, _ps_txt[:120])
 check("★★ 무승부가 많은 팀을 그 성격으로 말한다 (17/28 = 61%)",
-      "61%" in _ps_txt, _ps_txt[:200])
+      "승부가 안 난" in _ps_txt, _ps_txt[:200])
+# **비율을 말로 바꾸는 자리는 참인 것만 쓴다** — 61%를 "셋 중 둘"이라 하면 66.7%다.
+check("  ↳ 비율 표현이 참이다 (오차 3%p 안에서만 말로 바꾼다)",
+      P._ratio_phrase(17, 28) == "다섯 경기에 세 번꼴"          # 60.7% (오차 0.7)
+      and P._ratio_phrase(19, 28) == "세 경기에 두 번꼴"          # 67.9% (오차 1.2)
+      and P._ratio_phrase(15, 28) == "절반이 넘는 54%",           # 근사 없음 → 퍼센트
+      f"{P._ratio_phrase(17, 28)} / {P._ratio_phrase(19, 28)} / "
+      f"{P._ratio_phrase(15, 28)}")
+# ★ 화살표 나열을 문장으로 엮는다 — 가장 기계적으로 읽히던 자리
+_ps_f = [{"r": "무", "me": 1, "op": 1, "vs": "인천"},
+         {"r": "무", "me": 0, "op": 0, "vs": "제주"},
+         {"r": "무", "me": 0, "op": 0, "vs": "전북"},
+         {"r": "패", "me": 1, "op": 3, "vs": "울산"}]
+_ps_fs = P._form_sentence(_ps_f)
+check("★★★ 최근 경기를 문장으로 엮는다 (화살표 나열 금지)",
+      "→" not in _ps_fs and "인천과 1-1" in _ps_fs, _ps_fs)
+# 세 번 내리 비긴 것을 "비겼고 … 비겼고 … 비겼다"로 쓰지 않는다.
+# 끝맺음(비겼다)·관형형(비긴)·연결형(비겼고)을 통틀어 **한 번만** 나와야 한다.
+check("  ↳ 같은 결과가 이어지면 동사를 한 번만 쓴다",
+      sum(_ps_fs.count(w) for w in ("비겼다", "비긴", "비겼고")) == 1, _ps_fs)
+check("  ↳ 숫자 뒤 '로/으로'를 받침으로 고른다",
+      P._num_ro(3) == "으로" and P._num_ro(1) == "로" and P._num_ro(2) == "로")
+check("  ↳ 같은 상대 연전은 팀명을 한 번만 쓴다",
+      P._form_sentence([{"r": "승", "me": 4, "op": 1, "vs": "롯데"},
+                        {"r": "승", "me": 3, "op": 2, "vs": "롯데"}]).count("롯데") == 1,
+      P._form_sentence([{"r": "승", "me": 4, "op": 1, "vs": "롯데"},
+                        {"r": "승", "me": 3, "op": 2, "vs": "롯데"}]))
 check("★ 지표에서 앞선 쪽을 바르게 고른다 (점유율·유효슈팅 모두 K35)",
       "51.4" in _ps_txt and "121" in _ps_txt)
 check("★★ 표본이 없으면 최근 폼을 말하지 않는다 (history 빈 채로 넣었다)",
@@ -654,7 +683,8 @@ _ps_rows2 = [_PSt("K35", 11, 9, 12, 7, "0.400", "30"),
 _ps_txt2 = " ".join(P.analysis_prose(_PRb(_ps_rows2), _ps_g,
                                      team_stats={}, history=[]))
 check("★★ (변이) 원본 전적을 바꾸면 문장도 바뀐다 (검사가 헛돌지 않는다)",
-      "9승 12무 7패" in _ps_txt2 and "4승 17무 7패" not in _ps_txt2)
+      "아홉 번 이기고" in _ps_txt2 and "네 번 이기고" not in _ps_txt2,
+      _ps_txt2[:160])
 
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

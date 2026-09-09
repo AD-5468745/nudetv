@@ -3908,37 +3908,43 @@ def analysis_prose(rb: RecordBook, game: Game, *,
         pass
     para.append(" ".join(s))
 
-    # ── ② 팀별 시즌 성적 ─────────────────────────────────────────
+    # ── ② 두 팀의 시즌 (한 문단에 담는다 — 나눠 쓰면 항목표처럼 읽힌다) ──
     three = bool(sa.record.draw or sh.record.draw)
-    for st, nmx in ((sa, na), (sh, nh)):
+    s = []
+    for idx, (st, nmx) in enumerate(((sa, na), (sh, nh))):
         rec = st.record
         n = rec.win + rec.loss + rec.draw
-        # **산문에는 표기용 축약(`4-7-17`)을 쓰지 않는다** — 읽는 글이다.
-        _rt = (f"{rec.win}승 {rec.draw}무 {rec.loss}패" if three
-               else f"{rec.win}승 {rec.loss}패")
-        s = [f"{_prose_j(nmx, '은', '는')} 올 시즌 {n}경기에서 "
-             f"{_rt}를 기록했다."]
+        # **"N승 M무 L패를 기록했다"를 반복하지 않는다.** 그게 기계로 읽히던 자리다.
+        if idx == 0:
+            head = f"{_prose_j(nmx, '은', '는')} {_ko_games(n)}를 치르는 동안 "
+        else:
+            # ⚠️ **경기 수가 다르면 '같은'이 거짓이 된다.** 두 팀의 소화
+            # 경기 수는 우천 순연 때문에 흔히 다르다(실측: 한화 121 · SSG 126).
+            _same = "같은 " if n == sa.record.win + sa.record.loss + \
+                sa.record.draw else ""
+            head = f"{_prose_j(nmx, '은', '는')} {_same}{_ko_games(n)}에서 "
+        # **무엇을 말할지는 그 팀의 성격이 정한다.** 무승부가 많으면 무승부를,
+        # 아니면 패를 말한다 — 늘 같은 항목을 읊으면 그게 기계로 읽힌다.
+        if three and n and rec.draw / n >= PROSE_DRAW_HEAVY:
+            head += (f"{_ko_times(rec.win)} 이기고 {_ko_times(rec.draw)} 비겼다.")
+        else:
+            head += f"{_ko_times(rec.win)} 이기고 {_ko_times(rec.loss)} 졌다."
+        s.append(head)
         if soccer and n and rec.draw / n >= PROSE_DRAW_HEAVY:
-            s.append(f"무승부가 {rec.draw}번으로 전체의 "
-                     f"{rec.draw / n * 100:.0f}%다. "
-                     f"이기지도 지지도 않은 경기가 그만큼 많았다는 뜻이다.")
+            _rp = _ratio_phrase(rec.draw, n)
+            s.append(f"{_rp}로 승부가 안 난 셈이다." if _rp
+                     else "무승부가 그만큼 많았다.")
         elif soccer and n and rec.draw / n <= PROSE_DRAW_LIGHT:
-            s.append("승과 패가 비교적 뚜렷하게 갈리는 편이다.")
+            s.append("승과 패가 뚜렷하게 갈리는 쪽이다.")
         if st.last10 and st.last10.total:
-            _l10 = st.last10
-            s.append("최근 10경기는 " + (
-                f"{_l10.win}승 {_l10.draw}무 {_l10.loss}패다."
-                if _l10.draw else f"{_l10.win}승 {_l10.loss}패다."))
+            _l = st.last10
+            s.append("최근 열 경기만 보면 " + (
+                f"{_l.win}승 {_l.draw}무 {_l.loss}패다."
+                if _l.draw else f"{_l.win}승 {_l.loss}패다."))
         if st.streak_kind is not StreakKind.NONE and st.streak_len:
-            # 1경기짜리 '연속'은 연속이 아니다 — 직전 경기로 말한다.
-            if st.streak_len == 1:
-                _w = {StreakKind.WIN: "승리", StreakKind.LOSS: "패배",
-                      StreakKind.DRAW: "무승부"}.get(st.streak_kind)
-                if _w:
-                    s.append(f"직전 경기는 {_w}였다.")
-            else:
+            if st.streak_len >= 2:
                 s.append(f"지금은 {_streak(st)} 중이다.")
-        para.append(" ".join(s))
+    para.append(" ".join(s))
 
     # ── ③ 지표가 갈리는 지점 ─────────────────────────────────────
     def better(key: str, higher: bool):
@@ -3998,6 +4004,9 @@ def analysis_prose(rb: RecordBook, game: Game, *,
             s.append(f"비교한 {tot}개 항목을 "
                      f"{_prose_j(big, '이', '가')} 전부 가져간다"
                      f"({' · '.join(mine)}).")
+        elif len(won[a]) == len(won[h]):
+            s.append(f"비교한 {tot}개 항목이 {len(won[a])}개씩 갈린다 — "
+                     f"어느 한쪽으로 기울지 않는다.")
         else:
             s.append(f"비교한 {tot}개 항목 중 "
                      f"{_prose_j(big, '이', '가')} {len(mine)}개를 가져간다"
@@ -4005,7 +4014,9 @@ def analysis_prose(rb: RecordBook, game: Game, *,
     if s:
         para.append(" ".join(s))
 
-    # ── ④ 최근 흐름 ──────────────────────────────────────────────
+    # ── ④ 최근 흐름 — **화살표 나열을 문장으로 엮는다** ──────────────
+    #
+    # `무 1-1 인천 → 무 0-0 제주 → …`가 가장 기계적으로 읽히던 자리다.
     for code, nmx in ((a, na), (h, nh)):
         f = _prose_form(history or [], code, game.start_utc, league)
         if len(f) < PROSE_FORM_MIN:
@@ -4013,19 +4024,15 @@ def analysis_prose(rb: RecordBook, game: Game, *,
         w = sum(1 for x in f if x["r"] == "승")
         d = sum(1 for x in f if x["r"] == "무")
         l = len(f) - w - d
+        body = _form_sentence(f)
         if w == 0:
-            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
-                    f"{d}무 {l}패로 승리가 없다.")
+            tail = " 승리가 없다."
         elif l == 0:
-            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
-                    f"{w}승 {d}무로 패배가 없다.")
+            tail = " 패배가 없다."
         else:
-            # 무승부가 없는 종목에서 '0무'를 적으면 눈에 걸린다
-            _mid = f"{w}승 {d}무 {l}패" if d else f"{w}승 {l}패"
-            head = (f"{_prose_j(nmx, '은', '는')} {window_label} {len(f)}경기에서 "
-                    f"{_mid}다.")
-        seq = " → ".join(f"{x['r']} {x['me']}-{x['op']} {x['vs']}" for x in f)
-        para.append(f"{head} 오래된 순서로 {seq}.")
+            tail = ""
+        para.append(f"{_prose_j(nmx, '은', '는')} 최근 {_ko_games(len(f))}에서 "
+                    f"{body}{tail}")
 
     # ── ⑤ 맞대결 ─────────────────────────────────────────────────
     wld = rb.between(a, h)
@@ -4050,11 +4057,148 @@ def analysis_prose(rb: RecordBook, game: Game, *,
         f = _prose_form(history or [], code, game.start_utc, league)
         if len(f) >= PROSE_FORM_MIN and not any(x["r"] == "승" for x in f):
             winless.append(nmx)
+    # **위에서 이미 말한 것을 총평에서 되풀이하지 않는다.**
+    # 최근 흐름 문단이 "승리가 없다"를 이미 적었으면 여기서는 두 팀 다일 때만 말한다.
     if len(winless) == 2:
-        tail.append(f"두 팀 모두 {window_label} 경기에서 승리가 없다.")
-    elif winless:
-        tail.append(f"{_prose_j(winless[0], '은', '는')} {window_label} 경기에서 "
-                    f"승리가 없다.")
+        tail.append("두 팀 모두 최근 경기에서 이겨 본 지 오래다.")
     if tail:
         para.append(" ".join(tail))
     return para
+
+
+# ══════════════════════════════════════════════════════════════
+# 산문을 사람 글에 가깝게 (v1.25, 2026-09-09) — 대표님 지시
+# ══════════════════════════════════════════════════════════════
+#
+# *"이렇게 너무 기계같은 멘트말고 자연스럽게"*
+#
+# **무엇이 기계처럼 읽혔나 — 넷이다.**
+#   ① 문장 틀이 매번 같다 ("A는 올 시즌 N경기에서 X승 Y무 Z패를 기록했다")
+#   ② 문장이 툭툭 끊긴다 — 접속이 없다
+#   ③ 숫자를 아라비아로만 쓴다 ("4승", "17번")
+#   ④ **최근 경기를 화살표로 나열한다** — 이게 제일 기계다
+#
+# **고치는 방법 — 지어내지 않으면서.**
+#   · 문장 틀을 여러 개 두되 **데이터 특성으로 고른다.** 무작위면 같은 경기가
+#     매번 다른 글이 되어 재현도 검사도 안 된다.
+#   · 작은 수는 한글로 — "네 번", "열일곱 번". 읽는 글이니까.
+#   · 비율은 **참인 표현만** 쓴다. 61%를 "셋 중 둘"이라 하면 그건 66.7%다.
+#   · 경기 나열은 **문장으로 엮는다** — 같은 결과가 이어지면 묶는다.
+
+_KO_NUM = ("", "한", "두", "세", "네", "다섯", "여섯", "일곱", "여덟", "아홉", "열",
+           "열한", "열두", "열세", "열네", "열다섯", "열여섯", "열일곱", "열여덟",
+           "열아홉", "스무")
+
+
+def _ko(n: int) -> str:
+    """작은 수는 한글로. 표가 아니라 **읽는 글**이라서 그렇다."""
+    return _KO_NUM[n] if 0 < n < len(_KO_NUM) else str(n)
+
+
+def _ko_games(n: int) -> str:
+    """'스물여덟 경기' / '35경기'. 한글 수사는 띄고 아라비아 숫자는 붙인다."""
+    k = _ko(n)
+    return f"{k} 경기" if k != str(n) else f"{n}경기"
+
+
+def _ko_times(n: int) -> str:
+    """'네 번' / '53번'. 한글 수사는 띄고 아라비아 숫자는 붙인다."""
+    k = _ko(n)
+    return f"{k} 번" if k != str(n) else f"{n}번"
+
+
+def _ratio_phrase(part: int, whole: int) -> str:
+    """비율을 사람 말로 — **참인 것만.**
+
+    61%를 "셋 중 둘"이라 하면 그건 66.7%다. 근사가 거짓이 되는 자리라
+    오차 3%p 안에서만 말로 바꾸고, 아니면 퍼센트를 그대로 쓴다.
+    """
+    if not whole:
+        return ""
+    pct = part / whole * 100
+    for num, den, words in ((1, 2, "두 경기에 한 번꼴"), (1, 3, "세 경기에 한 번꼴"),
+                            (2, 3, "세 경기에 두 번꼴"), (1, 4, "네 경기에 한 번꼴"),
+                            (3, 4, "네 경기에 세 번꼴"), (1, 5, "다섯 경기에 한 번꼴"),
+                            (2, 5, "다섯 경기에 두 번꼴"), (3, 5, "다섯 경기에 세 번꼴"),
+                            (4, 5, "다섯 경기에 네 번꼴")):
+        if abs(pct - num / den * 100) <= 3.0:
+            return words
+    if pct > 50:
+        return f"절반이 넘는 {pct:.0f}%"
+    return f"{pct:.0f}%"
+
+
+def _num_ro(n: int) -> str:
+    """숫자 뒤 '로/으로'. 한글 읽기의 받침으로 갈린다 — 1·7·8은 ㄹ이라 '로'."""
+    return "으로" if (n % 10) in (0, 3, 6) or n == 10 else "로"
+
+
+# 끝맺음 · 관형형(~ㄴ 뒤) · 연결형(~고). **같은 연결어를 잇달아 쓰지 않는다** —
+# "진 뒤 ... 진 뒤"처럼 반복되면 그것 자체가 기계로 읽힌다.
+_FORM_VERB = {"승": ("이겼다", "이긴", "이겼고"),
+              "무": ("비겼다", "비긴", "비겼고"),
+              "패": ("졌다", "진", "졌고")}
+_FORM_JOSA = {"승": ("을", "를"), "무": ("과", "와"), "패": ("에", "에")}
+
+
+def _form_sentence(f: list[dict]) -> str:
+    """최근 경기를 **문장으로 엮는다.** 화살표 나열이 가장 기계적이었다.
+
+    사람은 같은 결과가 이어지면 동사를 한 번만 쓴다 —
+    "인천과 1-1로 비겼고, 제주와 0-0으로 비겼고"가 아니라
+    **"인천과 1-1, 제주·전북과 0-0으로 내리 비겼다"**로 쓴다.
+    """
+    if not f:
+        return ""
+    # ① 연속된 **같은 결과**를 한 덩어리로 (점수가 달라도 묶는다)
+    runs: list[list[dict]] = []
+    for x in f:
+        if runs and runs[-1][0]["r"] == x["r"]:
+            runs[-1].append(x)
+        else:
+            runs.append([x])
+
+    def _chunk(run: list[dict]) -> str:
+        # ② 덩어리 안에서 **같은 점수**끼리 다시 묶는다 — "제주·전북과 0-0"
+        by: list[tuple[str, list[str]]] = []
+        for x in run:
+            sc = f"{x['me']}-{x['op']}"
+            if by and by[-1][0] == x["vs"]:
+                by[-1][1].append(sc)          # 같은 상대 연전 — 팀명 한 번만
+            elif by and by[-1][1][-1] == sc and len(by[-1][1]) == 1:
+                by[-1] = (by[-1][0] + "·" + x["vs"], by[-1][1])   # 같은 점수 묶음
+            else:
+                by.append((x["vs"], [sc]))
+        r = run[0]["r"]
+        with_b, without_b = _FORM_JOSA[r]
+        parts = [f"{nm}{josa(nm, with_b, without_b)} {', '.join(scs)}"
+                 for nm, scs in by]
+        # 마지막 점수에만 '로/으로'를 붙인다 — 앞은 쉼표로 이어진다
+        tail_op = int(by[-1][1][-1].split("-")[1])
+        body = ", ".join(parts) + _num_ro(tail_op)
+        return body, r, len(run)
+
+    # ③ **덩어리 셋을 넘으면 문장을 끊는다.** 한 문장에 다 이으면 늘어진다.
+    sents: list[list[str]] = [[]]
+    for i, run in enumerate(runs):
+        body, r, n = _chunk(run)
+        cur = sents[-1]
+        first_in_sent = not cur
+        last = (i == len(runs) - 1)
+        # 이 덩어리로 문장을 닫는가 — 마지막이거나 이 문장이 세 덩어리째다
+        close = last or len(cur) >= 2
+        verb, adn, conj = _FORM_VERB[r]
+        lead = "내리 " if n >= 3 else ("잇달아 " if n == 2 else "")
+        again = "다시 " if any(x[0]["r"] == r for x in runs[:i]) else ""
+        if close:
+            cur.append(f"{body} {again or lead}{verb}")
+            if not last:
+                sents.append([])
+        elif first_in_sent:
+            cur.append(f"{body} {lead}{adn} 뒤")
+        else:
+            cur.append(f"{body} {again or lead}{conj}")
+    # 한 문장 안에서는 쉼표로 잇는다 — "졌고 광주와"가 아니라 "졌고, 광주와"
+    return " ".join(
+        ", ".join(x for x in sent).replace("뒤,", "뒤") + "."
+        for sent in sents if sent)
