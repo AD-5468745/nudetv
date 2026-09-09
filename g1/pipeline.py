@@ -557,10 +557,36 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         #
         # `start_rev`도 그대로 넣는다 — 경기가 순연되면 그 경기는 다른 시각
         # 버킷으로 옮겨 가므로 자연히 새 키가 된다(약점 20의 짝).
+        # ⚠️ **'예정 상태'가 아니라 '아직 시작하지 않았다'로 판정한다** (v1.21).
+        #
+        # 여기 원래 `g.status is Status.SCHEDULED`가 있었고, 그것이
+        # 2026-09-08·09 KBO 킥오프 누락의 뿌리였다.
+        #
+        # **실측 2026-09-09 18:06 KST**: KBO 소스가 18:30 경기 4건을 전부
+        # 이미 `LIVE`로 준다 — 시작 **24분 전**이다. 킥오프 창이 T-30~T-1이므로
+        # 창이 열리는 18:00에는 이미 `SCHEDULED`가 하나도 없고, 묶음이 통째로
+        # 안 만들어진다. 큐에 한 줄도 안 남으니 `is_late()`도 지각 폐기도
+        # 그 항목을 모른다 — **완전히 조용한 누락**이다(약점 181·188).
+        #
+        # **상태는 소스가 정하고 소스마다 다르다. 시작 시각은 우리가 아는
+        # 사실이다.** 그래서 우리가 아는 것으로 판정한다:
+        #   · 종결(종료·취소·연기)된 경기는 담지 않는다 — 나갈 이유가 없다
+        #   · 이미 시작한 경기는 담지 않는다 — '곧 시작'이 거짓이 된다
+        # 이 둘만 빼면 상태가 무엇이든 담는다.
+        #
+        # ⚠️ **의무 대조(`contract.kickoff_duty_groups`)는 이 조건을 쓰지 않는다.**
+        # 그쪽은 취소·연기만 뺀 경기 일정 전체가 분모다 — 검사 대상의 조건을
+        # 검사에 재사용하면 검사가 자기 자신을 통과시킨다(약점 181).
+        # 그래서 여기를 또 틀리면 그때도 감시가 잡는다.
+        #
+        # 되돌리는 법: 이 조건을 `g.status is Status.SCHEDULED`로 되돌린다.
         _kick: dict = defaultdict(list)
         for g in games:
-            if g.status is Status.SCHEDULED:
-                _kick[start_alert_bucket(g)].append(g)
+            if g.is_terminal:
+                continue                  # 끝났거나 취소·연기됐다
+            if g.start_utc <= now:
+                continue                  # 이미 시작했다
+            _kick[start_alert_bucket(g)].append(g)
         for _bk, _bg in _kick.items():
             _first = min(x.start_utc for x in _bg)
             _at = _first - timedelta(seconds=KICKOFF_LEAD_SECONDS)

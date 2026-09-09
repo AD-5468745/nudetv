@@ -2034,6 +2034,61 @@ check("  ↳ 같은 시각 경기는 같은 묶음에 들어간다 (한 장에 �
       len(_kick) < len(_pg_games),
       f"묶음 {len(_kick)} vs 경기 {len(_pg_games)}")
 
+# ═════════════════════════════════════════════════════════════
+print("\n★★★ 킥오프 큐는 '상태'가 아니라 '아직 시작 안 했다'로 담는다 (v1.21)")
+# ═════════════════════════════════════════════════════════════
+#
+# **2026-09-08·09 KBO 킥오프 누락의 뿌리다.**
+# 실측(09-09 18:06 KST): KBO 소스가 18:30 경기를 시작 **24분 전**에 이미
+# `LIVE`로 준다. 큐가 `status is SCHEDULED`만 담으면 킥오프 창(T-30~T-1)이
+# 열리는 18:00에 담을 것이 하나도 없어 묶음이 통째로 사라지고, 큐에 흔적이
+# 없으니 지각 폐기로도 안 잡힌다 — **완전히 조용한 누락**(약점 181·188).
+#
+# 상태는 소스가 정하지만 **시작 시각은 우리가 아는 사실이다.**
+
+_LV_DAY = "2026-08-29"
+# 18:30 시작 · 지금은 18:06(KST) — 아직 24분 남았는데 소스는 LIVE라고 한다
+_lv_games = [mkgame(League.KBO, "LG", "OB", day=_LV_DAY, hh=18,
+                    status=Status.LIVE),
+             mkgame(League.KBO, "SS", "KT", day=_LV_DAY, hh=18,
+                    status=Status.LIVE)]
+_lv_now = datetime(2026, 8, 29, 9, 6, tzinfo=timezone.utc)      # KST 18:06
+_lvq = P.build_queue(_lv_games, _lv_now, "-100test", floor_hours=0)
+_lvk = [i for i in _lvq if i.content_type is ContentType.KICKOFF]
+check("★★★ 소스가 LIVE라 해도 시작 전이면 킥오프가 큐에 담긴다 (그 사고의 재현)",
+      len(_lvk) == 1, f"{len(_lvk)}건 · {[i.scope for i in _lvk]}")
+
+# **반대쪽도 지켜야 한다** — 이미 시작한 경기에 '곧 시작'을 보내면 거짓말이다.
+_lv_after = datetime(2026, 8, 29, 9, 40, tzinfo=timezone.utc)   # KST 18:40
+_lvq2 = P.build_queue(_lv_games, _lv_after, "-100test", floor_hours=0)
+check("  ↳ 이미 시작한 뒤에는 담지 않는다 ('곧 시작'이 거짓이 되면 안 된다)",
+      not [i for i in _lvq2 if i.content_type is ContentType.KICKOFF])
+
+# 종결(종료·취소·연기)은 시작 전이어도 담지 않는다
+_lv_fin = [mkgame(League.KBO, "HT", "NC", day=_LV_DAY, hh=18,
+                  status=Status.CANCELED, cancel="우천")]
+check("  ↳ 취소·연기된 경기는 담지 않는다",
+      not [i for i in P.build_queue(_lv_fin, _lv_now, "-100test", floor_hours=0)
+           if i.content_type is ContentType.KICKOFF])
+
+# ── 변이시험 — 옛 조건으로 되돌리면 이 검사가 **반드시** 실패해야 한다 ──
+#
+# 안 그러면 이 검사는 통과해도 아무것도 증명하지 않는다(약점 62·106).
+_lv_mut = [g for g in _lv_games if g.status is Status.SCHEDULED]   # 옛 조건 재현
+check("★★ 변이시험 — 옛 조건(status is SCHEDULED)으로는 묶음이 0건이 된다",
+      not _lv_mut,
+      "옛 조건이라면 담을 경기가 없다 = 그날의 침묵이 그대로 재현된다")
+
+# ⚠️ **의무 대조는 이 조건을 쓰지 않는다** — 검사 대상의 조건을 검사에
+# 재사용하면 검사가 자기 자신을 통과시킨다(약점 181). 그래서 큐가 또 틀려도
+# 의무 쪽은 여전히 그 경기를 의무로 센다.
+check("★★★ 의무 분모는 상태와 무관하다 (큐가 또 틀려도 감시가 잡는다)",
+      len(C.kickoff_duty_groups(_lv_games)) == 1
+      and len(C.kickoff_duty_groups(
+          [mkgame(League.KBO, "LG", "OB", day=_LV_DAY, hh=18,
+                  status=Status.SCHEDULED)])) == 1,
+      "LIVE·SCHEDULED 어느 쪽이든 의무 1건")
+
 # ── 예약 시각 — 창이 [T-10분, T-1분]인가 ──────────────────────
 # 묶음이 된 뒤로는 `game_id`가 대표 경기일 뿐이므로, **그 묶음의 첫 경기**로 잰다.
 _bucket_first = {}

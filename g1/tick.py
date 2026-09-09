@@ -1362,8 +1362,34 @@ def _korean_seen(now: datetime) -> dict:
     return dict(sorted(seen.items()))
 
 
+def _lost_kinds(lost: list) -> list[str]:
+    """누락 알림 줄을 **분류 라벨**로 바꾼다 (v1.21).
+
+    ⚠️ **본문은 절대 넣지 않는다.** `health.json`은 공개 저장소에 커밋되고,
+    런타임 문자열을 그대로 넣으면 배포 전 공개 점검이 못 잡는 자리가 된다.
+    여기서 나가는 것은 미리 정해 둔 라벨뿐이다 — 새 문안이 생겨도
+    `기타`로 떨어지지 콘텐츠가 새지 않는다.
+    """
+    table = (
+        ("큐에조차 들어오지 못한 킥오프", "unqueued_kickoff"),
+        ("큐에조차 들어오지 못한 종료 속보", "unqueued_final_flash"),
+        ("큐에조차 들어오지 못한 선발 라인업", "unqueued_lineup"),
+        ("대장에 흔적조차 없는 항목", "ghost"),
+        ("시각을 놓쳐 취소", "missed"),
+        ("만들 내용 없음", "empty_render"),
+        ("기록이", "record_stuck"),
+    )
+    out: list[str] = []
+    for line in lost:
+        s = str(line)
+        out.append(next((lab for pat, lab in table if pat in s), "기타"))
+    return sorted(set(out))
+
+
 def _write_health(now: datetime, flog: dict, adapter_notes: list,
-                  stale_notes: list, cov) -> None:
+                  stale_notes: list, cov,
+                  lost: list | None = None,
+                  lines: list | None = None) -> None:
     """`state/health.json` — 사람이 열어 보고 상태를 판단할 수 있는 최소한.
 
     담는 것: 리그별 마지막 수집 시각·건수·캐시 나이·오류 **분류**,
@@ -1416,7 +1442,26 @@ def _write_health(now: datetime, flog: dict, adapter_notes: list,
         # 오탐이 0이라는 것이 이 방식의 값이다 — 이름을 추정하지 않고,
         # 우리가 적어 둔 이름을 실제로 만났는지만 센다.
         "korean_players": _korean_seen(now),
+        # ── ★ 실제로 나간 알림을 센다 (v1.21) ────────────────────────
+        #
+        # **여기 원래 `len(adapter_notes) + len(stale_notes)`만 있었다.**
+        # 그래서 저장소만 보는 사람에게 이 파일은 거짓말을 했다:
+        # 2026-09-08~09 24시간 동안 `alert_lines`가 264틱 내내 `0`이었는데
+        # 실제로는 알림 줄 53개가 나갔고, 그중에는 **KBO 킥오프가 큐에
+        # 들어오지 못했다는 신고가 매시간 14번** 들어 있었다.
+        #
+        # 빠진 쪽이 하필 **가장 무거운 통**(🔴 콘텐츠가 나가지 못했습니다)이다.
+        # 약점 119(관측 구멍)의 재발이고 126보다 나쁘다 — 그때는 무거운 줄이
+        # 가벼운 줄에 **묻힌** 것이었고, 여기서는 아예 **세어지지 않았다.**
+        #
+        # **알림을 새로 만들면 그 알림이 이 파일에 세어지는지 같은 커밋에서 본다.**
         "alert_lines": len(adapter_notes) + len(stale_notes),
+        # 실제로 발송을 시도한 두 통의 줄 수. 위 `alert_lines`는 그중
+        # '상태 보고'의 재료 일부일 뿐이라 이름을 그대로 두고 따로 센다
+        # (이름을 바꾸면 이 값을 읽던 검사·문서가 조용히 어긋난다).
+        "lost_lines": len(lost or []),
+        "status_lines": len(lines or []),
+        "lost_kinds": _lost_kinds(lost or []),
         "stale_blocked": [n.split(":")[0] for n in stale_notes if "발송 보류" in n],
         "coverage_ok": bool(getattr(cov, "ok", True)),
         # ⚠️ **왜 실패했는지도 같이 적는다 (2026-09-07 신설).**
@@ -2731,7 +2776,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 분류만 남긴다 — 공개 저장소라 런타임에 생기는 문자열을 그대로 커밋하면
     # 배포 전 공개 점검(verify_public)이 잡을 수 없는 자리가 된다.
     try:
-        _write_health(now, _flog, adapter_notes, stale_notes, cov)
+        _write_health(now, _flog, adapter_notes, stale_notes, cov,
+                      lost=lost, lines=lines)
     except Exception:                                        # noqa: BLE001
         pass                     # 관측이 본 작업을 죽이지 않는다
 
