@@ -54,6 +54,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
                       DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
+                      unqueued_per_day, josa,
                       DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
@@ -1370,19 +1371,27 @@ def _lost_kinds(lost: list) -> list[str]:
     여기서 나가는 것은 미리 정해 둔 라벨뿐이다 — 새 문안이 생겨도
     `기타`로 떨어지지 콘텐츠가 새지 않는다.
     """
+    # ⚠️ **조사(이/가)는 낱말에 따라 달라지므로 패턴에 넣지 않는다.**
+    # 라벨과 문형을 **둘 다** 봐서 가른다 — 하나만 보면 다른 알림에도 걸린다.
     table = (
-        ("큐에조차 들어오지 못한 킥오프", "unqueued_kickoff"),
-        ("큐에조차 들어오지 못한 종료 속보", "unqueued_final_flash"),
-        ("큐에조차 들어오지 못한 선발 라인업", "unqueued_lineup"),
-        ("대장에 흔적조차 없는 항목", "ghost"),
-        ("시각을 놓쳐 취소", "missed"),
-        ("만들 내용 없음", "empty_render"),
-        ("기록이", "record_stuck"),
+        (("큐에조차 들어오지 못한 킥오프",), "unqueued_kickoff"),
+        (("큐에조차 들어오지 못한 종료 속보",), "unqueued_final_flash"),
+        (("큐에조차 들어오지 못한 선발 라인업",), "unqueued_lineup"),
+        (("경기 예고", "그날 통째로"), "unsent_day:morning"),
+        (("경기 분석", "그날 통째로"), "unsent_day:analysis"),
+        (("전경기 정리판", "그날 통째로"), "unsent_day:league_result"),
+        (("팀 순위표", "그날 통째로"), "unsent_day:standings"),
+        (("리더보드", "그날 통째로"), "unsent_day:leaderboard"),
+        (("대장에 흔적조차 없는 항목",), "ghost"),
+        (("시각을 놓쳐 취소",), "missed"),
+        (("만들 내용 없음",), "empty_render"),
+        (("기록이", "막혔습니다"), "record_stuck"),
     )
     out: list[str] = []
     for line in lost:
         s = str(line)
-        out.append(next((lab for pat, lab in table if pat in s), "기타"))
+        out.append(next((lab for pats, lab in table
+                         if all(p in s for p in pats)), "기타"))
     return sorted(set(out))
 
 
@@ -2668,6 +2677,51 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             lost.append(
                 f"★★ 큐에조차 들어오지 못한 {_label} {len(_pg)}건 — "
                 + " · ".join(f"{_s} ({_w})" for _s, _w in _pg[:3]))
+
+        # ── ★ 리그·날짜 단위 다섯 종에도 같은 눈을 붙인다 (v1.22) ──────
+        #
+        # 대표님 질문: *"모든 리그와 모든 경기가 누락없이 발송되는거지?"*
+        # 그때까지 의무 대조는 **경기 단위 3종**에만 있었고, 나머지 다섯은
+        # **사라져도 아무도 모르는 상태**였다. 이제 여덟 종 전부가
+        # "사라지면 알린다"에 들어온다 — **모르는 누락 0**이 목표다.
+        #
+        # ⚠️ **잡는 것은 '그날 통째로 0장'이다.** 3장 중 1장이 빠진 부분
+        # 누락은 못 잡는다 — 장수를 계약이 다시 계산하면 큐와 두 곳에서
+        # 갈라지고(약점 45·181), 정확히 세려다 낸 오탐 하나가 감시를 통째로
+        # 꺼뜨린다(약점 112·126·182). **지킬 수 있는 정밀도로 약속한다**(108).
+        #
+        # **대상 리그는 시계가 정해서 넘긴다.** 분석은 `ANALYSIS_LEAGUES`,
+        # 순위표·리더보드는 `RECORD_SOURCE_LEAGUES`에만 의무가 있고 그 표는
+        # 여기 있다 — 계약이 다시 흉내 내면 두 곳이 어긋난다.
+        _DAY_DUTY = (
+            (ContentType.MORNING,       "경기 예고",   None),
+            (ContentType.ANALYSIS,      "경기 분석",   P.ANALYSIS_LEAGUES),
+            (ContentType.LEAGUE_RESULT, "전경기 정리판", None),
+            (ContentType.STANDINGS,     "팀 순위표",   P.RECORD_SOURCE_LEAGUES),
+            (ContentType.LEADERBOARD,   "리더보드",    P.RECORD_SOURCE_LEAGUES),
+        )
+        for _ct, _label, _only in _DAY_DUTY:
+            if _ct in DISABLED_CONTENT_TYPES:
+                continue
+            _dp = [g for g in _pool if _only is None or g.league in _only]
+            # **기록이 있어야 만들어지는 카드는 기록이 막힌 동안 의무가 없다.**
+            # 그때는 기록 알림이 따로 울린다 — 같은 사고를 두 번 세면
+            # 그것이 곧 소음이다(약점 113).
+            if _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
+                       ContentType.ANALYSIS):
+                _dp = [g for g in _dp if g.league.value in records]
+            if not _dp:
+                continue
+            try:
+                _dd = unqueued_per_day(_ct, _dp, led.idem_keys(), now)
+            except GateError:
+                continue
+            if not _dd:
+                continue
+            lost.append(
+                f"★★ {_label}{josa(_label, '이', '가')} 그날 통째로 "
+                f"안 나갔습니다 {len(_dd)}건 — "
+                + " · ".join(f"{_s} ({_w})" for _s, _w in _dd[:3]))
     if _ghost:
         lost.append(
             f"★ 창이 지났는데 대장에 흔적조차 없는 항목 {len(_ghost)}건 — "

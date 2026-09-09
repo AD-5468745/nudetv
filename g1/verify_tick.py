@@ -2089,6 +2089,84 @@ check("★★★ 의무 분모는 상태와 무관하다 (큐가 또 틀려도 �
                   status=Status.SCHEDULED)])) == 1,
       "LIVE·SCHEDULED 어느 쪽이든 의무 1건")
 
+# ═════════════════════════════════════════════════════════════
+print("\n★★★ 리그·날짜 단위 다섯 종도 사라지면 알린다 (v1.22)")
+# ═════════════════════════════════════════════════════════════
+#
+# 대표님 질문: *"모든 리그와 모든 경기가 누락없이 발송되는거지?"*
+# 그때까지 의무 대조는 경기 단위 3종뿐이었고 나머지 다섯은 **사라져도
+# 아무도 모르는 상태**였다. 이제 여덟 종 전부가 감시 안에 들어온다.
+#
+# ⚠️ **잡는 것은 '그날 통째로 0장'이다.** 부분 누락(3장 중 1장)은 못 잡는다 —
+# 장수를 계약이 다시 계산하면 큐와 갈라진다(약점 45·181). 지킬 수 있는
+# 정밀도로만 약속한다(약점 108).
+
+_DD_DAY = "2026-08-29"
+_dd_games = [mkgame(League.KBO, "LG", "OB", day=_DD_DAY, hh=18),
+             mkgame(League.KBO, "SS", "KT", day=_DD_DAY, hh=18),
+             mkgame(League.KBO, "HT", "NC", day=_DD_DAY, hh=14)]
+_dd_last = max(g.start_utc for g in _dd_games)
+
+
+def _dd_at(ct, hours, keys=()):
+    return C.unqueued_per_day(ct, _dd_games, list(keys),
+                              _dd_last + timedelta(hours=hours))
+
+
+for _ct, _nm in ((ContentType.MORNING, "경기 예고"),
+                 (ContentType.ANALYSIS, "경기 분석"),
+                 (ContentType.LEAGUE_RESULT, "정리판"),
+                 (ContentType.STANDINGS, "순위표"),
+                 (ContentType.LEADERBOARD, "리더보드")):
+    _g = _GS[_ct] / 3600
+    # 정리판은 끝난 경기가 있어야 의무가 생긴다 — 이 표본은 전부 예정이라 면제다
+    if _ct is ContentType.LEAGUE_RESULT:
+        check(f"  ↳ [{_nm}] 끝난 경기가 하나도 없으면 의무가 없다 (정리할 것이 없다)",
+              not _dd_at(_ct, _g + 12))
+        continue
+    check(f"★★ [{_nm}] 그날 한 장도 안 나갔으면 신고한다 (유예 {_g:.0f}시간 뒤)",
+          len(_dd_at(_ct, _g + 12)) == 1, str(_dd_at(_ct, _g + 12)))
+    check(f"  ↳ [{_nm}] 유예 안에서는 조용하다 (아직 나갈 시간이 남았다)",
+          not _dd_at(_ct, _g - 0.5))
+    # 대장에 한 장이라도 있으면 조용하다 — scope 모양이 콘텐츠마다 달라도 맞아야 한다
+    for _sfx in ("", "#0", "#08-29 18:30"):
+        _k = C.idem_key("-100test", _ct, f"KBO:{_DD_DAY}{_sfx}")
+        check(f"  ↳ [{_nm}] 대장에 있으면 조용하다 (scope 꼬리 {_sfx!r})",
+              not _dd_at(_ct, _g + 12, [_k]))
+
+# ── 변이시험 — 유예 조건을 빼면 아직 나갈 시간이 남은 것까지 신고된다 ──
+check("★★ (변이) 유예를 0으로 두면 경기 시작 직후부터 신고된다 (오탐의 모양)",
+      len(C.unqueued_per_day(ContentType.MORNING, _dd_games, [],
+                             _dd_last + timedelta(minutes=1),
+                             lookback_seconds=24 * 3600)) == 0
+      and len(_dd_at(ContentType.MORNING, _GS[ContentType.MORNING] / 3600 + 1)) == 1,
+      "유예 안에서는 0건 · 유예 뒤에는 1건")
+check("  ↳ 되짚기 창(24시간)을 넘긴 옛 날짜는 세지 않는다 (도입분을 사고로 세지 않는다)",
+      not _dd_at(ContentType.MORNING, 30))
+check("  ↳ 취소·연기된 경기만 있는 날은 의무가 없다",
+      not C.unqueued_per_day(
+          ContentType.MORNING,
+          [mkgame(League.KBO, "LG", "OB", day=_DD_DAY, hh=18,
+                  status=Status.CANCELED, cancel="우천")], [],
+          _dd_last + timedelta(hours=12)))
+check("★ 날짜 단위 의무를 만들 수 없는 콘텐츠는 조용히 통과시키지 않고 막는다",
+      _raises(GateError, lambda: C.unqueued_per_day(
+          ContentType.KICKOFF, _dd_games, [], _dd_last)))
+# 여덟 종 전부가 감시 안에 있는지 — **표를 손으로 세지 않고 계약에서 뽑는다**(약점 161)
+_watched = ({ct.value for ct in (ContentType.KICKOFF, ContentType.FINAL_FLASH,
+                                 ContentType.LINEUP)} | set(C.DAILY_DUTY_CONTENT))
+_live = {ct.value for ct in C.QUEUED_CONTENT_TYPES
+         if ct not in C.DISABLED_CONTENT_TYPES}
+check("★★★ 발행 중인 콘텐츠가 전부 의무 대조 안에 있다 (모르는 누락 0)",
+      _live <= _watched, f"감시 밖: {sorted(_live - _watched)}")
+
+check("(재확인) 킥오프 의무 분모는 상태와 무관하다",
+      len(C.kickoff_duty_groups(_lv_games)) == 1
+      and len(C.kickoff_duty_groups(
+          [mkgame(League.KBO, "LG", "OB", day=_LV_DAY, hh=18,
+                  status=Status.SCHEDULED)])) == 1,
+      "LIVE·SCHEDULED 어느 쪽이든 의무 1건")
+
 # ── 예약 시각 — 창이 [T-10분, T-1분]인가 ──────────────────────
 # 묶음이 된 뒤로는 `game_id`가 대표 경기일 뿐이므로, **그 묶음의 첫 경기**로 잰다.
 _bucket_first = {}

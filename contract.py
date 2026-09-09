@@ -1556,6 +1556,100 @@ def unqueued_per_game(content_type: "ContentType", games: list, idem_keys,
     return sorted(out)
 
 
+# ── 리그·날짜 단위 콘텐츠의 의무 (v1.22, 2026-09-09) ─────────────────
+#
+# 대표님 질문: *"모든 리그와 모든 경기가 누락없이 발송되는거지?"*
+# 정직한 답은 "아직"이었다 — 의무 대조가 **곧 시작·종료 속보·라인업 3종**에만
+# 붙어 있었고, 나머지 다섯(경기 예고·분석·정리판·순위표·리더보드)은
+# **사라져도 아무도 모르는 상태**였다.
+#
+# 목표를 정확히 잡는다: 사라지는 일을 0으로 만드는 것은 불가능하지만,
+# **사라지면 반드시 우리가 아는 것**은 만들 수 있다. **모르는 누락 0.**
+#
+# ⚠️ **약속의 정밀도를 지킬 수 있는 수준까지 낮춘다**(약점 108).
+# 이 다섯은 장수가 데이터에 따라 달라진다 — 예고는 시간대 덩어리 수만큼이고
+# 거기에 심야 회피와 병합이 걸리며, 분석은 `ceil(경기수/N)`이고 기록이 없으면
+# 아예 안 만들어진다. **정확한 장수를 세려다 오탐을 내면 감시가 통째로 꺼진다**
+# (약점 112·126·182). 그래서 여기서는 **"통째로 0장인가"만 본다.**
+#
+# 즉 이 검사가 잡는 것과 못 잡는 것을 분명히 적는다:
+#   ✅ 잡는다   — 그 리그·그 날짜에 그 콘텐츠가 **한 장도** 안 나간 것
+#   ❌ 못 잡는다 — 3장 중 1장만 빠진 **부분 누락**
+# 부분 누락까지 잡으려면 장수 계산을 계약이 다시 하게 되는데, 그러면 큐와
+# 같은 규칙을 두 곳에서 각자 만드는 셈이라 어긋난다(약점 45·181).
+#
+# **호출자가 대상 리그를 걸러서 넘긴다.** 분석은 `ANALYSIS_LEAGUES`, 순위표·
+# 리더보드는 `RECORD_SOURCE_LEAGUES`에만 의무가 있는데 그 표는 시계가 갖고 있다 —
+# 계약이 다시 흉내 내면 두 곳이 어긋난다(킥오프에서 쓴 것과 같은 규약).
+
+DAILY_DUTY_CONTENT: frozenset = frozenset({
+    "morning", "analysis", "league_result", "standings", "leaderboard",
+})
+
+
+def _day_scope_seen(content_type: "ContentType", idem_keys) -> set:
+    """대장에서 그 콘텐츠의 `{리그}:{날짜}` 접두사만 뽑는다.
+
+    scope 모양이 콘텐츠마다 다르다 — 예고 `KBO:2026-09-09#09-09 18:30` ·
+    분석 `KBO:2026-09-09#0` · 리더보드 `KBO:2026-09-09`. 공통은 앞의
+    `{리그}:{날짜}`뿐이라 거기까지만 자른다.
+    """
+    out = set()
+    for k in idem_keys:
+        p = str(k).split(IDEM_SEP)
+        if len(p) < 3 or p[1] != content_type.value:
+            continue
+        out.add(p[2].split("#", 1)[0])
+    return out
+
+
+def unqueued_per_day(content_type: "ContentType", games: list, idem_keys,
+                     now_utc: datetime, *,
+                     lookback_seconds: Optional[int] = None
+                     ) -> list[tuple[str, str]]:
+    """리그·날짜 단위 콘텐츠가 **그날 통째로 안 나간 것** — [(scope, 이유)].
+
+    분모는 큐가 아니라 **경기 일정**이다(약점 181). 큐가 못 만든 것을 큐로
+    세면 영원히 안 보인다.
+
+    **언제 신고하나** — 그날 **마지막 경기 시작 + 유예**가 지났을 때.
+    그 전에는 아직 나갈 시간이 남아 있다. 경기 시작을 기준으로 삼는 이유는
+    예약 시각이 콘텐츠마다 다르고(예고는 −2시간, 정리판은 마지막 종료 +30분)
+    그것을 계약이 다시 계산하면 큐와 갈라지기 때문이다. **늦게 신고하는 쪽을
+    고른다** — 오탐 하나가 감시를 통째로 꺼뜨린다(약점 182).
+    """
+    if content_type.value not in DAILY_DUTY_CONTENT:
+        raise GateError(f"날짜 단위 의무를 만들 수 없는 콘텐츠: {content_type}")
+    back = DUTY_LOOKBACK_SECONDS if lookback_seconds is None else lookback_seconds
+    grace = GRACE_SECONDS[content_type]
+    seen = _day_scope_seen(content_type, idem_keys)
+
+    days: dict[str, list] = {}
+    for g in games:
+        st = getattr(getattr(g, "status", None), "value", None)
+        if st in DUTY_EXEMPT_STATUSES:
+            continue                      # 취소·연기는 그날 편성에서 뺀다
+        days.setdefault(f"{g.league.value}:{g.sports_day}", []).append(g)
+
+    out: list[tuple[str, str]] = []
+    for scope, gs in days.items():
+        last = max(x.start_utc for x in gs)
+        waited = (now_utc - last).total_seconds()
+        if waited <= grace:
+            continue                      # 아직 나갈 시간이 남았다
+        if waited > back:
+            continue                      # 옛 날짜 — 도입분을 사고로 세지 않는다
+        if content_type is ContentType.LEAGUE_RESULT and not any(
+                getattr(x, "is_terminal", False) for x in gs):
+            continue                      # 끝난 경기가 하나도 없다 — 정리할 것이 없다
+        if scope in seen:
+            continue                      # 그날 그 리그에 한 장이라도 나갔다
+        out.append((scope, f"그날 {len(gs)}경기인데 한 장도 안 나갔습니다 "
+                           f"(마지막 경기 {last.astimezone(KST):%H:%M} + 유예 "
+                           f"{grace // 3600}시간 경과)"))
+    return sorted(out)
+
+
 def game_scope(game) -> str:
     """경기 하나를 가리키는 scope — `pipeline.build_queue`가 쓰는 것과 같은 형식.
 
