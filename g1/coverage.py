@@ -32,6 +32,10 @@ DROP_RATIO = 0.4
 # 이 일수 안에 한 번도 경기가 없으면 비시즌으로 본다(오탐 방지).
 OFFSEASON_DAYS = 14
 
+# 앞으로 이만큼 경기가 편성돼 있으면 "오늘 0경기"는 라운드 공백으로 본다 (v1.23).
+# 1로 두지 않는 이유: 한 경기는 연기분 하나만 남은 상태일 수도 있다.
+FUTURE_OK_MIN = 3
+
 # --- 정기 휴식일 (v1.11e) ---------------------------------------------------
 # KBO·K리그1·LCK는 월요일에 경기를 하지 않는다. NPB도 월요일은 거의 없다.
 # "어제와 오늘"만 비교하는 판정에는 요일 개념이 없어서, 매주 월요일마다
@@ -79,6 +83,27 @@ class Report:
 
     def lines(self) -> list[str]:
         return [str(f) for f in self.findings]
+
+    def alert_lines(self, cap: int = 4) -> list[str]:
+        """**알림에 실을 줄** — 사람이 손댈 것만. soft는 개수만 밝힌다 (v1.23).
+
+        `soft`의 뜻은 처음부터 "알려는 주되 빨간불로는 올리지 않는다"였는데,
+        시계는 `lines()`(soft 포함 전부)를 알림에 실었다. **표시가 아무 일도
+        하지 않았다** — 2026-09-09 실측으로 매 틱 7~10줄이 나갔고, 그중
+        대부분이 발행하지 않는 리그와 유럽 리그 라운드 공백이었다.
+        무거운 줄이 그 소음에 묻힌다(약점 112·126·169).
+
+        **그렇다고 지우지는 않는다.** 조용해진 것과 아무 일도 없는 것은
+        다르다 — 몇 건이 참고로 남았는지 한 줄로 밝히고, 본문은
+        `health.json`의 `coverage_findings`에 그대로 있다(약점 125·139).
+        """
+        out = [str(f) for f in self.hard[:cap]]
+        soft = [f for f in self.findings if f.soft]
+        if soft:
+            why = sorted({f.soft_why for f in soft})
+            out.append(f"(참고 {len(soft)}건은 빨간불로 올리지 않았습니다 — "
+                       f"{' · '.join(why)}. 내용은 health.json에 있습니다)")
+        return out
 
 
 def _counts_by_day(games: list) -> dict[str, int]:
@@ -165,6 +190,20 @@ def _off_season(name: str, now: datetime) -> bool:
     return bool(lg) and not in_season(lg, now.astimezone(KST))
 
 
+def _disabled_names() -> set:
+    """발행하지 않는 리그의 이름 집합. **계약이 정하고 여기서는 읽기만 한다.**
+
+    표를 여기 다시 적으면 두 곳이 어긋난다(약점 45). 계약을 못 읽는
+    상황에서도 감시가 죽지 않게 빈 집합으로 떨어진다 — 그러면 지금까지처럼
+    전부 빨간불로 올라갈 뿐, 조용해지지는 않는다(안전한 방향).
+    """
+    try:
+        from contract import DISABLED_LEAGUES
+        return {lg.value for lg in DISABLED_LEAGUES}
+    except Exception:                                        # noqa: BLE001
+        return set()
+
+
 def check_snapshot_age(fetch_log: dict, now: datetime,
                        max_age: int = SNAPSHOT_MAX_AGE_SECONDS) -> list[Finding]:
     """수집 자체가 멈췄는지. 내용을 보기 전에 이것부터 본다.
@@ -174,18 +213,27 @@ def check_snapshot_age(fetch_log: dict, now: datetime,
     """
     out = []
     for name, rec in sorted(fetch_log.items()):
+        # **발행하지 않는 리그의 수집 실패는 사람이 손댈 일이 아니다** (v1.23).
+        # LCK·국제 롤은 `DISABLED_LEAGUES`라 카드가 한 장도 안 나가는데,
+        # Leaguepedia 레이트리밋 때문에 2026-09-08~09 실측 **241틱 내리**
+        # "수집이 멈춤"을 올리고 있었다. 고칠 것이 없는 경보다.
+        # 지우지는 않는다 — 나중에 그 리그를 다시 켤 때 필요한 사실이다.
         soft = _off_season(name, now)
+        why = "비시즌"
+        if name.split(":")[-1] in _disabled_names():
+            soft, why = True, "발행 제외 리그"
         at = rec.get("at")
         if not at:
             out.append(Finding(name, "수집 성공 기록 없음",
-                               f"마지막 오류: {str(rec.get('error'))[:80]}", soft=soft))
+                               f"마지막 오류: {str(rec.get('error'))[:80]}",
+                               soft=soft, soft_why=why))
             continue
         age = (now - datetime.fromisoformat(at)).total_seconds()
         if age > max_age:
             out.append(Finding(name, "수집이 멈춤",
                                f"마지막 성공 {age / 3600:.1f}시간 전"
                                + (f" · {str(rec.get('error'))[:60]}" if rec.get("error") else ""),
-                               soft=soft))
+                               soft=soft, soft_why=why))
     return out
 
 
@@ -222,7 +270,28 @@ def check_league(name: str, games: list, now: datetime) -> list[Finding]:
         base = norm if norm is not None else float(y)
         base_txt = (f"평소 이 요일 {norm:.1f}경기" if norm is not None
                     else f"어제 {y}경기")
-        if base >= 1 and not t:
+        # ── 앞으로 편성이 있으면 오늘 0은 라운드 공백이다 (v1.23) ──────────
+        #
+        # **이 판정은 야구를 전제로 만들어졌다** — 매일 경기가 있는 종목에서는
+        # "어제 있고 오늘 없다"가 이상하다. 그런데 유럽 축구는 라운드제라
+        # **평일 0경기가 정상**이다. 실측 2026-09-09: 라리가는 어제 2경기 ·
+        # 오늘 0경기인데 **앞으로 22경기가 편성돼 있었다.** 세리에A도 같았고,
+        # 둘이 하루 181틱씩 빨간불을 켜고 있었다(약점 113·138).
+        #
+        # 소스가 죽었으면 **미래도 비어 있다.** 그러니 미래 편성은
+        # "소스가 살아 있다"의 증거다 — 수집이 아예 멈춘 경우는 이 함수가
+        # 아니라 `check_snapshot_age`가 따로 잡는다.
+        #
+        # ⚠️ **지우지 않고 낮춘다.** 경보를 무디게 하는 것이 아니라 무게를
+        # 바로잡는 것이다(약점 139) — health.json에는 그대로 남고, 알림에는
+        # 개수만 실린다. **못 잡게 되는 것**: 소스가 '오늘 것만' 빠뜨리는 경우.
+        # 그건 이 검사의 범위 밖으로 옮겨 적는다(약점 178).
+        ahead = sum(v for d, v in by_day.items() if d > today)
+        if base >= 1 and not t and ahead >= FUTURE_OK_MIN:
+            out.append(Finding(name, "오늘 편성이 사라짐",
+                               f"{base_txt} → 오늘 0경기 · 앞으로 {ahead}경기 편성됨",
+                               soft=True, soft_why="라운드 공백"))
+        elif base >= 1 and not t:
             out.append(Finding(name, "오늘 편성이 사라짐",
                                f"{base_txt} → 오늘 0경기"))
         elif base >= 1 and t < base * DROP_RATIO:

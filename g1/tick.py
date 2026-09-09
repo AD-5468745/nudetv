@@ -2769,7 +2769,10 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         ex = stale[0]
         lines.append(f"묵은 '예정' {len(stale)}건 예) {ex.league.value} {ex.sports_day}")
     # 커버리지 이상은 '조용한 실패'라 알림이 없으면 며칠 뒤에야 알게 된다
-    lines += cov.lines()[:4]
+    # **알림에는 사람이 손댈 것만 싣는다** (v1.23) — soft는 개수만 밝힌다.
+    # `lines()`(soft 포함 전부)를 싣던 동안 매 틱 7~10줄이 나갔고, 그중
+    # 대부분이 발행하지 않는 리그와 라운드 공백이었다. 무거운 줄이 묻힌다.
+    lines += cov.alert_lines(4)
 
     # ── 기록이 오래 막히면 그것도 '사라진 것'이다 (fix52, 약점 120-③) ──────
     #

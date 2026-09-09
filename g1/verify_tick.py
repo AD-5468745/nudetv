@@ -502,10 +502,26 @@ check("수집이 멈추면 잡는다 (스냅샷이 남아 있어도)",
       any("멈춤" in x for x in r.lines()), str(r.lines()))
 
 # 한 번도 성공 못 함
-r = CV.run({"LCK": []}, {"LCK": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
+#
+# ⚠️ **표본을 LCK에서 NPB로 바꿨다 (v1.23).** LCK는 `DISABLED_LEAGUES`가 되어
+# 이제 참고(soft)로 내려간다 — 그건 의도한 동작이고, **검사의 표본이 낡은 것**이다
+# (약점 157: 동작을 바꾸면 그 동작을 세던 검사도 같이 낡는다).
+# 지키려는 성질은 그대로다: **발행하는 리그가 시즌 중에 못 들어오면 빨간불.**
+r = CV.run({"NPB": []}, {"NPB": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
 check("한 번도 수집 못 한 리그를 잡는다",
       any("성공 기록 없음" in x for x in r.lines()), str(r.lines()))
-check("시즌 중 리그가 못 들어오면 빨간불 (LCK는 8월이 시즌)", not r.ok, str(r.lines()))
+check("시즌 중 리그가 못 들어오면 빨간불 (NPB는 9월이 시즌)", not r.ok, str(r.lines()))
+# ★ 그리고 그 반대쪽도 못 박는다 — 발행하지 않는 리그는 빨간불이 아니다.
+_rd = CV.run({"LCK": []},
+             {"LCK": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
+check("★★ 발행 제외 리그(LCK)의 수집 실패는 빨간불이 아니다 (고칠 것이 없는 경보)",
+      _rd.ok and any("발행 제외 리그" in x for x in _rd.lines()), str(_rd.lines()))
+check("  ↳ 그래도 기록은 남는다 (나중에 그 리그를 다시 켤 때 필요하다)",
+      len(_rd.lines()) == 1, str(_rd.lines()))
+check("  ↳ 알림에는 개수만 실린다 (본문은 health.json에)",
+      not any("LCK" in x for x in _rd.alert_lines())
+      and any("참고 1건" in x for x in _rd.alert_lines()),
+      str(_rd.alert_lines()))
 
 # 비시즌 리그의 수집 실패 — 알리되 빨간불은 아니다.
 # 이걸 구분 못 하면 8월마다 농구가 울고, 그 소음에 진짜 사고가 묻힌다.

@@ -157,6 +157,115 @@ rep.findings.append(CV.Finding("MLB", "오늘 편성이 사라짐", "…"))
 check("빨간불 하나면 시계도 빨간불", not rep.ok)
 
 
+# ══════════════════════════════════════════════════════════════
+# 9. 알림 소음 정리 (v1.23) — 낮추되 지우지 않는다
+# ══════════════════════════════════════════════════════════════
+#
+# 2026-09-09 실측: 매 틱 알림 7~10줄 중 대부분이 **발행하지 않는 리그**와
+# **유럽 리그 라운드 공백**이었다. soft로 표시해 두고도 시계가 `lines()`
+# (soft 포함 전부)를 알림에 실어서, **표시가 아무 일도 하지 않았다.**
+
+class _G:
+    """**가짜를 계약에 맞춘다** — 좁으면 멀쩡한 코드를 틀렸다고 잡는다(약점 144·172).
+
+    `check_league`는 `stale_unresolved()`도 부르는데 그건 `status`·`start_utc`를 본다.
+    """
+
+    def __init__(self, day, lg=None, *, done=True):
+        from contract import League, Status
+        self.sports_day = day
+        self.league = lg or League.LALIGA
+        # **지난 경기는 끝난 것으로 둔다.** 전부 '예정'으로 두면 이 수정과
+        # 무관한 "결과가 안 들어온 지난 경기"가 같이 잡혀 검사가 흐려진다.
+        self.status = Status.FINAL if done else Status.SCHEDULED
+        self.start_utc = datetime.fromisoformat(day + "T09:30:00+00:00")
+
+
+def _mk(days, lg=None, today="2026-09-09"):
+    return [_G(d, lg, done=d < today)
+            for d, n in days.items() for _ in range(n)]
+
+
+_NOW = datetime(2026, 9, 9, 11, 0, tzinfo=timezone.utc)      # KST 20:00
+_TODAY = "2026-09-09"
+
+# ── 9-1. 알림 줄은 hard만 · soft는 개수로 ────────────────────────────────
+_r = CV.Report()
+_r.findings = [
+    CV.Finding("LCK", "수집이 멈춤", "…", soft=True, soft_why="발행 제외 리그"),
+    CV.Finding("LALIGA", "오늘 편성이 사라짐", "…", soft=True, soft_why="라운드 공백"),
+    CV.Finding("KBO", "오늘 편성이 사라짐", "어제 5경기 → 오늘 0경기"),
+]
+_al = _r.alert_lines(4)
+check("★★ 알림에 hard가 실린다", any("KBO" in x for x in _al), str(_al))
+check("★★ soft 본문은 알림에 안 실린다 (소음)",
+      not any("LCK" in x or "LALIGA" in x for x in _al), str(_al))
+check("★★ 대신 몇 건이 참고로 남았는지 밝힌다 (조용해진 것과 아무 일 없는 것은 다르다)",
+      any("참고 2건" in x for x in _al), str(_al))
+check("  ↳ 참고 사유도 함께 적는다",
+      any("라운드 공백" in x and "발행 제외 리그" in x for x in _al), str(_al))
+check("  ↳ health.json에는 그대로 남는다 (lines()는 안 바뀐다)",
+      len(_r.lines()) == 3)
+check("★ 참고가 하나도 없으면 그 줄을 붙이지 않는다",
+      not any("참고" in x for x in
+              CV.Report(findings=[CV.Finding("KBO", "x", "y")]).alert_lines()))
+
+# ── 9-2. 발행 제외 리그는 참고로 낮춘다 ──────────────────────────────────
+_fl = {"LCK": {"at": None, "error": "ratelimited"},
+       "KBO": {"at": None, "error": "구조 변경"}}
+_fa = {f.league: f for f in CV.check_snapshot_age(_fl, _NOW)}
+check("★★ 발행 제외 리그(LCK)의 수집 실패는 참고로 내린다",
+      _fa["LCK"].soft and _fa["LCK"].soft_why == "발행 제외 리그", str(_fa["LCK"]))
+check("  ↳ 발행하는 리그(KBO)는 그대로 빨간불이다 (무디게 한 것이 아니다)",
+      not _fa["KBO"].soft, str(_fa["KBO"]))
+check("  ↳ 목록을 여기 다시 적지 않고 계약에서 읽는다 (두 곳이면 어긋난다)",
+      CV._disabled_names() == {lg.value for lg in __import__(
+          "contract").DISABLED_LEAGUES})
+
+# ── 9-3. 라운드 공백 — 앞으로 편성이 있으면 참고로 내린다 ─────────────────
+#
+# 실측 2026-09-09: 라리가 어제 2경기 → 오늘 0경기인데 **앞으로 22경기**가
+# 있었다. 소스는 멀쩡한데 하루 181틱씩 빨간불을 켰다.
+_past = {"2026-09-02": 2, "2026-09-05": 2, "2026-09-06": 3, "2026-09-08": 2}
+_ahead = dict(_past, **{"2026-09-12": 4, "2026-09-13": 6, "2026-09-19": 5})
+_miss = lambda fs: [f for f in fs if f.kind == "오늘 편성이 사라짐"]  # noqa: E731
+_f1 = _miss(CV.check_league("LALIGA", _mk(_ahead), _NOW))
+check("★★★ 앞으로 편성이 있으면 '오늘 0경기'는 참고로 내린다 (라운드 공백)",
+      len(_f1) == 1 and _f1[0].soft and _f1[0].soft_why == "라운드 공백",
+      str(_f1))
+check("  ↳ 앞으로 몇 경기인지 본문에 적는다 (판단 근거를 숨기지 않는다)",
+      "앞으로 15경기" in _f1[0].detail, _f1[0].detail)
+
+# ★★★ 여기가 이 수정의 합격 기준이다 — **진짜 고장은 그대로 잡혀야 한다.**
+_f2 = _miss(CV.check_league("LALIGA", _mk(_past), _NOW))
+check("★★★ 앞으로도 비어 있으면 여전히 빨간불이다 (소스가 죽은 경우)",
+      len(_f2) == 1 and not _f2[0].soft, str(_f2))
+check("  ↳ (변이) 미래 판정을 빼면 두 경우가 구별되지 않는다",
+      _f1 and _f2 and _f1[0].soft != _f2[0].soft,
+      "라운드 공백과 진짜 고장이 같은 무게가 되면 이 수정은 값어치가 없다")
+_few = dict(_past, **{"2026-09-12": CV.FUTURE_OK_MIN - 1})
+_f3 = _miss(CV.check_league("LALIGA", _mk(_few), _NOW))
+check("  ↳ 앞으로 한두 경기뿐이면 낮추지 않는다 (연기분만 남은 상태일 수 있다)",
+      len(_f3) == 1 and not _f3[0].soft, str(_f3))
+
+# ── 9-4. 정기 휴식일 판정이 먼저다 (기존 동작 보존) ──────────────────────
+# 월요일을 쉬는 리그를 3주치로 만든다 — 요일 판정에 표본이 3번은 있어야 한다
+_mon = {}
+_d = datetime(2026, 8, 11).date()   # 월요일 표본이 3번은 지나가야 판정된다
+while _d < datetime(2026, 9, 7).date():
+    if _d.weekday() != 0:                       # 월요일은 경기가 없다
+        _mon[_d.isoformat()] = 5
+    _d += timedelta(days=1)
+_f4 = CV.check_league("KBO",
+                      _mk(dict(_mon, **{"2026-09-11": 5}),
+                          __import__("contract").League.KBO,
+                          today="2026-09-07"),
+                      datetime(2026, 9, 7, 11, 0, tzinfo=timezone.utc))
+check("★ 정기 휴식일(월요일)은 라운드 공백보다 먼저 판정한다 (사유가 더 정확하다)",
+      all(f.soft_why == "정기 휴식일" for f in _miss(_f4) if f.soft)
+      and _miss(_f4), str(_miss(_f4)))
+
+
 if __name__ == "__main__":
     print(f"커버리지 검증 — 통과 {PASS} · 실패 {len(FAIL)}")
     for line in FAIL:
