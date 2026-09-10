@@ -214,19 +214,31 @@ def result_card(games: list, league: League, day: str, *,
     # 경기마다 문단을 붙이면 캡션이 통째로 후속 텍스트로 밀려난다(대표님
     # 2026-09-07: 정리판은 그 리그의 하루를 닫는 한 장이다).
     _extra: list[str] = []
-    if len(todays) == 1:
-        try:
-            import pipeline as _Pf                 # 순환 import를 피해 함수 안에서
+    _title = ""
+    try:
+        import pipeline as _Pf                     # 순환 import를 피해 함수 안에서
+        if len(todays) == 1:
             _extra = _Pf.flow_prose(
                 todays[0], league,
                 away_name=C5._nm(league, todays[0].away),
                 home_name=C5._nm(league, todays[0].home))
-        except Exception:                      # noqa: BLE001
-            _extra = []                        # 문장 하나 때문에 카드를 잃지 않는다
+            _title = "경기 흐름"
+        else:
+            # ── ★ v1.29 — 정리판: **그날이 어떤 하루였나** ─────────────
+            #
+            # ⛔ 카드(`body_scoreboard`)가 번호·시각·점수를 그리고 '오늘의 경기'까지
+            #    붙는다. 그래서 여기서는 **점수를 쓰지 않는다.** 텍스트가 맡는 것은
+            #    표를 한 줄씩 읽어서는 안 보이고 **세어야 보이는 것**이다 —
+            #    몇 경기가 접전이었나, 역전이 몇 번 나왔나, 연장이 있었나.
+            _extra = _Pf.wrapup_lines(
+                games, league, name_of=lambda t: C5._nm(league, t))
+            _title = "오늘의 하루"
+    except Exception:                              # noqa: BLE001
+        _extra = []                                # 문장 하나 때문에 카드를 잃지 않는다
     parts = C5.caption(kind="result", league=league, head=head,
                        date_label=date_label,
                        extra_lines=_extra or None,
-                       extra_title="경기 흐름" if _extra else "")
+                       extra_title=_title if _extra else "")
     return html, list(parts)
 
 
@@ -781,7 +793,7 @@ def _with_korean_player(head, games):
     return replace(head, sub=f"{head.sub} · {sub}" if head.sub else sub)
 
 
-def kickoff_card(games, league: League, *, now: datetime
+def kickoff_card(games, league: League, *, now: datetime, rb=None
                  ) -> tuple[str, list[str]] | None:
     """경기 시작 10~1분 전 알림. **같은 시각 경기는 한 장에** (2026-09-07).
 
@@ -828,8 +840,26 @@ def kickoff_card(games, league: League, *, now: datetime
     lab = _day_label(gs[0].sports_day, gs)
     html = C5.shell(kind="kickoff", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
+    # ── ★ v1.29 — 카드가 못 담는 것만 텍스트로 (킹카 대비 우선순위 2번) ────
+    #
+    # ⛔ 카드(`body_schedule`)가 그리는 것은 **시각 · 대진 · 장소**다.
+    #    그래서 여기 붙는 것은 **순위 · 최근 흐름 · 맞대결** — 카드에 한 글자도
+    #    없는 것들이다. 팀 이름은 어느 경기 이야기인지 가리키는 지시어로만 쓴다.
+    #
+    # **기록이 없으면 아무 말도 안 한다** — 기록은 30분에 한 번 긁는데 킥오프는
+    # 매 틱 나갈 수 있다. 그때 카드는 그대로 나가고 문장만 빠진다.
+    _extra: list[str] = []
+    if rb is not None:
+        try:
+            import pipeline as _Pk               # 순환 import를 피해 함수 안에서
+            _extra = _Pk.preview_lines(rb, gs, league,
+                                       name_of=lambda t: C5._nm(league, t))
+        except Exception:                        # noqa: BLE001
+            _extra = []                          # 문장 하나 때문에 카드를 잃지 않는다
     return html, list(C5.caption(kind="kickoff", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab,
+                                 extra_lines=_extra or None,
+                                 extra_title="맞대결 참고" if _extra else ""))
 
 
 def _P_spans(games) -> bool:

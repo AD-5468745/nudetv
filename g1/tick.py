@@ -2040,8 +2040,13 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                      if is_upcoming(g, _now()) and _bk(g) == item.scope]
             if not _same:
                 return None                 # 전부 시작했거나 취소됐다 — 알릴 것이 없다
+            # v1.29 — 기록을 함께 넘긴다(순위·최근 흐름·맞대결 텍스트).
+            # **없으면 None으로 간다** — 기록은 30분에 한 번 긁으므로 없는 틱이
+            # 있고, 그때도 카드는 그대로 나가야 한다.
+            _krb = (records or {}).get(_lg.value if _lg else "")
             _r5 = _try_v5("kickoff",
-                          lambda R: R.kickoff_card(_same, _lg, now=_now()))
+                          lambda R: R.kickoff_card(_same, _lg, now=_now(),
+                                                   rb=_krb))
         else:
             _one = next((g for g in games if g.game_id == item.game_id), None)
             if _one is None:

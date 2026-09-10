@@ -4412,3 +4412,207 @@ def flow_prose(game: Game, league: League, *,
             parts.append("더는 따라붙지 못했다.")
 
     return [" ".join(parts)] if parts else []
+
+
+# ══════════════════════════════════════════════════════════════
+# 킥오프(곧 시작) 텍스트 — **카드가 못 담는 흐름과 맞대결** (v1.29)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(킹카 대비 보완 **우선순위 2번**).
+#
+# ⛔ **카드에 있는 걸 텍스트에 또 쓰지 않는다.**
+#    킥오프 카드(`cards_v5.body_schedule`)가 그리는 것은 **시각 · 대진 · 장소**다.
+#    그래서 여기서는 그 셋을 다시 쓰지 않는다 — 팀 이름은 **어느 경기 이야기인지
+#    가리키는 지시어**로만 쓴다.
+#    텍스트가 맡는 것은 **순위 · 최근 흐름 · 맞대결** — 카드에 한 글자도 없는 것들이다.
+#
+# **문장이 주장하는 사실은 전부 기록에서 나온다**(FACT_LOCK).
+# 기록이 없으면 **아무 말도 하지 않는다** — 카드는 그대로 나간다.
+
+PREVIEW_STREAK_MIN = 2         # 이 이상이어야 '연승·연패'라고 말한다
+PREVIEW_H2H_MIN = 3            # 맞대결이 이만큼은 쌓여야 말한다
+
+
+def _pv_streak(s) -> str:
+    """연승·연패 한 마디. 1이면 흐름이 아니다 — 말하지 않는다."""
+    n = getattr(s, "streak_len", 0) or 0
+    if n < PREVIEW_STREAK_MIN:
+        return ""
+    kind = getattr(getattr(s, "streak_kind", None), "value", "")
+    word = {"W": "연승", "L": "연패", "D": "무승부"}.get(kind, "")
+    if not word:
+        return ""
+    # ⚠️ **여기는 한글 수사를 안 쓴다.** '연승·연패'는 숫자와 붙어 한 낱말이 된다 —
+    # "네 연패"는 어색하고 "4연패"가 우리가 실제로 쓰는 말이다.
+    return f"{n}{word}" if word != "무승부" else f"{n}경기 연속 무승부"
+
+
+def _pv_last10(s) -> str:
+    """최근 10경기. 소스가 준 그대로 — 우리가 세지 않는다."""
+    l10 = getattr(s, "last10", None)
+    if not l10 or not getattr(l10, "total", 0):
+        return ""
+    body = f"{l10.win}승 {l10.loss}패"
+    if getattr(l10, "draw", 0):
+        body += f" {l10.draw}무"
+    return f"최근 열 경기 {body}"
+
+
+def _pv_team(rb: RecordBook, code: str, name: str) -> str:
+    """한 팀을 한 마디로. **연승·연패를 먼저 말한다** — 그게 더 이야기가 된다."""
+    s = rb.team(code) if rb else None
+    if s is None:
+        return ""
+    rank = f"{s.rank}위"
+    streak, last10 = _pv_streak(s), _pv_last10(s)
+    tail = streak or last10
+    if streak and last10:
+        # 둘 다 있으면 붙여 준다 — 연패 중인데 최근 10경기는 좋을 수 있다
+        tail = f"{streak} 중이지만 {last10}" if streak.endswith("연패") else \
+               f"{streak} 중이고 {last10}"
+    if not tail:
+        return f"{rank} {name}"
+    return f"{rank} {name}{josa(name, '은', '는')} {tail}"
+
+
+def _pv_h2h(rb: RecordBook, away: str, home: str,
+            away_name: str, home_name: str) -> str:
+    """올 시즌 맞대결. **소스가 준 전적만** 쓴다(우리가 센 것이 아니다 — §7-160)."""
+    w = rb.between(home, away) if rb else None
+    if w is None or w.total < PREVIEW_H2H_MIN:
+        return ""
+    if w.win > w.loss:
+        lead, n1, n2 = home_name, w.win, w.loss
+    elif w.loss > w.win:
+        lead, n1, n2 = away_name, w.loss, w.win
+    else:
+        body = f"{w.win}승 {w.loss}패"
+        if w.draw:
+            body += f" {w.draw}무"
+        return f"올 시즌 맞대결은 {body}로 팽팽하다"
+    body = f"{n1}승 {n2}패"
+    if w.draw:
+        body += f" {w.draw}무"
+    return f"올 시즌 맞대결은 {lead}{josa(lead, '이', '가')} {body}로 앞선다"
+
+
+def preview_lines(rb: RecordBook | None, games: list, league: League,
+                  *, name_of=None) -> list[str]:
+    """킥오프 묶음의 **경기별 한 줄**. 기록이 없으면 빈 목록.
+
+    `name_of(team_ref)`는 **카드가 찍는 그 이름**을 돌려주는 함수다.
+    이름을 만드는 곳은 하나여야 한다(§7-45) — 여기서 다시 만들지 않는다.
+    """
+    if rb is None or not games:
+        return []
+    nm = name_of or (lambda t: getattr(t, "team_code", str(t)))
+    out: list[str] = []
+    for g in sorted(games, key=lambda x: x.start_utc):
+        an, hn = nm(g.away), nm(g.home)
+        parts = [x for x in (_pv_team(rb, g.away.team_code, an),
+                             _pv_team(rb, g.home.team_code, hn)) if x]
+        if not parts:
+            continue
+        line = ", ".join(parts) + "."
+        h2h = _pv_h2h(rb, g.away.team_code, g.home.team_code, an, hn)
+        if h2h:
+            line += f" {h2h}."
+        out.append(line)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# 정리판 텍스트 — **그날이 어떤 하루였나** (v1.29)
+# ══════════════════════════════════════════════════════════════
+#
+# ⛔ **카드에 있는 걸 텍스트에 또 쓰지 않는다.**
+#    정리판 카드(`cards_v5.body_scoreboard`)는 **번호 · 시각 · 점수**를 그리고,
+#    그 아래 '오늘의 경기'까지 붙는다. 그래서 여기서는 **점수를 쓰지 않는다.**
+#    텍스트가 맡는 것은 **그날 전체의 성질** — 표를 한 줄씩 읽어서는 안 보이고,
+#    세어야 보이는 것들이다.
+#
+# ⚠️ **기록(순위)을 쓰지 않는다.** 순위 변동("이 승리로 2위가 됐다")은 값어치가
+# 크지만, 소스 순위표는 **진행 중 경기를 이미 반영**한다(2026-09-09 승점률 역산으로
+# 확정). 그러면 그날 결과와 순위의 시점이 섞여 카드가 스스로 모순된다(§7-131).
+# 어제 순위를 따로 저장하는 경로가 생긴 뒤에 넣는다(§9 후보).
+#
+# **전부 그날 경기 데이터에서만 나온다** — 시점이 섞일 자리가 없다.
+
+WRAPUP_CLOSE_MARGIN = 1        # 이 점수 차 이하를 '접전'으로 센다
+WRAPUP_MIN_GAMES = 2           # 한 경기짜리 날에는 '몇 경기 중 몇'이 뜻이 없다
+
+
+def _wr_margin(g: Game) -> int | None:
+    if not g.score:
+        return None
+    return abs(g.score.home - g.score.away)
+
+
+def wrapup_lines(games: list, league: League, *, name_of=None) -> list[str]:
+    """정리판의 **그날 한 줄**. 셀 것이 없으면 빈 목록.
+
+    `name_of(team_ref)`는 카드가 찍는 그 이름을 돌려주는 함수다(§7-45).
+    """
+    played = [g for g in games
+              if g.status is Status.FINAL and g.score is not None]
+    if len(played) < WRAPUP_MIN_GAMES:
+        return []
+    nm = name_of or (lambda t: getattr(t, "team_code", str(t)))
+    n = len(played)
+    sents: list[str] = []
+
+    # ① 접전 — 표를 한 줄씩 읽어서는 안 보이고 **세어야** 보인다
+    close = [g for g in played
+             if (_wr_margin(g) or 99) <= WRAPUP_CLOSE_MARGIN]
+    if close:
+        margin = "한 점" if WRAPUP_CLOSE_MARGIN == 1 else f"{WRAPUP_CLOSE_MARGIN}점"
+        # **수사(셋·넷)를 쓰지 않는다.** `_ko`는 관형사형("세")이라 조사를 붙이면
+        # "세이"가 된다. 관형사 + '경기'로만 쓴다 — 한 가지 모양이면 안 깨진다.
+        if len(close) == n:
+            sents.append(f"{_ko_games(n)}가 모두 {margin} 차로 갈렸다.")
+        else:
+            sents.append(f"{_ko_games(n)} 가운데 {_ko_games(len(close))}가 "
+                         f"{margin} 차로 갈렸다.")
+
+    # ② 역전 — 이닝 기록이 있는 경기만. 야구에만 있다
+    tail: list[str] = []
+    if SCORE_UNIT_BY_LEAGUE.get(league) is ScoreUnit.RUNS:
+        turned = []
+        for g in played:
+            line = list(getattr(getattr(g, "meta", None), "line_score", ()) or ())
+            if len(line) < 3:
+                continue
+            if any(e["kind"] == "turn" for e in flow_events(line)):
+                turned.append(g)
+        if len(turned) == 1:
+            g = turned[0]
+            tail.append(f"{nm(g.away)}-{nm(g.home)}전에서 역전이 나왔다")
+        elif turned:
+            tail.append(f"{_ko_games(len(turned))}에서 역전이 나왔다")
+
+        # ③ 연장 — 이닝 수로 안다
+        ext = [g for g in played
+               if len(list(getattr(getattr(g, "meta", None), "line_score", ())
+                           or ())) > FLOW_REGULATION]
+        if ext:
+            g = max(ext, key=lambda x: len(x.meta.line_score))
+            tail.append(f"{nm(g.away)}-{nm(g.home)}전은 "
+                        f"{len(g.meta.line_score)}회까지 갔다")
+    # **문장을 이어 붙이지 않는다.** "나왔다"에 "고"를 붙이면 "나왔다고"(인용)가
+    # 된다 — 어간을 만들어 잇는 것보다 마침표로 나누는 편이 안 깨진다.
+    for t in tail:
+        sents.append(t + ".")
+
+    # ④ 영봉 — 한쪽이 0점. 전부 그렇다면 말할 값어치가 없다
+    shut = [g for g in played if 0 in (g.score.home, g.score.away)]
+    if shut and len(shut) < n:
+        sents.append(f"{_ko_games(len(shut))}는 한 팀이 점수를 내지 못했다.")
+
+    # ⑤ 취소·연기 — 카드는 사유를 적지만 **몇 경기인지는 세지 않는다**
+    off = [g for g in games if g.status in (Status.CANCELED, Status.POSTPONED)]
+    if off:
+        sents.append(f"{_ko_games(len(off))}는 열리지 못했다.")
+
+    if not sents:
+        return []
+    return [" ".join(sents)]

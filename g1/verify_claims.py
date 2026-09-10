@@ -821,6 +821,214 @@ check("★★ (변이) 앞뒤를 안 보면 추격과 벌림이 같은 말이 �
       and "따라붙었다" in _c and "벌렸다" not in _c,
       "두 판정이 갈리지 않으면 이 검사는 아무것도 안 지킨다")
 
+
+# ── ★ v1.29 — 킥오프 텍스트: 카드가 못 담는 것만 ──────────────────────
+#
+# 대표님 지시(킹카 대비 보완 **우선순위 2번**).
+# ⛔ 카드(`body_schedule`)가 그리는 것은 **시각 · 대진 · 장소**다.
+#    그래서 텍스트는 **순위 · 최근 흐름 · 맞대결**만 맡는다.
+print("\n킥오프 텍스트 (v1.29)")
+
+from contract import StreakKind as _SK                        # noqa: E402
+from contract import WLD as _WLD                              # noqa: E402
+from contract import RecordBook as _RB                        # noqa: E402
+from contract import Standing as _SD                          # noqa: E402
+
+
+def _mkstand(code, rank, w=60, ls=50, d=0, l10=(5, 5), streak=("-", 0)):
+    return _SD(league=_L.KBO, season="2026", team_code=code, rank=rank,
+               games=w + ls + d, record=_WLD(w, ls, d), pct="0.545",
+               games_behind="0",
+               last10=_WLD(l10[0], l10[1], 0) if l10 else None,
+               streak_kind=_SK(streak[0]), streak_len=streak[1])
+
+
+def _mkrb(stands, h2h=None):
+    return _RB(league=_L.KBO, season="2026",
+               collected_utc=_dt.datetime(2026, 9, 10, 9, 0,
+                                          tzinfo=_dt.timezone.utc),
+               source_url="https://example.test/kbo",
+               standings=list(stands), h2h=dict(h2h or {}))
+
+
+def _mkpv(a="OB", h="LG"):
+    g = _G(league=_L.KBO, season="2026", source_key=f"pv-{a}-{h}",
+           home=_TR(_L.KBO, h), away=_TR(_L.KBO, a),
+           start_utc=_dt.datetime(2026, 9, 10, 9, 30, tzinfo=_dt.timezone.utc),
+           home_tz="Asia/Seoul", status=_ST.SCHEDULED, score=None, venue=None,
+           meta=_GM())
+    g.validate()
+    return g
+
+
+_PV_RB = _mkrb([_mkstand("LG", 3, l10=(5, 5), streak=("L", 4)),
+                _mkstand("OB", 5, l10=(3, 7), streak=("W", 1))],
+               {("LG", "OB"): _WLD(8, 6, 0)})
+_pv = _PF.preview_lines(_PV_RB, [_mkpv()], _L.KBO, name_of=lambda t: t.team_code)
+_pv1 = _pv[0] if _pv else ""
+
+check("★★ 순위·최근 흐름·맞대결이 문장에 들어간다", bool(_pv), _pv1)
+check("★ 연패는 숫자와 붙는다 — '네 연패'가 아니라 '4연패'",
+      "4연패" in _pv1 and "네 연패" not in _pv1, _pv1)
+check("★ 연속 1은 흐름이 아니다 — 말하지 않는다",
+      "1연승" not in _pv1 and "한 연승" not in _pv1, _pv1)
+check("★ 맞대결에서 앞선 쪽을 바르게 고른다 (LG 8승 6패)",
+      "LG가 8승 6패로 앞선다" in _pv1, _pv1)
+
+# ⛔ 첫째 규칙 — 카드에 있는 것을 다시 쓰지 않는다
+check("★★ 시각을 텍스트에 다시 쓰지 않는다 (카드가 그린다)",
+      not any(x in _pv1 for x in (":30", "18:30", "시 30분", "경기 시작")), _pv1)
+check("★★ 장소를 텍스트에 다시 쓰지 않는다",
+      "구장" not in _pv1 and "스타디움" not in _pv1, _pv1)
+check("★ 감상을 담은 낱말을 쓰지 않는다 (FACT_LOCK)",
+      not any(w in _pv1 for w in ("명승부", "짜릿", "역대급", "치열", "대단",
+                                  "빅매치", "혈투")), _pv1)
+
+# 재료가 없으면 아무 말도 안 한다
+check("★★ 기록이 없으면 빈 목록 — 카드는 그대로 나간다",
+      _PF.preview_lines(None, [_mkpv()], _L.KBO) == [])
+check("★ 그 팀이 순위표에 없으면 그 경기는 건너뛴다",
+      _PF.preview_lines(_mkrb([]), [_mkpv()], _L.KBO) == [])
+check("★ 맞대결이 적으면(3경기 미만) 말하지 않는다",
+      "맞대결" not in (_PF.preview_lines(
+          _mkrb([_mkstand("LG", 3), _mkstand("OB", 5)],
+                {("LG", "OB"): _WLD(1, 1, 0)}),
+          [_mkpv()], _L.KBO, name_of=lambda t: t.team_code) or [""])[0])
+check("★ 최근 10경기가 없어도 순위는 말한다",
+      "3위" in (_PF.preview_lines(
+          _mkrb([_mkstand("LG", 3, l10=None), _mkstand("OB", 5, l10=None)]),
+          [_mkpv()], _L.KBO, name_of=lambda t: t.team_code) or [""])[0])
+
+# 팀 이름은 부르는 쪽이 만든다 (§7-45)
+check("★ 팀 이름을 부르는 쪽이 넘긴 것으로 쓴다 (이름 만드는 곳은 하나다)",
+      "두산" in (_PF.preview_lines(
+          _PV_RB, [_mkpv()], _L.KBO,
+          name_of=lambda t: {"OB": "두산", "LG": "LG"}[t.team_code]) or [""])[0])
+
+# 실물 배선
+_pvcard = _RV.kickoff_card([_mkpv()], _L.KBO,
+                           now=_dt.datetime(2026, 9, 10, 9, 20,
+                                            tzinfo=_dt.timezone.utc),
+                           rb=_PV_RB)
+check("★★ 킥오프 캡션에 문장이 실린다 (배선)",
+      _pvcard is not None and any("맞대결" in p for p in _pvcard[1]),
+      str(_pvcard[1])[:110] if _pvcard else "None")
+check("  ↳ 접고펼치기 인용블록으로 들어간다",
+      _pvcard is not None and any("blockquote expandable" in p for p in _pvcard[1]))
+_pvnone = _RV.kickoff_card([_mkpv()], _L.KBO,
+                           now=_dt.datetime(2026, 9, 10, 9, 20,
+                                            tzinfo=_dt.timezone.utc), rb=None)
+check("★★ 기록이 없어도 카드는 나간다 — 문장만 빠진다",
+      _pvnone is not None and not any("맞대결" in p for p in _pvnone[1]))
+
+# (변이) 연속 문턱을 없애면 1연승까지 말하게 되는가
+check("★★ (변이) 문턱이 없으면 '1연승'이 문장에 들어간다 — 흐름이 아닌 것을 흐름이라 부른다",
+      _PF.PREVIEW_STREAK_MIN >= 2
+      and _PF._pv_streak(_mkstand("OB", 5, streak=("W", 1))) == ""
+      and _PF._pv_streak(_mkstand("OB", 5, streak=("W", 2))) != "")
+
+
+# ── ★ v1.29 — 정리판 텍스트: 세어야 보이는 것 ─────────────────────────
+#
+# ⛔ 카드(`body_scoreboard`)가 번호·시각·**점수**를 그린다.
+#    그래서 텍스트는 점수를 쓰지 않고, **세어야 보이는 것**만 말한다.
+print("\n정리판 텍스트 (v1.29)")
+
+
+def _mkwr(h, a, hs, as_, line=None):
+    g = _G(league=_L.MLB, season="2026", source_key=f"wr-{h}{a}{hs}{as_}",
+           home=_TR(_L.MLB, h), away=_TR(_L.MLB, a),
+           start_utc=_dt.datetime(2026, 9, 9, 23, 0, tzinfo=_dt.timezone.utc),
+           home_tz="America/New_York", status=_ST.FINAL,
+           score=_SC(hs, as_, C.ScoreUnit.RUNS), venue=None,
+           meta=_GM(line_score=list(line or [])))
+    g.validate()
+    return g
+
+
+# 실데이터 모양: 접전 3 · 역전 2 · 연장 1 · 영봉 1 (MLB 2026-09-09)
+_WR = [
+    _mkwr("SD", "COL", 7, 2, [(2, 0), (0, 0), (3, 0), (0, 2), (0, 0), (0, 0),
+                              (1, 0), (1, 0), (0, 0)]),
+    _mkwr("CLE", "KC", 2, 0, [(0, 0), (0, 0), (1, 0), (1, 0), (0, 0), (0, 0),
+                              (0, 0), (0, 0), (0, 0)]),
+    _mkwr("ARI", "TEX", 7, 6, [(1, 0), (0, 1), (0, 3), (0, 0), (0, 1), (0, 1),
+                               (0, 0), (6, 0), (0, 0)]),
+    _mkwr("BOS", "BAL", 3, 2, [(0, 0), (1, 1), (0, 0), (2, 0), (0, 0), (0, 0),
+                               (0, 0), (0, 1), (0, 0)]),
+    _mkwr("DET", "CWS", 5, 4, [(1, 0), (0, 0), (1, 0), (0, 0), (1, 0), (0, 1),
+                               (0, 1), (0, 0), (0, 1), (1, 1), (1, 0)]),
+]
+_wr = _PF.wrapup_lines(_WR, _L.MLB, name_of=lambda t: t.team_code)
+_wr1 = _wr[0] if _wr else ""
+
+check("★★ 그날의 성질을 센다 (접전·역전·연장·영봉)", bool(_wr), _wr1)
+check("★ 접전을 센다", "한 점 차로 갈렸다" in _wr1, _wr1)
+check("★ 역전을 센다", "역전이 나왔다" in _wr1, _wr1)
+check("★ 연장을 말한다", "11회까지 갔다" in _wr1, _wr1)
+check("★ 영봉을 센다", "점수를 내지 못했다" in _wr1, _wr1)
+
+# ⛔ 첫째 규칙 — 카드에 있는 것을 다시 쓰지 않는다
+check("★★ 점수를 텍스트에 다시 쓰지 않는다 (카드가 그린다)",
+      not any(x in _wr1 for x in ("7-2", "2-0", "7-6", "3-2", "5-4",
+                                  "7:2", "5:4")), _wr1)
+check("★★ 경기 시각·번호를 다시 쓰지 않는다",
+      not any(x in _wr1 for x in ("18:00", "1경기", "첫 경기", "두 번째 경기")),
+      _wr1)
+check("★ 감상을 담은 낱말을 쓰지 않는다 (FACT_LOCK)",
+      not any(w in _wr1 for w in ("명승부", "짜릿", "역대급", "치열", "극적",
+                                  "대단", "환상")), _wr1)
+
+# 조사·활용이 깨지지 않는가 (만들면서 두 번 깨졌다)
+check("★★ 수사에 조사를 붙이지 않는다 — '세이'가 아니라 '세 경기가'",
+      "세이" not in _wr1 and "넷이" not in _wr1 and "셋이" not in _wr1, _wr1)
+check("★★ 문장을 억지로 잇지 않는다 — '나왔다고'는 인용이 된다",
+      "나왔다고" not in _wr1 and "갔다고" not in _wr1, _wr1)
+
+# 셀 것이 없으면 말하지 않는다
+check("★ 한 경기짜리 날에는 말하지 않는다 ('몇 경기 중 몇'이 뜻이 없다)",
+      _PF.wrapup_lines([_mkwr("SD", "COL", 7, 2)], _L.MLB) == [])
+check("★ 아무 성질도 없으면 빈 목록",
+      _PF.wrapup_lines([_mkwr("SD", "COL", 7, 2), _mkwr("CLE", "KC", 8, 3)],
+                       _L.MLB) == [])
+check("★ 취소된 경기를 센다",
+      "열리지 못했다" in (_PF.wrapup_lines(
+          _WR + [_G(league=_L.MLB, season="2026", source_key="wr-off",
+                    home=_TR(_L.MLB, "NYM"), away=_TR(_L.MLB, "PHI"),
+                    start_utc=_dt.datetime(2026, 9, 9, 23, 0,
+                                           tzinfo=_dt.timezone.utc),
+                    home_tz="America/New_York", status=_ST.CANCELED,
+                    score=None, venue=None, meta=_GM(cancel_reason="rain"))],
+          _L.MLB, name_of=lambda t: t.team_code) or [""])[0])
+
+# 야구가 아니면 역전·연장을 말하지 않는다 (이닝이 없다)
+_wr_soccer = _PF.wrapup_lines(
+    [_G(league=_L.KL1, season="2026", source_key=f"s{i}",
+        home=_TR(_L.KL1, "ULS"), away=_TR(_L.KL1, "JEO"),
+        start_utc=_dt.datetime(2026, 9, 9, 10, 0, tzinfo=_dt.timezone.utc),
+        home_tz="Asia/Seoul", status=_ST.FINAL,
+        score=_SC(1, 0, C.ScoreUnit.GOALS), venue=None, meta=_GM())
+     for i in range(3)], _L.KL1, name_of=lambda t: t.team_code)
+check("★ 축구에는 역전·연장을 말하지 않는다 (이닝이 없다)",
+      not any("역전" in x or "회까지" in x for x in _wr_soccer),
+      str(_wr_soccer))
+
+# 실물 배선 — 정리판에는 붙고 종료 속보(한 경기)에는 흐름 문장이 붙는다
+_wrcard = _RV.result_card(_WR, _L.MLB, "2026-09-09")
+check("★★ 정리판 캡션에 '오늘의 하루'가 실린다 (배선)",
+      _wrcard is not None and any("오늘의 하루" in p for p in _wrcard[1]),
+      str(_wrcard[1])[:110] if _wrcard else "None")
+_ffcard = _RV.result_card([_WR[4]], _L.MLB, "2026-09-09")
+check("★★ 한 경기짜리(종료 속보)에는 여전히 '경기 흐름'이 붙는다 (v1.27 유지)",
+      _ffcard is not None and any("경기 흐름" in p for p in _ffcard[1]),
+      str(_ffcard[1])[:110] if _ffcard else "None")
+
+# (변이) 점수 차 문턱을 넓히면 접전이 아닌 것까지 접전이 되는가
+check("★★ (변이) 문턱이 1점이라 3점 차는 접전이 아니다",
+      _PF.WRAPUP_CLOSE_MARGIN == 1
+      and _PF._wr_margin(_mkwr("SD", "COL", 7, 4)) == 3
+      and _PF._wr_margin(_mkwr("BOS", "BAL", 3, 2)) == 1)
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:
