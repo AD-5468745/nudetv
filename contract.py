@@ -1451,6 +1451,49 @@ DUTY_EXEMPT_STATUSES: frozenset = frozenset({"canceled", "postponed"})
 DUTY_LOOKBACK_SECONDS = 24 * 3600
 
 
+# ── ★ "아직 시작하지 않았다" — 판정은 한 곳에만 (v1.26, 2026-09-10) ────────
+#
+# **v1.21은 절반만 고쳤다.** 그때 큐 생성부의 `status is Status.SCHEDULED`를
+# 걷어냈지만, **같은 판정이 네 곳에 더 있었다.** 그래서 KBO 킥오프는 큐에는
+# 들어가고(v1.21 성공) 그 다음 관문에서 전부 걸러졌다 —
+# **전 기간 KBO 킥오프 발송 0건.** 실측 2026-09-10:
+#
+#   09-10 18:04  큐에 들어감 (`unqueued_kickoff` 신고가 사라짐 = v1.21 작동)
+#   09-10 18:04  `empty_render` — 카드가 안 그려짐
+#   09-10 18:32  다시 `unqueued_kickoff` — 발송 없이 창이 닫힘
+#
+# 걸려 있던 다섯 곳: 큐 생성 · 킥오프 발송 재판정 · `kickoff_card` ·
+# `lineup_card` · 오늘의 경기 시간표(`START_ALERT`).
+#
+# **한 곳을 고치고 같은 판정을 하는 다른 곳을 잊는 것**이 이 시스템에서
+# 반복되는 사고 유형이다(운영지도 §분산 시스템 교차 반영). 그래서 조건을
+# 인라인으로 다섯 번 쓰지 않고 **여기 하나만 둔다.** 고칠 곳도 하나다.
+#
+# **상태는 소스가 정하고 소스마다 다르다. 시작 시각은 우리가 아는 사실이다.**
+#   · KBO 소스는 시작 **24분 전**에 이미 `LIVE`를 준다 (실측 2026-09-09 18:06)
+#   · 킥오프 창은 T-10~T-1분 → 창이 열릴 땐 `SCHEDULED`가 하나도 없다
+#
+# 그래서 우리가 아는 것으로만 판정한다:
+#   · 종결(종료·취소·연기)됐으면 아니다 — 알릴 이유가 없다
+#   · 시작 시각이 이미 지났으면 아니다 — "곧 시작"이 거짓말이 된다
+# 이 둘만 빼면 상태가 무엇이든 "아직 시작 안 함"으로 본다.
+#
+# ⚠️ **의무 대조(`kickoff_duty_groups`·`unqueued_*`)는 이 함수를 쓰지 않는다.**
+# 검사받는 조건을 검사가 다시 쓰면 검사가 자기 자신을 통과시킨다(약점 181).
+# 분모는 취소·연기만 뺀 편성 전체로 남긴다 — 여기를 또 틀리면 그때도 잡힌다.
+#
+# 되돌리는 법: 아래 한 줄을 `getattr(g, "status", None) is Status.SCHEDULED
+# and g.start_utc > now_utc`로 되돌리면 다섯 곳이 함께 옛 동작으로 간다.
+def is_upcoming(g, now_utc: datetime) -> bool:
+    """이 경기는 **아직 시작하지 않았는가.** 상태가 아니라 시각으로 답한다."""
+    if getattr(g, "is_terminal", False):
+        return False                      # 끝났거나 취소·연기됐다
+    at = getattr(g, "start_utc", None)
+    if at is None:
+        return False                      # 시작 시각을 모르면 "곧 시작"을 말할 수 없다
+    return at > now_utc
+
+
 def kickoff_duties(games: list, *,
                    lead_seconds: Optional[int] = None) -> dict[str, datetime]:
     """킥오프 카드의 **발행 의무** — {버킷키: 예약시각}.

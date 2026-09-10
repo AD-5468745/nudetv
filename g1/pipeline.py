@@ -25,7 +25,7 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       LINEUP_ENABLED, LINEUP_CARD_MIN_LEAD_SECONDS,
                       idem_key, plan_send_parts, quote, stale_grace_for,
                       QUOTE_EXPANDABLE_THRESHOLD_LINES,
-                      day_schedule_scope, start_alert_bucket,
+                      day_schedule_scope, start_alert_bucket, is_upcoming,
                       start_alert_at, start_alert_notice, venue_name,
                       is_readable_ko, player_names_localized,
                       LEADER_TEAM_LABEL_MAX, pct_text,
@@ -580,12 +580,13 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # 그래서 여기를 또 틀리면 그때도 감시가 잡는다.
         #
         # 되돌리는 법: 이 조건을 `g.status is Status.SCHEDULED`로 되돌린다.
+        # v1.26 — 판정을 계약(`contract.is_upcoming`)에 모았다. 같은 판정이
+        # 렌더·발송 재판정에도 있었는데 그쪽이 옛 조건이라 큐만 고쳐서는
+        # 카드가 안 그려졌다(KBO 킥오프 전 기간 0건). 이제 고칠 곳은 하나다.
         _kick: dict = defaultdict(list)
         for g in games:
-            if g.is_terminal:
-                continue                  # 끝났거나 취소·연기됐다
-            if g.start_utc <= now:
-                continue                  # 이미 시작했다
+            if not is_upcoming(g, now):
+                continue                  # 끝났거나 취소·연기됐거나 이미 시작했다
             _kick[start_alert_bucket(g)].append(g)
         for _bk, _bg in _kick.items():
             _first = min(x.start_utc for x in _bg)

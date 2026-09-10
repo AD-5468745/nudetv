@@ -54,7 +54,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
                       DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
-                      unqueued_per_day, josa,
+                      unqueued_per_day, josa, is_upcoming,
                       DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
@@ -1991,8 +1991,11 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             # scope가 곧 시각 버킷 키다 — 스냅샷에서 그 키를 가진 경기를 다시 모은다.
             # (큐 항목의 `game_id`는 사람이 읽을 대표 경기일 뿐이다.)
             from contract import start_alert_bucket as _bk
+            # v1.26 — 여기 `g.status is Status.SCHEDULED`가 있었다. 큐를 통과한
+            # KBO 킥오프가 **발송 직전에** 여기서 전부 걸러졌다(전 기간 0건).
+            # 판정은 계약 한 곳(`is_upcoming`)에 있다.
             _same = [g for g in games
-                     if g.status is Status.SCHEDULED and _bk(g) == item.scope]
+                     if is_upcoming(g, _now()) and _bk(g) == item.scope]
             if not _same:
                 return None                 # 전부 시작했거나 취소됐다 — 알릴 것이 없다
             _r5 = _try_v5("kickoff",
@@ -2010,7 +2013,9 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     elif item.content_type is ContentType.START_ALERT:
         # 시작 알림은 이제 '그 리그의 하루 시간표' 하나다 (v1.11c).
         scoped = [g for g in games if day_schedule_scope(g) == item.scope]
-        same = [g for g in scoped if g.status is Status.SCHEDULED]
+        # v1.26 — 킥오프와 같은 판정. 옛 조건 때문에 KBO '오늘의 경기'가
+        # 09-09·09-10 이틀 통째로 빠졌다(소스가 시작 전에 LIVE를 준다).
+        same = [g for g in scoped if is_upcoming(g, _now())]
         if not same:
             return None
         # 남은 시간을 지금 기준으로 계산해야 한다 — 안 넘기면 "몇 분 뒤"가 틀린다.

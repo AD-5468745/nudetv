@@ -2480,6 +2480,96 @@ check("★★ (변이) 시작+유예 조건을 빼면 아직 나갈 시간이 �
 check("  ↳ scope를 만드는 함수가 한 곳뿐이다 (두 곳에서 각자 만들면 어긋난다 — 약점 45)",
       C.game_scope(_pg_fin[0]) == C.legacy_kickoff_scope(_pg_fin[0]))
 
+
+# ── ★ v1.26 — "아직 시작 안 함" 판정이 한 곳뿐인가 ────────────────
+#
+# **실사고 재현 (2026-09-10).** KBO 킥오프가 **전 기간 0건**이었다.
+# v1.21이 큐 생성부의 `status is Status.SCHEDULED`를 걷어냈지만, 같은 판정이
+# 네 곳에 더 남아 있어서 큐를 통과한 카드가 렌더·발송 재판정에서 전부 걸렸다.
+#
+# KBO 소스는 경기 시작 **24분 전**에 이미 `LIVE`를 준다(실측 2026-09-09 18:06).
+# 킥오프 창은 T-10~T-1분 → 창이 열릴 때 `SCHEDULED`인 경기가 하나도 없다.
+print("\n28. v1.26 — 시작 전 판정 (KBO 킥오프 0건 사고)")
+
+_up_now = datetime(2026, 9, 10, 9, 20, tzinfo=timezone.utc)      # 18:20 KST
+# 18:30 시작인데 소스가 이미 LIVE로 준 경기 — 실제 KBO의 모습이다
+_live_early = mkgame(day="2026-09-10", hh=18, status=Status.LIVE,
+                     score=Score(0, 0, ScoreUnit.RUNS))
+_sched = mkgame(day="2026-09-10", hh=18, h="KT", a="SS")
+_started = mkgame(day="2026-09-10", hh=18, h="NC", a="HT",
+                  status=Status.LIVE, score=Score(1, 0, ScoreUnit.RUNS))
+_started.start_utc = _up_now - timedelta(minutes=5)              # 5분 전에 시작함
+_done = mkgame(day="2026-09-10", hh=18, h="WO", a="SK",
+               status=Status.FINAL, score=Score(5, 3, ScoreUnit.RUNS))
+_off = mkgame(day="2026-09-10", hh=18, h="HH", a="LT",
+              status=Status.CANCELED, cancel="우천취소")
+
+check("★★ 소스가 미리 LIVE를 줘도 '아직 시작 안 함'이다 (KBO 실사고)",
+      C.is_upcoming(_live_early, _up_now) is True)
+check("예정 상태도 당연히 시작 전이다", C.is_upcoming(_sched, _up_now) is True)
+check("★ 이미 시작한 경기는 아니다 — '곧 시작'이 거짓말이 되면 안 된다",
+      C.is_upcoming(_started, _up_now) is False)
+check("끝난 경기는 아니다", C.is_upcoming(_done, _up_now) is False)
+check("취소된 경기는 아니다", C.is_upcoming(_off, _up_now) is False)
+
+
+class _NoStart:
+    is_terminal = False
+    start_utc = None
+
+
+check("시작 시각을 모르면 시작 전이라고 말하지 않는다",
+      C.is_upcoming(_NoStart(), _up_now) is False)
+
+# ── 카드가 실제로 그려지는가 (판정만 맞고 카드가 안 나오면 사고는 그대로다)
+import render_v5 as _R26                                     # noqa: E402
+
+_card = _R26.kickoff_card([_live_early, _sched], League.KBO, now=_up_now)
+check("★★ 미리 LIVE인 KBO 묶음으로 킥오프 카드가 **만들어진다** (사고의 정체)",
+      _card is not None and "<" in (_card[0] if _card else ""))
+check("★ 이미 시작한 경기만 있으면 카드를 안 만든다",
+      _R26.kickoff_card([_started], League.KBO, now=_up_now) is None)
+check("★ 종료·취소만 있으면 카드를 안 만든다",
+      _R26.kickoff_card([_done, _off], League.KBO, now=_up_now) is None)
+check("묶음에 시작한 경기가 섞여 있으면 그것만 빠지고 나머지는 나간다",
+      (lambda r: r is not None)(
+          _R26.kickoff_card([_started, _live_early], League.KBO, now=_up_now)))
+
+# ── 큐도 같은 판정을 쓰는가
+import pipeline as _P26                                      # noqa: E402
+
+_q = _P26.build_queue([_live_early, _sched, _started, _done, _off],
+                      _up_now, "-100test", floor_hours=0)
+_kq = [i for i in _q if i.content_type is ContentType.KICKOFF]
+check("★ 큐도 같은 판정을 쓴다 — 미리 LIVE인 경기가 킥오프 묶음에 담긴다",
+      len(_kq) >= 1, f"킥오프 항목 {len(_kq)}개")
+
+# ── 발송 재판정도 같은 판정을 쓰는가 (여기가 마지막 관문이었다)
+_G1DIR = pathlib.Path(T.__file__).resolve().parent
+_src = (_G1DIR / "tick.py").read_text(encoding="utf-8")
+check("★★ 발송 재판정에 옛 조건(status is Status.SCHEDULED)이 남아 있지 않다",
+      "g.status is Status.SCHEDULED and _bk(g)" not in _src)
+_rsrc = (_G1DIR / "render_v5.py").read_text(encoding="utf-8")
+check("★★ 킥오프·라인업 렌더에도 옛 조건이 남아 있지 않다",
+      "g.status is Status.SCHEDULED and (g.start_utc" not in _rsrc
+      and "game.status is not Status.SCHEDULED" not in _rsrc)
+
+# ── (변이) 판정을 옛것으로 되돌리면 이 검사가 무너지는가 ──────────
+#
+# **0건은 '잡을 게 없다'와 '감시가 죽었다'를 구분하지 못한다**(약점 194).
+# 옛 판정을 흉내 내어, 위 검사가 실제로 이 사고를 잡는 검사인지 확인한다.
+def _old_upcoming(g, now_utc):
+    return (getattr(g, "status", None) is Status.SCHEDULED
+            and getattr(g, "start_utc", now_utc) > now_utc)
+
+
+check("★★ (변이) 옛 판정이면 미리 LIVE인 KBO가 '시작 전'에서 빠진다 — 사고 재현",
+      _old_upcoming(_live_early, _up_now) is False
+      and C.is_upcoming(_live_early, _up_now) is True,
+      "옛 판정과 새 판정이 같은 답을 내면 이 검사는 아무것도 안 지킨다")
+check("  ↳ 옛 판정도 '이미 시작한 경기'는 막았다 (그 성질은 잃지 않았다)",
+      _old_upcoming(_started, _up_now) is False)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

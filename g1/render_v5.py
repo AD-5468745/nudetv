@@ -36,7 +36,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, assert_card_geometry, format_kickoff,
                       kst_day_label, morning_label, venue_name,
                       cancel_reason_text, foreign_script_chars,
-                      LINEUP_ENABLED)
+                      LINEUP_ENABLED, is_upcoming)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
 #
@@ -776,8 +776,11 @@ def kickoff_card(games, league: League, *, now: datetime
     gs = [games] if not isinstance(games, (list, tuple)) else list(games)
     # **아직 시작 안 한 경기만** 남긴다. 묶음 안의 한 경기가 이미 시작했거나
     # 취소됐어도 나머지는 알려야 한다 — 옛 코드는 하나만 보고 전부 포기했다.
-    gs = [g for g in gs
-          if g.status is Status.SCHEDULED and (g.start_utc - now).total_seconds() > 0]
+    #
+    # ⚠️ v1.26 — 여기 `g.status is Status.SCHEDULED`가 있었고, 그것이 KBO
+    # 킥오프가 **전 기간 0건**이었던 마지막 관문이다. v1.21이 큐를 고쳐도
+    # 카드가 여기서 안 그려졌다. 판정은 이제 계약 한 곳에 있다.
+    gs = [g for g in gs if is_upcoming(g, now)]
     if not gs:
         return None                        # **경기 시작 이후에는 절대 안 만든다**
     gs.sort(key=lambda g: g.start_utc)
@@ -864,11 +867,11 @@ def lineup_card(game, league: League, *, now: datetime
     """
     if not LINEUP_ENABLED:
         return None
-    if game.status is not Status.SCHEDULED:
+    # v1.26 — 킥오프와 같은 판정을 쓴다. 옛 조건(`status is SCHEDULED`)은
+    # 소스가 시작 전에 `LIVE`를 주는 리그에서 명단 카드를 통째로 막았다.
+    if not is_upcoming(game, now):
         return None
     left = (game.start_utc - now).total_seconds()
-    if left <= 0:
-        return None
     body = _lineup_body(game, league, with_goals=False)
     if not body:
         return None
