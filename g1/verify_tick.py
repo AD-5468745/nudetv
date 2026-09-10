@@ -2570,6 +2570,106 @@ check("★★ (변이) 옛 판정이면 미리 LIVE인 KBO가 '시작 전'에서
 check("  ↳ 옛 판정도 '이미 시작한 경기'는 막았다 (그 성질은 잃지 않았다)",
       _old_upcoming(_started, _up_now) is False)
 
+
+# ── ★ v1.28 — 이름표가 바뀌어도 같은 경기로 알아보는가 ────────────────
+#
+# **실사고 재현 (2026-09-10).** NPB 종료 속보가 **전 기간 0건**이었다.
+# NPB는 경기가 끝나야 속보 링크가 붙어서 `source_key`가 바뀐다 —
+# 진행 중 `20260910-HAN-HIR`, 끝난 뒤 `scores-2026-0910-h-f-25`.
+# `_mark_first_final`이 이름표로만 대조해서 "열려 있었는데 닫혔다"를 영영 못 봤고,
+# 종료 시각이 안 찍히니 종료 속보가 큐에 들어갈 수 없었다.
+#
+# ⚠️ **이름표가 바뀌는 것은 의도다** — 안 맞추면 사실이 안 바뀌었는데 정정 카드가
+# 나간다(`adapters/npb.py` 머리말 원칙 7). 그래서 **이름표 규칙은 안 건드리고**
+# 알아보는 쪽에 신원 대조를 더했다.
+print("\n29. v1.28 — 이름표가 바뀌어도 같은 경기 (NPB 종료 속보 0건 사고)")
+
+_ID_DAY = "2026-09-10"
+
+
+def _mkid(day=_ID_DAY, h="HAN", a="HIR", seq=None):
+    return (day, h, a, seq)
+
+
+check("★ 신원은 날짜·홈·원정으로 만든다",
+      C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR"})
+      == _mkid())
+check("★ 이름표가 달라도 신원은 같다 (사고의 핵심)",
+      C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR",
+                       "source_key": "20260910-HAN-HIR"})
+      == C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR",
+                          "source_key": "scores-2026-0910-h-f-25"}))
+check("★ 더블헤더는 회차로 갈린다 (MLB — §7-127)",
+      C.game_identity({"sports_day": _ID_DAY, "home": "DET", "away": "CWS",
+                       "doubleheader_seq": 1})
+      != C.game_identity({"sports_day": _ID_DAY, "home": "DET", "away": "CWS",
+                          "doubleheader_seq": 2}))
+check("★ 홈·원정이 뒤집히면 다른 경기다",
+      C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR"})
+      != C.game_identity({"sports_day": _ID_DAY, "home": "HIR", "away": "HAN"}))
+check("★ 재료가 모자라면 None — '모른다'와 '아니다'를 뭉개지 않는다 (§7-142)",
+      C.game_identity({"sports_day": _ID_DAY, "home": "HAN"}) is None
+      and C.game_identity({}) is None)
+
+_gid_obj = mkgame(lg=League.NPB, h="HAN", a="HIR", day=_ID_DAY, hh=18)
+check("★ Game 객체와 스냅샷 dict가 같은 신원을 낸다",
+      C.game_identity(_gid_obj)
+      == C.game_identity({"sports_day": _gid_obj.sports_day,
+                          "home": "HAN", "away": "HIR"}))
+
+# ── 실물: 이름표가 바뀐 채 종료로 들어와도 종료 시각이 찍히는가
+_ID_SNAP = TMP / "games"
+_ID_SNAP.mkdir(exist_ok=True)
+
+
+def _stamp_case(prev_status, prev_key, now_key, now_status=Status.FINAL):
+    """이전 스냅샷 1건을 깔고, 이름표가 바뀐 경기가 들어올 때를 재현한다."""
+    g0 = mkgame(lg=League.NPB, h="HAN", a="HIR", day=_ID_DAY, hh=18,
+                status=prev_status,
+                score=(Score(1, 0, ScoreUnit.RUNS)
+                       if prev_status is not Status.SCHEDULED else None))
+    g0.source_key = prev_key
+    T._save_games("IDT", [g0])
+    g1 = mkgame(lg=League.NPB, h="HAN", a="HIR", day=_ID_DAY, hh=18,
+                status=now_status, score=Score(4, 2, ScoreUnit.RUNS))
+    g1.source_key = now_key
+    T._mark_first_final("IDT", [g1], NOW)
+    return g1.meta.first_final_at
+
+
+check("★★ 이름표가 바뀐 채 종료로 들어와도 종료 시각이 찍힌다 (실사고 수정)",
+      bool(_stamp_case(Status.LIVE, "20260910-HAN-HIR",
+                       "scores-2026-0910-h-f-25")))
+check("  ↳ 이름표가 그대로면 당연히 찍힌다 (기존 동작 유지)",
+      bool(_stamp_case(Status.LIVE, "same-key", "same-key")))
+check("★ 처음부터 종료였으면 안 찍는다 — 언제 끝났는지 모른다 (v1.12c 규칙 유지)",
+      not _stamp_case(Status.FINAL, "20260910-HAN-HIR",
+                      "scores-2026-0910-h-f-25"))
+check("★ 아직 안 끝났으면 안 찍는다",
+      not _stamp_case(Status.LIVE, "k1", "k2", now_status=Status.LIVE))
+
+# 한 번 찍힌 것은 안 바뀐다 — 이름표가 바뀌어도
+_g_old = mkgame(lg=League.NPB, h="HAN", a="HIR", day=_ID_DAY, hh=18,
+                status=Status.FINAL, score=Score(4, 2, ScoreUnit.RUNS))
+_g_old.source_key = "20260910-HAN-HIR"
+_g_old.meta.first_final_at = "2026-09-10T09:00:00+00:00"
+T._save_games("IDT", [_g_old])
+_g_new = mkgame(lg=League.NPB, h="HAN", a="HIR", day=_ID_DAY, hh=18,
+                status=Status.FINAL, score=Score(4, 2, ScoreUnit.RUNS))
+_g_new.source_key = "scores-2026-0910-h-f-25"
+T._mark_first_final("IDT", [_g_new], NOW)
+check("★★ 한 번 찍힌 시각은 이름표가 바뀌어도 그대로다 ('방금'이 영원한 '방금'이 되지 않게)",
+      _g_new.meta.first_final_at == "2026-09-10T09:00:00+00:00",
+      str(_g_new.meta.first_final_at))
+
+# ── (변이) 이름표만 보던 옛 방식이면 이 사고가 재현되는가
+_old_prev_open = {"20260910-HAN-HIR"}
+check("★★ (변이) 이름표만 보면 바뀐 이름표는 못 찾는다 — 사고 재현",
+      "scores-2026-0910-h-f-25" not in _old_prev_open
+      and C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR"})
+      == C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR"}),
+      "두 대조가 같은 답을 내면 이 검사는 아무것도 안 지킨다")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

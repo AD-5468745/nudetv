@@ -1494,6 +1494,43 @@ def is_upcoming(g, now_utc: datetime) -> bool:
     return at > now_utc
 
 
+# ── ★ 경기의 **신원** — 이름표와 따로 둔다 (v1.28, 2026-09-10) ──────────
+#
+# `source_key`는 소스가 주는 **이름표**다. 그리고 **그 이름표는 바뀔 수 있다.**
+# NPB가 그렇다: 경기가 끝나야 속보 링크가 붙어서, 같은 경기가 진행 중에는
+# `20260910-HAN-HIR`, 끝난 뒤에는 `scores-2026-0910-h-f-25`가 된다.
+#
+# ⚠️ **그 바뀜은 실수가 아니라 의도다.** 2차 소스로 결과를 먼저 내보낸 뒤
+# npb.jp가 몇 시간 뒤 링크를 붙이면 `game_id`가 달라져, 사실이 하나도 안 바뀌었는데
+# **정정 카드가 나간다**. 그걸 막으려고 보강 단계에서 미리 링크식으로 맞춰 둔다
+# (`adapters/npb.py` 머리말 원칙 7). **그 규칙은 건드리지 않는다.**
+#
+# 문제는 반대편이었다: **"이 경기가 열려 있었는데 지금 닫혔다"를 이름표로 대조**하던
+# 곳들이 그 바뀜에 걸려 영영 실패했다. 그래서 종료 시각(`meta.first_final_at`)이
+# 한 번도 안 찍혔고, **NPB 종료 속보가 전 기간 0건**이었다(2026-09-10 격자에서 발견).
+#
+# → 이름표가 아니라 **경기 자체**로 알아본다. 경기는 (그 리그의) 날짜·홈·원정으로
+#   유일하다 — 실측: NPB 2026시즌 881경기에서 충돌 0건.
+#   더블헤더가 있는 리그(MLB, §7-127)를 위해 회차도 함께 본다.
+def game_identity(g) -> Optional[tuple]:
+    """이 경기가 **어느 경기인가.** `Game`과 스냅샷 dict를 둘 다 받는다.
+
+    재료가 모자라면 **None** — '모른다'와 '아니다'를 뭉개지 않는다(§7-142).
+    부르는 쪽은 None이면 이 대조를 건너뛰고 이름표 대조로 떨어진다.
+    """
+    if isinstance(g, dict):
+        day, home, away = (g.get("sports_day"), g.get("home"), g.get("away"))
+        seq = g.get("doubleheader_seq")
+    else:
+        day = getattr(g, "sports_day", None)
+        home = getattr(getattr(g, "home", None), "team_code", None)
+        away = getattr(getattr(g, "away", None), "team_code", None)
+        seq = getattr(getattr(g, "meta", None), "doubleheader_seq", None)
+    if not (day and home and away):
+        return None
+    return (day, home, away, seq)
+
+
 def kickoff_duties(games: list, *,
                    lead_seconds: Optional[int] = None) -> dict[str, datetime]:
     """킥오프 카드의 **발행 의무** — {버킷키: 예약시각}.

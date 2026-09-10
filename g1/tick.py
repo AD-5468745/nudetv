@@ -54,7 +54,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
                       DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
-                      unqueued_per_day, josa, is_upcoming,
+                      unqueued_per_day, josa, is_upcoming, game_identity,
                       DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
 import pipeline as P
 from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
@@ -1051,14 +1051,29 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
         ad = _ADAPTERS.get(name)
         if ad is None or not hasattr(ad, "fill_lineups"):
             return                        # 2차 소스(football-data)는 라인업이 없다
-        # ① 되살리기 — source_key로 맞춘다(이름 매칭이 유럽에서 실패한 그 실수를 피한다)
+        # ① 되살리기 — 이름표(source_key)와 **신원**을 둘 다 본다 (v1.28).
+        #
+        # 팀 이름 문자열로 맞추던 것이 유럽에서 실패했던 그 실수는 피하되
+        # (§7-163), **이름표만 보는 것도 위험하다** — NPB처럼 경기가 끝나면
+        # 이름표가 바뀌는 소스에서는 되살리기가 조용히 실패한다.
+        # 종료 스탬프가 같은 이유로 NPB 종료 속보를 전 기간 죽였다(v1.28).
+        # **지금 NPB엔 라인업이 없어 사고가 안 났을 뿐, 같은 병이다.**
         prev: dict = {}
+        prev_id: dict = {}
         for d in _load_raw(name):
+            if not (d.get("lineup") or d.get("lineup_seen_at")):
+                continue
             k = d.get("source_key")
-            if k and (d.get("lineup") or d.get("lineup_seen_at")):
+            if k:
                 prev[k] = d
+            _id = game_identity(d)
+            if _id is not None:
+                prev_id[_id] = d
         for g in games:
             old = prev.get(g.source_key)
+            if not old:
+                _gid = game_identity(g)
+                old = prev_id.get(_gid) if _gid is not None else None
             if not old:
                 continue
             if old.get("lineup") and not g.meta.lineup:
@@ -1090,24 +1105,51 @@ def _mark_first_final(name: str, games: list, now: datetime) -> None:
 
     한 번 찍힌 것은 다시 안 바꾼다. 매 틱 갱신하면 '방금'이 영원히 '방금'이 된다.
     """
+    # ★ **이름표와 신원을 둘 다 본다** (v1.28).
+    #
+    # 여기 원래 `source_key`(이름표)만 있었다. 그런데 **NPB는 경기가 끝나야
+    # 속보 링크가 붙어 이름표가 바뀐다** — 진행 중 `20260910-HAN-HIR`,
+    # 끝난 뒤 `scores-2026-0910-h-f-25`. 그래서 "열려 있었는데 닫혔다"는
+    # 대조가 **영영 실패**했고, 종료 시각이 한 번도 안 찍혀서
+    # **NPB 종료 속보가 전 기간 0건**이었다(2026-09-10 격자에서 발견).
+    #
+    # ⚠️ 이름표가 바뀌는 것은 **의도다** — 그걸 안 맞추면 사실이 안 바뀌었는데
+    # 정정 카드가 나간다(`adapters/npb.py` 머리말 원칙 7). 그 규칙은 안 건드린다.
+    # 대신 여기가 **경기 자체**(`contract.game_identity`)로도 알아보게 한다.
+    #
+    # **두 그물을 겹친다.** 신원으로 먼저 보고, 없으면 이름표로 본다 —
+    # 그래야 신원을 못 만드는 경기(재료 부족)에서 기존 동작이 그대로 남는다.
     prev_stamp: dict = {}
     prev_open: set = set()
+    prev_stamp_id: dict = {}
+    prev_open_id: set = set()
     for d in _load_raw(name):
         k = d.get("source_key")
-        if not k:
+        ident = game_identity(d)
+        if not k and ident is None:
             continue
         if d.get("first_final_at"):
-            prev_stamp[k] = d["first_final_at"]
+            if k:
+                prev_stamp[k] = d["first_final_at"]
+            if ident is not None:
+                prev_stamp_id[ident] = d["first_final_at"]
         try:
             if Status(d["status"]) not in TERMINAL_STATUSES:
-                prev_open.add(k)
+                if k:
+                    prev_open.add(k)
+                if ident is not None:
+                    prev_open_id.add(ident)
         except (ValueError, KeyError, TypeError):
             pass                    # 못 읽는 상태는 '전환을 못 봤다'로 다룬다
     for g in games:
+        ident = game_identity(g)
         old = prev_stamp.get(g.source_key)
+        if old is None and ident is not None:
+            old = prev_stamp_id.get(ident)
         if old:
             g.meta.first_final_at = old              # 이미 적힌 것은 그대로
-        elif g.is_terminal and g.source_key in prev_open:
+        elif g.is_terminal and (g.source_key in prev_open
+                                or (ident is not None and ident in prev_open_id)):
             g.meta.first_final_at = _iso(now)        # 전환을 지금 봤다
 
 
