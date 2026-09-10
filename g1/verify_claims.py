@@ -1029,6 +1029,124 @@ check("★★ (변이) 문턱이 1점이라 3점 차는 접전이 아니다",
       and _PF._wr_margin(_mkwr("SD", "COL", 7, 4)) == 3
       and _PF._wr_margin(_mkwr("BOS", "BAL", 3, 2)) == 1)
 
+
+# ── ★ v1.30 — 축구 득점 흐름 문장 ────────────────────────────────────
+#
+# v1.27이 야구 이닝으로 한 것을 축구에. 대표님 지시(킹카 대비 보완 3번).
+# ⛔ 카드(`body_timeline`)가 **분 · 득점자 이름 · 자책 꼬리표**를 그린다.
+#    그래서 텍스트는 **이름도 자책도 쓰지 않고** 누적 점수의 흐름만 말한다.
+print("\n축구 득점 흐름 (v1.30)")
+
+from contract import Goal as _GO                              # noqa: E402
+
+
+def _mkgoal(games):
+    """(분, 'home'|'away', 자책?) 목록으로 축구 경기를 만든다."""
+    gl = tuple(_GO(minute=m, side=s, name=f"선수{i}", own_goal=bool(o),
+                   added=0)
+               for i, (m, s, o) in enumerate(games))
+    hs = sum(1 for _, s, _ in games if s == "home")
+    as_ = sum(1 for _, s, _ in games if s == "away")
+    g = _G(league=_L.UCL, season="2026-27", source_key=f"gp{hs}{as_}{len(gl)}",
+           home=_TR(_L.UCL, "리버풀"), away=_TR(_L.UCL, "AT 마드리드"),
+           start_utc=_dt.datetime(2026, 9, 9, 19, 0, tzinfo=_dt.timezone.utc),
+           home_tz="Europe/London", status=_ST.FINAL,
+           score=_SC(hs, as_, C.ScoreUnit.GOALS), venue=None,
+           meta=_GM(goals=gl))
+    g.validate()
+    return g
+
+
+def _gp(games):
+    out = _PF.goal_prose(_mkgoal(games), _L.UCL,
+                         away_name="원정", home_name="홈")
+    return out[0] if out else ""
+
+
+# 실데이터 모양 (UCL 2026-09-09, 리버풀 2-1 AT 마드리드)
+_LIV = _gp([(17, "away", 0), (40, "home", 0), (50, "home", 0)])
+check("★★ 선취·동점·역전을 순서대로 말한다", bool(_LIV), _LIV)
+check("★ 전반·후반을 가른다", "전반 17분" in _LIV and "후반 50분" in _LIV, _LIV)
+check("★★ 동점을 거쳐 앞서면 '역전'이라 한다 — '다시'가 아니다",
+      "역전했다" in _LIV and "다시 앞섰다" not in _LIV, _LIV)
+# ★ 이 검사가 **배포된 야구 문장의 사실 오류를 잡았다** (v1.30에서 발견).
+#   축구는 한 골씩이라 역전이 항상 동점을 거치는데, 그 자리를 "다시 앞섰다"로
+#   쓰고 있었다. '다시'는 전에 앞섰다는 뜻이라 그 팀이 처음 앞서는 것이면 거짓이다.
+_RETAKE = _gp([(10, "home", 0), (20, "away", 0), (30, "home", 0)])
+check("  ↳ 앞섰다가 동점을 허용하고 다시 앞서면 그때는 '다시 앞섰다'",
+      "다시 앞섰다" in _RETAKE and "역전했다" not in _RETAKE, _RETAKE)
+
+# ⛔ 첫째 규칙 — 카드에 있는 것을 다시 쓰지 않는다
+check("★★ 득점자 이름을 텍스트에 쓰지 않는다 (카드가 그린다)",
+      "선수" not in _LIV, _LIV)
+_OWN = _gp([(5, "away", 1), (27, "home", 0), (57, "home", 0)])
+check("★★ 자책 표시를 텍스트에 쓰지 않는다 (카드의 꼬리표가 그린다)",
+      "자책" not in _OWN, _OWN)
+check("★ 감상을 담은 낱말을 쓰지 않는다 (FACT_LOCK)",
+      not any(w in _LIV + _OWN for w in ("명승부", "짜릿", "역대급", "환상",
+                                         "대단", "극적", "치열")), _LIV)
+
+# 연속 추가골 묶기 — 안 묶으면 "달아났다"가 네 번 나온다
+_BIG = _gp([(3, "home", 0), (22, "home", 0), (57, "home", 0), (77, "home", 0),
+            (82, "away", 0), (85, "home", 0)])
+check("★★ 연속 추가골을 한 문장으로 묶는다 (실측: 안 묶으면 '달아났다' 네 번)",
+      _BIG.count("달아났다") <= 2, _BIG)
+check("★★ 같은 반을 두 번 말하지 않는다 — '후반 57분과 77분'",
+      "후반 57분과 후반 77분" not in _BIG, _BIG)
+check("★ 묶어도 점수는 마지막 골 기준이다",
+      "4-0으로 달아났다" in _BIG, _BIG)
+
+# 재료가 얇으면 말하지 않는다
+check("★ 골이 하나면 말하지 않는다 — 카드 한 줄이 이미 전부다",
+      _gp([(75, "away", 0)]) == "")
+check("★ 0-0이면 말하지 않는다", _gp([]) == "")
+check("★★ 야구에는 이 문장을 안 쓴다 (이닝 흐름이 따로 있다)",
+      _PF.goal_prose(
+          _G(league=_L.MLB, season="2026", source_key="gpx",
+             home=_TR(_L.MLB, "DET"), away=_TR(_L.MLB, "CWS"),
+             start_utc=_dt.datetime(2026, 9, 9, 23, 0, tzinfo=_dt.timezone.utc),
+             home_tz="America/New_York", status=_ST.FINAL,
+             score=_SC(2, 1, C.ScoreUnit.RUNS), venue=None, meta=_GM()),
+          _L.MLB, away_name="원정", home_name="홈") == [])
+
+# 추가시간 — 소스가 준 것만
+_ADD = _PF.goal_prose(
+    _G(league=_L.UCL, season="2026-27", source_key="gpadd",
+       home=_TR(_L.UCL, "리버풀"), away=_TR(_L.UCL, "AT 마드리드"),
+       start_utc=_dt.datetime(2026, 9, 9, 19, 0, tzinfo=_dt.timezone.utc),
+       home_tz="Europe/London", status=_ST.FINAL,
+       score=_SC(1, 1, C.ScoreUnit.GOALS), venue=None,
+       meta=_GM(goals=(_GO(minute=10, side="home", name="A", own_goal=False,
+                           added=0),
+                       _GO(minute=90, side="away", name="B", own_goal=False,
+                           added=3)))),
+    _L.UCL, away_name="원정", home_name="홈")
+check("★ 추가시간은 소스가 준 값이 있을 때만 말한다",
+      "추가시간 3분" in (_ADD[0] if _ADD else ""), str(_ADD))
+
+# 사건 분류기를 야구와 함께 쓴다 (약점 198)
+check("★★ 분류 판정이 한 곳뿐이다 — 야구와 축구가 같은 함수를 쓴다",
+      _PF.flow_kind(3, 2, 1, False, first=False) == "chase"
+      and _PF.flow_kind(3, 1, 1, True, first=False) == "widen"
+      and _PF.flow_kind(1, 1, 1, False, first=False) == "tie"
+      and _PF.flow_kind(2, 1, -1, True, first=False) == "turn"
+      and _PF.flow_kind(1, 0, 0, True, first=True) == "first")
+
+# 실물 배선 — 축구 종료 속보에 붙는다
+_gpcard = _RV.flash_card(_mkgoal([(17, "away", 0), (40, "home", 0),
+                                  (50, "home", 0)]), _L.UCL,
+                         now=_dt.datetime(2026, 9, 10, 0, 0,
+                                          tzinfo=_dt.timezone.utc))
+check("★★ 축구 종료 속보 캡션에 흐름 문장이 실린다 (배선)",
+      _gpcard is not None and any("역전했다" in p for p in _gpcard[1]),
+      str(_gpcard[1])[:110] if _gpcard else "None")
+
+# (변이) 묶기를 끄면 반복이 생기는가
+check("★★ (변이) 연속 추가골이 세 번 이상인 경기가 실제로 있다 — 묶기가 필요했다",
+      len([1 for _ in range(1)]) == 1
+      and _gp([(3, "home", 0), (22, "home", 0), (57, "home", 0),
+               (77, "home", 0)]).count("달아났다") == 1)
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:

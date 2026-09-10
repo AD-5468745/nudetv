@@ -218,10 +218,15 @@ def result_card(games: list, league: League, day: str, *,
     try:
         import pipeline as _Pf                     # 순환 import를 피해 함수 안에서
         if len(todays) == 1:
-            _extra = _Pf.flow_prose(
-                todays[0], league,
-                away_name=C5._nm(league, todays[0].away),
-                home_name=C5._nm(league, todays[0].home))
+            _g1 = todays[0]
+            _an = C5._nm(league, _g1.away)
+            _hn = C5._nm(league, _g1.home)
+            # 야구는 이닝 표를, 축구는 득점 타임라인을 카드가 그린다.
+            # **둘 다 "그래서 언제 갈렸나"는 안 말한다** — 그것이 텍스트의 몫이다.
+            _extra = (_Pf.flow_prose(_g1, league,
+                                     away_name=_an, home_name=_hn)
+                      or _Pf.goal_prose(_g1, league,
+                                        away_name=_an, home_name=_hn))
             _title = "경기 흐름"
         else:
             # ── ★ v1.29 — 정리판: **그날이 어떤 하루였나** ─────────────
