@@ -686,6 +686,141 @@ check("★★ (변이) 원본 전적을 바꾸면 문장도 바뀐다 (검사가
       "아홉 번 이기고" in _ps_txt2 and "네 번 이기고" not in _ps_txt2,
       _ps_txt2[:160])
 
+
+# ── ★ v1.27 — 종료 속보 이닝 흐름 문장 ────────────────────────────
+#
+# **문장이 주장하는 사실은 전부 이닝 표에서 나와야 한다.**
+# 실데이터 5판까지 다시 쓰며 잡은 결함을 여기 못 박는다.
+print("\n이닝 흐름 문장 (v1.27)")
+
+import datetime as _dt                                        # noqa: E402
+
+import contract as C                                          # noqa: E402
+import pipeline as _PF                                        # noqa: E402
+import render_v5 as _RV                                       # noqa: E402
+from contract import Game as _G                               # noqa: E402
+from contract import GameMeta as _GM
+from contract import League as _L
+from contract import Score as _SC
+from contract import Status as _ST
+from contract import TeamRef as _TR
+
+
+def _mkflow(line, lg=_L.MLB, h="DET", a="CWS"):
+    """이닝 표 하나로 경기를 만든다. `line_score`는 계약상 (홈, 원정)이다."""
+    hr = sum(x[0] or 0 for x in line)
+    ar = sum(x[1] or 0 for x in line)
+    # **단위와 시즌 표기는 계약이 정한다.** 손으로 적으면 리그를 바꿀 때
+    # 게이트에 걸린다 — 실제로 걸렸고, 그게 계약이 제 일을 한 것이다.
+    _unit = C.SCORE_UNIT_BY_LEAGUE[lg]
+    _season = ("2026" if C.SEASON_FORMAT_BY_LEAGUE[lg] is C.SEASON_SINGLE_YEAR
+               else "2026-27")
+    g = _G(league=lg, season=_season, source_key=f"fl{len(line)}x{hr}x{ar}",
+           home=_TR(lg, h), away=_TR(lg, a),
+           start_utc=_dt.datetime(2026, 9, 9, 23, 0, tzinfo=_dt.timezone.utc),
+           home_tz="America/New_York", status=_ST.FINAL,
+           score=_SC(hr, ar, _unit), venue=None,
+           meta=_GM(line_score=list(line), gender=C.GENDER_BY_LEAGUE.get(lg)))
+    g.validate()
+    return g
+
+
+def _flow(line, lg=_L.MLB, h="DET", a="CWS"):
+    out = _PF.flow_prose(_mkflow(line, lg, h, a), lg,
+                         away_name="원정", home_name="홈")
+    return out[0] if out else ""
+
+
+# ① 실사고 재현 — 1판은 여기서 "한 번도 뒤집히지 않았다"로 끝났다
+_EXTRA = [(1, 0), (0, 0), (1, 0), (0, 0), (1, 0), (0, 1), (0, 1), (0, 0),
+          (0, 1), (1, 1), (1, 0)]        # MLB 823175 실제 · 11회 연장 5-4
+_t = _flow(_EXTRA)
+check("★★ 연장 경기에서 동점 추격이 문장에 들어간다 (1판 실사고)",
+      "따라붙었다" in _t and "3-3" in _t, _t)
+check("★ 연장에 들어선 사실을 말한다", "9회에도 갈리지 않았다" in _t, _t)
+check("★ 끝내기를 말한다", "경기를 끝냈다" in _t, _t)
+check("★ 끝내기를 두 번 말하지 않는다 (4판)", _t.count("경기를 끝냈다") == 1, _t)
+
+# ② 실사고 재현 — 3판은 **지고 있는 팀이 "벌렸다"** 가 됐다
+_CHASE = [(0, 0), (1, 1), (0, 0), (2, 0), (0, 0), (0, 0), (0, 0), (0, 1),
+          (0, 0)]                        # MLB 823090 실제 · 홈 3-2 승
+_c = _flow(_CHASE)
+check("★★ 지고 있는 팀의 득점은 '벌렸다'가 아니라 '따라붙었다' (3판 사실 오류)",
+      "2-3으로 따라붙었다" in _c and "2-3으로 벌렸다" not in _c, _c)
+check("  ↳ (변이) 앞선 쪽이 더 내면 '벌렸다'가 맞다",
+      "벌렸다" in _flow([(2, 0), (0, 0), (1, 0), (0, 0), (0, 0), (0, 0),
+                        (1, 0), (1, 0), (0, 0)]))
+
+# ③ 조사 — 2판에서 `1-1으로`가 나왔다
+_j = _flow([(0, 1), (1, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0),
+            (0, 0)])
+check("★ 점수 뒤 조사가 한글 읽기를 따른다 (1은 '일' → '로')",
+      "1-1로" in _j and "1-1으로" not in _j, _j)
+for _n, _ro in ((3, "으로"), (6, "으로"), (10, "으로"), (1, "로"),
+                (7, "로"), (8, "로"), (2, "로")):
+    check(f"  ↳ {_n} 뒤에는 '{_ro}'", _PF._num_ro(_n) == _ro)
+
+# ④ 카드에 있는 것을 다시 쓰지 않는다 (대표님 첫째 규칙)
+_all = " ".join(_flow(x) for x in (_EXTRA, _CHASE))
+check("★★ 이닝 표를 문장에 다시 쓰지 않는다 (숫자 나열 금지)",
+      "0 0" not in _all and "|" not in _all and "\t" not in _all, _all[:80])
+check("★ 감상을 담은 낱말을 쓰지 않는다 (FACT_LOCK)",
+      not any(w in _all for w in ("명승부", "짜릿", "역대급", "환상", "최고의",
+                                  "치열", "극적", "대단")), _all[:80])
+
+# ⑤ 야구가 아니면 아무 말도 하지 않는다
+check("★★ 축구·배구에는 붙지 않는다 (초·말이 없다)",
+      _PF.flow_prose(_mkflow(_EXTRA, _L.KL1, "ULS", "JEO"), _L.KL1,
+                     away_name="원정", home_name="홈") == []
+      and _PF.flow_prose(
+          # 배구는 세트 단위라 값의 뜻이 다르다 — 계약의 상한이 그것을 지킨다
+          _mkflow([(1, 0), (0, 1), (1, 0), (0, 1), (1, 0)],
+                  _L.VLEAGUE_M, "OK", "KEPCO"),
+          _L.VLEAGUE_M, away_name="원정", home_name="홈") == [])
+
+# ⑥ 재료가 없거나 얇으면 말하지 않는다
+check("★ 이닝 기록이 없으면 빈 목록", _flow([]) == "")
+check("★ 두 이닝뿐이면 말하지 않는다 (재료가 얇다)",
+      _flow([(1, 0), (0, 1)]) == "")
+check("★ 0-0 무득점이면 말하지 않는다 — 표가 이미 다 말한다",
+      _flow([(0, 0)] * 9) == "")
+
+# ⑦ 길이 — 캡션 한 장에 들어가는가
+_long = _flow([(2, 3), (1, 2), (3, 1), (2, 2), (1, 1), (2, 3), (1, 1),
+               (2, 2), (1, 1)])
+check(f"★ 점수가 많이 난 경기도 캡션 한 장 안에 든다 ({len(_long)}자)",
+      0 < len(_long) <= 600, f"{len(_long)}자")
+check("  ↳ 사건이 많아도 문장 수에 상한이 있다",
+      _long.count(".") <= _PF.FLOW_MAX_EVENTS + 4, _long)
+
+# ⑧ 실물 배선 — 종료 속보에는 붙고 **정리판에는 안 붙는다**
+_g1 = _mkflow(_EXTRA)
+_r1 = _RV.result_card([_g1], _L.MLB, "2026-09-09")
+check("★★ 종료 속보 캡션에 흐름 문장이 실린다 (배선)",
+      _r1 is not None and any("따라붙었다" in p for p in _r1[1]),
+      str(_r1[1])[:120] if _r1 else "None")
+check("  ↳ 접고펼치기 인용블록으로 들어간다 (대표님 지시)",
+      _r1 is not None and any("blockquote expandable" in p for p in _r1[1]))
+
+_g2 = _mkflow(_CHASE, h="BOS", a="BAL")
+_r2 = _RV.result_card([_g1, _g2], _L.MLB, "2026-09-09")
+check("★★ 정리판(여러 경기)에는 붙지 않는다 — 한 장에 담을 자리가 없다",
+      _r2 is not None and not any("따라붙었다" in p for p in _r2[1]),
+      str(_r2[1])[:120] if _r2 else "None")
+
+
+# ⑨ (변이) 사건 판정을 뭉개면 위 검사가 무너지는가
+def _old_kind(hs, as_, is_home, lead):
+    """3판의 뭉갠 판정 — 앞뒤를 안 보고 전부 `add`로 봤다."""
+    new = (hs > as_) - (hs < as_)
+    return "add" if new == lead else "turn"
+
+
+check("★★ (변이) 앞뒤를 안 보면 추격과 벌림이 같은 말이 된다 — 3판 사고 재현",
+      _old_kind(3, 2, False, 1) == _old_kind(3, 1, True, 1) == "add"
+      and "따라붙었다" in _c and "벌렸다" not in _c,
+      "두 판정이 갈리지 않으면 이 검사는 아무것도 안 지킨다")
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:

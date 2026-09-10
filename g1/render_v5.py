@@ -204,7 +204,29 @@ def result_card(games: list, league: League, day: str, *,
                     head=head, body=body, foot_left=foot)
     # `C5.caption()`은 **이미 리스트**를 돌려준다([0]=사진 캡션, [1:]=이어 보낼 텍스트).
     # 한 번 더 감쌌더니 캡션이 리스트 안의 리스트가 됐다 — 검증이 잡았다.
-    parts = C5.caption(kind="result", league=league, head=head, date_label=date_label)
+    # ── ★ v1.27 — 이닝 흐름을 문장으로 (대표님 우선순위 1번) ─────────
+    #
+    # ⛔ **카드에 있는 걸 텍스트에 또 쓰지 않는다.** 이닝 표와 결승타는 카드가
+    #    이미 그렸다. 여기 붙는 것은 **표가 못 말하는 것** 하나다 —
+    #    언제 갈렸고 어디가 승부처였나.
+    #
+    # **한 경기짜리(종료 속보)에만 붙인다.** 정리판은 여러 경기를 담는 카드라
+    # 경기마다 문단을 붙이면 캡션이 통째로 후속 텍스트로 밀려난다(대표님
+    # 2026-09-07: 정리판은 그 리그의 하루를 닫는 한 장이다).
+    _extra: list[str] = []
+    if len(todays) == 1:
+        try:
+            import pipeline as _Pf                 # 순환 import를 피해 함수 안에서
+            _extra = _Pf.flow_prose(
+                todays[0], league,
+                away_name=C5._nm(league, todays[0].away),
+                home_name=C5._nm(league, todays[0].home))
+        except Exception:                      # noqa: BLE001
+            _extra = []                        # 문장 하나 때문에 카드를 잃지 않는다
+    parts = C5.caption(kind="result", league=league, head=head,
+                       date_label=date_label,
+                       extra_lines=_extra or None,
+                       extra_title="경기 흐름" if _extra else "")
     return html, list(parts)
 
 

@@ -4203,3 +4203,212 @@ def _form_sentence(f: list[dict]) -> str:
     return " ".join(
         ", ".join(x for x in sent).replace("뒤,", "뒤") + "."
         for sent in sents if sent)
+
+
+# ══════════════════════════════════════════════════════════════
+# 종료 속보 — **이닝 흐름을 문장으로** (v1.27, 2026-09-10)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-10): 킹카 대비 보완 **우선순위 1번**.
+# 소스가 매일 주는 이닝 기록(`meta.line_score`)을 카드는 표로 그리는데,
+# **텍스트는 아무것도 안 쓰고 있었다.** 매일 받아 놓고 한 번도 안 쓴 재료다.
+#
+# ⛔ **카드에 있는 걸 텍스트에 또 쓰지 않는다** (대표님, 2026-09-10:
+#    *"이미지카드와 텍스트에 중복으로 올리면 더 보기 안좋아"*).
+#    이닝 표와 결승타 문장은 **카드에만** 둔다. 여기서 표를 다시 쓰지 않는다.
+#    텍스트가 맡는 것은 **표가 못 말하는 것** — 언제 갈렸고 어디가 승부처였나.
+#    표는 `0 0 3 0 …` 숫자만 보여주고, 그게 역전인지 추격인지는 사람이 읽어내야 한다.
+#
+# **문장이 주장하는 사실은 전부 숫자에서 나온다**(FACT_LOCK). 감상을 담은 낱말
+# (명승부·짜릿·역대급)은 쓰지 않는다 — `verify_headline`이 막는 그 목록과 같다.
+#
+# 실데이터 5판까지 다시 쓰며 잡은 것 (MLB 2026-09-09 6경기):
+#   1판 · **동점을 안 세어 11회 연장 경기가 "한 번도 뒤집히지 않았다"로 끝났다.**
+#         추격 3점과 연장 두 이닝이 통째로 빠졌다.
+#   2판 · 조사 오류 `1-1으로`. 1은 '일'이라 ㄹ 받침이고 **ㄹ은 '로'**다(`_num_ro`).
+#   3판 · **사실 오류** — 지고 있는 볼티모어가 "2-3으로 **벌렸다**"(1-3 → 2-3).
+#         점수를 낸 쪽이 여전히 지고 있으면 그건 **추격**이다.
+#   4판 · 끝내기가 두 번 나갔다("다시 앞섰다" + "경기를 끝냈다").
+#   5판 · 같은 팀이 잇달아 나오면 이름을 다시 부르지 않는다 — 사람 글이 그렇다.
+
+FLOW_BIG_INNING = 4        # 한 이닝 N점 이상이면 '몰아쳤다'
+FLOW_LATE_FROM = 7         # 이 이닝부터 '후반' — 그때 난 점수는 승부에 직결된다
+FLOW_MAX_EVENTS = 6        # 문장이 이보다 길어지면 덜 중요한 추가점부터 뺀다
+FLOW_REGULATION = 9        # 야구 정규 이닝
+
+
+def _flow_pts(n: int) -> str:
+    """'석 점' / '12점'. `_ko`는 세 번째 수를 '세'로 주는데, 점수를 셀 때는
+    **'석 점'·'넉 점'**이 맞다(단위 명사가 다르다)."""
+    fix = {3: "석", 4: "넉"}
+    k = fix.get(n) or _ko(n)
+    return f"{k} 점" if k != str(n) else f"{n}점"
+
+
+def _flow_half(i: int, is_home: bool) -> str:
+    return f"{i}회{'말' if is_home else '초'}"
+
+
+def _flow_score_ro(s: str) -> str:
+    """`7-6` 같은 점수 표기 뒤의 '로/으로'. **끝 수의 한글 읽기**로 갈린다."""
+    tail = s.rsplit("-", 1)[-1]
+    try:
+        return _num_ro(int(tail))
+    except ValueError:
+        return "로"
+
+
+def flow_events(line, *, regulation: int = FLOW_REGULATION) -> list[dict]:
+    """이닝 표에서 **사건**만 뽑는다. `line_score`는 계약상 **(홈, 원정)**이다.
+
+    같은 이닝 안에서는 **원정이 먼저 친다** — 그래서 반이닝 단위로 훑는다.
+    이걸 이닝 단위로 뭉개면 '3회에 역전'이 초인지 말인지 말할 수 없다.
+    """
+    hs = as_ = 0
+    lead = 0                          # +1 홈 우세 · -1 원정 우세 · 0 동점
+    out: list[dict] = []
+    for idx, pair in enumerate(line, start=1):
+        try:
+            h, a = pair[0], pair[1]
+        except (TypeError, IndexError):
+            continue                  # 모양이 다르면 그 이닝은 없는 것으로 둔다
+        for is_home, run in ((False, a), (True, h)):
+            if not run or not isinstance(run, int) or run < 0:
+                continue              # None·0·이상값은 사건이 아니다
+            hs, as_ = (hs + run, as_) if is_home else (hs, as_ + run)
+            new = (hs > as_) - (hs < as_)
+            if not out:
+                kind = "first"        # 이 경기의 첫 득점
+            elif new == 0:
+                kind = "tie"          # 따라붙어 동점
+            elif lead == 0:
+                kind = "ahead"        # 동점에서 앞서 나갔다
+            elif new != lead:
+                kind = "turn"         # 뒤집었다
+            elif new == (1 if is_home else -1):
+                kind = "widen"        # 앞선 쪽이 더 냈다 — 벌렸다
+            else:
+                # ★ 3판 사실 오류가 났던 자리. 점수를 낸 쪽이 **여전히 지고
+                #   있으면** 그건 벌린 것이 아니라 추격이다.
+                kind = "chase"
+            out.append({"i": idx, "home": is_home, "run": run, "kind": kind,
+                        "hs": hs, "as": as_,
+                        "big": run >= FLOW_BIG_INNING,
+                        "extra": idx > regulation,
+                        "late": idx >= FLOW_LATE_FROM})
+            lead = new
+    return out
+
+
+def _flow_sc(e: dict) -> str:
+    """그 팀 기준 점수 표기 — **말하는 팀을 앞에 둔다.**"""
+    return f"{e['hs']}-{e['as']}" if e["home"] else f"{e['as']}-{e['hs']}"
+
+
+def _flow_worth(e: dict) -> bool:
+    """이 사건을 말할 것인가.
+
+    **후반(7회~)과 연장의 득점은 전부 말한다** — 그때 난 점수가 승부에 직결된다.
+    전반은 흐름을 바꾼 것(선취·역전·동점·앞서 나감)과 빅이닝만 말한다.
+    """
+    if e["kind"] in ("first", "turn", "tie", "ahead"):
+        return True
+    return e["big"] or e["late"] or e["extra"]
+
+
+def flow_prose(game: Game, league: League, *,
+               away_name: str, home_name: str,
+               regulation: int = FLOW_REGULATION,
+               max_events: int = FLOW_MAX_EVENTS) -> list[str]:
+    """이닝 흐름 문단. **말할 것이 없으면 짧게 끝내거나 아무 말도 하지 않는다.**
+
+    야구 전용이다 — 이닝은 초·말이 갈리지만 농구 쿼터·배구 세트는 양 팀이
+    동시에 치른다. 같은 문형을 그대로 쓰면 '3회초에 앞섰다'가 거짓이 된다.
+
+    `away_name`·`home_name`은 **카드에 찍히는 그 이름**을 그대로 받는다.
+    """
+    if SCORE_UNIT_BY_LEAGUE.get(league) is not ScoreUnit.RUNS:
+        return []
+    meta = getattr(game, "meta", None)
+    line = list(getattr(meta, "line_score", ()) or ())
+    if len(line) < 3:
+        return []                     # 재료가 얇으면 말하지 않는다
+    ev = flow_events(line, regulation=regulation)
+    if not ev:
+        return []                     # 0-0 무득점 — 표가 이미 다 말한다
+
+    # **팀 이름은 부르는 쪽이 만들어 넘긴다.** 카드와 텍스트가 같은 이름을
+    # 써야 하는데, 그 이름을 만드는 곳은 `cards_v5._nm` 하나다(§7-45).
+    # 여기서 다시 만들면 두 곳이 어긋난다.
+    away, home = away_name, home_name
+
+    def nm(e):
+        return home if e["home"] else away
+
+    picked = [e for e in ev if _flow_worth(e)]
+    # 너무 길면 **덜 중요한 추가점부터** 뺀다. 흐름을 바꾼 것은 절대 안 뺀다.
+    while len(picked) > max_events:
+        drop = next((e for e in picked
+                     if e["kind"] in ("widen", "chase") and not e["extra"]), None)
+        if drop is None:
+            break
+        picked.remove(drop)
+
+    said_extra = walkoff_said = False
+    prev_team = None
+    parts: list[str] = []
+    for e in picked:
+        # 연장에 들어선 순간을 **그 자리에서** 말한다(맨 끝에 몰면 어색하다)
+        if e["extra"] and not said_extra:
+            parts.append(f"{regulation}회에도 갈리지 않았다.")
+            said_extra = True
+        s = _flow_sc(e)
+        ro = _flow_score_ro(s)
+        when = _flow_half(e["i"], e["home"])
+        verb = "몰아쳐" if e["big"] else "뽑아"
+        pts = _flow_pts(e["run"])
+        same = (prev_team == e["home"])
+        prev_team = e["home"]
+        subj_i = "" if same else f"{nm(e)}{josa(nm(e), '이', '가')} "
+        subj_n = "" if same else f"{nm(e)}{josa(nm(e), '은', '는')} "
+        if e["kind"] == "first":
+            parts.append(f"{subj_i}{when} {pts}을 먼저 냈다.")
+        elif e["kind"] == "turn":
+            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 뒤집었다.")
+        elif e["kind"] == "tie":
+            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
+        elif e["kind"] == "ahead":
+            if e["home"] and e is ev[-1] and e["i"] >= regulation:
+                parts.append(f"{subj_i}{when} {pts}을 {verb} {s}{ro} 경기를 끝냈다.")
+                walkoff_said = True
+            else:
+                parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 다시 앞섰다.")
+        elif e["kind"] == "widen":
+            parts.append(f"{subj_n}{when}에도 {pts}을 보태 {s}{ro} 벌렸다.")
+        else:                                     # chase
+            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
+
+    if len(picked) == 1:
+        parts.append("그 뒤로 앞뒤가 바뀌지 않았다.")
+
+    # **승부를 정한 점수** — 그 뒤로 아무도 못 따라잡았다는 사실은 표에 없다
+    decisive = next((e for e in reversed(ev)
+                     if e["kind"] in ("turn", "ahead", "first")), None)
+    if (decisive is not None and decisive is not ev[0]
+            and (decisive["late"] or decisive["extra"]) and not walkoff_said):
+        if decisive["home"] and decisive is ev[-1] and decisive["i"] >= regulation:
+            parts.append(f"{nm(decisive)}{josa(nm(decisive), '이', '가')} "
+                         f"{_flow_half(decisive['i'], True)}에 경기를 끝냈다.")
+        elif decisive in picked:
+            parts.append(f"그 {_flow_half(decisive['i'], decisive['home'])} 점수가 "
+                         f"승부를 갈랐다.")
+
+    # 마지막 사건이 추격이었으면 그 뒤 이야기를 한 줄 — 이것도 표에서 나오는 사실이다
+    if (not walkoff_said and picked and picked[-1] is ev[-1]
+            and picked[-1]["kind"] in ("tie", "chase")):
+        if len(line) - ev[-1]["i"] > 0:
+            parts.append("남은 이닝에서는 두 팀 모두 점수를 내지 못했다.")
+        elif picked[-1]["kind"] == "chase":
+            parts.append("더는 따라붙지 못했다.")
+
+    return [" ".join(parts)] if parts else []
