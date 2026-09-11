@@ -4459,6 +4459,38 @@ def flow_prose(game: Game, league: League, *,
 PREVIEW_STREAK_MIN = 2         # 이 이상이어야 '연승·연패'라고 말한다
 PREVIEW_H2H_MIN = 3            # 맞대결이 이만큼은 쌓여야 말한다
 
+# ── ★ 표본이 얇으면 그 사실을 밝힌다 (v1.31) ────────────────────────────
+#
+# 킹카는 *"4경기 표본이라 단정하기 이르다"* 를 자동 생성 글에 적는다.
+# 우리 원칙은 그보다 엄격하다 — **지킬 수 없으면 말하지 않는다**(§7-108).
+# 그래서 최근 폼은 표본이 모자라면 문단을 통째로 빼고, 제목은 **실제 표본 수**를
+# 따라간다(v1.11p). **다만 순위는 뺄 수가 없다** — 카드에도 없는 정보라서다.
+#
+# 실측으로 빈 자리를 찾았다: **12경기만 치른 시즌 초반에도 "1위 LG"라고
+# 똑같이 말한다.** 그 순위는 다음 주에 바뀐다. 숫자는 참이지만 독자는
+# 그것을 시즌 내내 유지될 순위로 읽는다.
+#
+# → 경고를 지어내지 않고 **범위를 밝힌다**(§7-160과 같은 태도).
+#   "아직 열두 경기를 치렀을 뿐이다." — 이건 기록에서 나온 사실이다.
+#
+# 문턱은 **리그별 표를 만들지 않는다**(약점 141: 사람이 관리하는 표가 커지면
+# 그 표가 다음 사고다). 종목 무관 절대 수로 둔다 — 목표는 '시즌 초반'을
+# 잡는 것이고, 그 구간은 어느 종목이든 20경기 언저리다.
+SAMPLE_THIN_GAMES = 20
+
+
+def _pv_thin(rb: RecordBook) -> str:
+    """시즌 표본이 얇으면 한 마디. 아니면 빈 문자열.
+
+    **가장 많이 치른 팀**으로 잰다 — 우천 순연으로 팀마다 소화 경기가 다르고
+    (§v1.25에서 잡은 사실 오류), 리그가 얼마나 진행됐나는 그 최댓값이 말한다.
+    """
+    n = max((getattr(s, "games", 0) or 0 for s in (rb.standings or ())),
+            default=0)
+    if not n or n >= SAMPLE_THIN_GAMES:
+        return ""
+    return f"아직 {_ko_games(n)}를 치렀을 뿐이다"
+
 
 def _pv_streak(s) -> str:
     """연승·연패 한 마디. 1이면 흐름이 아니다 — 말하지 않는다."""
@@ -4533,6 +4565,7 @@ def preview_lines(rb: RecordBook | None, games: list, league: League,
     if rb is None or not games:
         return []
     nm = name_of or (lambda t: getattr(t, "team_code", str(t)))
+    thin = _pv_thin(rb)              # 시즌 표본이 얇으면 그 사실을 밝힌다
     out: list[str] = []
     for g in sorted(games, key=lambda x: x.start_utc):
         an, hn = nm(g.away), nm(g.home)
@@ -4544,6 +4577,8 @@ def preview_lines(rb: RecordBook | None, games: list, league: League,
         h2h = _pv_h2h(rb, g.away.team_code, g.home.team_code, an, hn)
         if h2h:
             line += f" {h2h}."
+        if thin:
+            line += f" {thin}."
         out.append(line)
     return out
 

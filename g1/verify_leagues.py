@@ -71,6 +71,28 @@ from adapters.lck import LckAdapter, RateLimited, LCK_TEAM_COUNT
 # 리밋이면 캐시로 떨어지고, 캐시도 없으면 SKIP으로 가른다.
 _L._RATELIMIT_WAITS = (20,)
 
+# ── ★ 소스 장애와 **우리 환경 문제**를 가른다 (v1.32, 2026-09-11) ──────────
+#
+# 2026-09-11 실측: 컨테이너 프록시가 스포츠 호스트에 **전부 403**을 주어
+# 이 검사가 `0 PASS / 9 FAIL`이 됐다. 그런데 그건 **소스가 죽은 것이 아니라
+# 우리가 못 나간 것**이다. 그날 배포 판정 자체가 막혔다.
+#
+# 둘을 가르는 관측 가능한 사실: **리그 일곱이 한꺼번에 죽을 확률은 낮다.**
+# 하나도 못 받았으면 우리 쪽이고, 일부만 못 받았으면 그 소스가 문제다
+# (§7-196과 같은 방식 — 판정을 추측이 아니라 관측으로 한다).
+#
+# ⚠️ **SKIP을 PASS로 세지 않는다.** 총계가 거짓말을 하면 그 뒤의 모든 판단이
+# 오염된다(§7-118). 못 돌린 것은 못 돌린 대로 적는다.
+_NET_WORDS = ("URLError", "Tunnel connection failed", "403 Forbidden",
+              "Connection refused", "timed out", "Temporary failure")
+_net_down: list = []
+
+
+def _looks_offline(e) -> bool:
+    """이 실패가 **우리가 못 나간 것**으로 보이는가."""
+    return any(w in str(e) for w in _NET_WORDS)
+
+
 _kbl = KblAdapter()
 
 JOBS = [
@@ -95,7 +117,11 @@ for tag, lg, fn in JOBS:
                 all(x["category"] in SOURCE_RESULTLESS_CATEGORIES.get(League.KBL, set()) for x in u),
                 f"다른 구간 {[x['category'] for x in u if x['category'] != 'EA'][:3]}")
     except (GateError, UnknownStatus) as e:
-        fail += 1; print(f"  [{tag}] FAIL  {type(e).__name__}: {str(e)[:90]}")
+        if _looks_offline(e):
+            _net_down.append(tag)
+            print(f"  [{tag}] ──    소스에 닿지 못함 ({str(e)[:60]})")
+        else:
+            fail += 1; print(f"  [{tag}] FAIL  {type(e).__name__}: {str(e)[:90]}")
     except Exception as e:                                        # noqa: BLE001
         fail += 1; print(f"  [{tag}] FAIL  예상 못한 예외 {type(e).__name__}: {str(e)[:90]}")
 
@@ -108,8 +134,13 @@ for tag, fn, need_h2h in [("KBO", lambda: KboRecordAdapter().fetch(2026), True),
         rep(f"{tag} 순위 {len(rb.standings)}팀 · 부문 {len(rb.leaders)}개",
             len(rb.standings) == n and len(rb.leaders) > 0)
         rep(f"{tag} 상대전적 {'있음' if rb.h2h else '없음'}", bool(rb.h2h) == need_h2h)
-    except Exception as e:
-        fail += 1; print(f"    FAIL  {tag} 기록 {type(e).__name__}: {str(e)[:70]}")
+    except Exception as e:                                        # noqa: BLE001
+        if _looks_offline(e):
+            _net_down.append(f"{tag} 기록")
+            print(f"    ──    {tag} 기록 — 소스에 닿지 못함")
+        else:
+            fail += 1
+            print(f"    FAIL  {tag} 기록 {type(e).__name__}: {str(e)[:70]}")
 
 print("\n  [키 대기 중인 리그]")
 from adapters.football_data import TOKEN_ENV, COMPETITION
@@ -154,6 +185,18 @@ for tag, lg in (("LCK", League.LCK), ("LoL 국제", League.INTL_LOL)):
             # 팀이 10개를 넘으면 네이밍 스폰서 개명을 놓친 것이다 (한 팀이 두 팀으로 갈림)
             rep(f"{tag} 팀 {len(codes)}개 == {LCK_TEAM_COUNT}", len(codes) == LCK_TEAM_COUNT,
                 f"별칭 누락 의심: {sorted(codes)}")
+
+if _net_down:
+    # 리그 7 + 기록 2 = 9. **절반을 넘으면 우리 쪽**으로 본다.
+    _all = len(_net_down) >= 5
+    skip += len(_net_down)
+    print(f"\n  ⚠️ 소스에 닿지 못한 리그 {len(_net_down)}개: {', '.join(_net_down)}")
+    if _all:
+        print("     **리그가 한꺼번에 안 되는 것은 소스 장애가 아니라 우리가 못 나간 것이다.**")
+        print("     이 실행은 '지금 소스가 정상인가'를 말하지 않는다 — 판정 보류.")
+    else:
+        print("     🔴 **일부만 안 된다 — 그 소스를 의심한다.**")
+        fail += len(_net_down)
 
 print(f"\n결과: {ok} PASS / {fail} FAIL / {skip} SKIP")
 sys.exit(1 if fail else 0)

@@ -28,7 +28,26 @@ def expect_gate(name, fn):
         return
     fail += 1; print(f"  FAIL  {name}  게이트가 통과시킴")
 
-rb = KboRecordAdapter().fetch(2026)
+# ── ★ 소스에 못 닿으면 **판정 보류** — FAIL이 아니다 (v1.32, 2026-09-11) ──
+#
+# 2026-09-11 실측: 컨테이너 프록시가 스포츠 호스트에 전부 403을 주어 이 검사가
+# 통째로 죽었다(예외로 종료). 그건 **소스가 죽은 것이 아니라 우리가 못 나간
+# 것**인데, 그 구분이 없어 그날 배포 판정 자체가 막혔다.
+#
+# ⚠️ **폴백을 만들지 않는다.** 이 검사의 목적이 "소스가 지금 옳은 값을 주는가"라
+# 스냅샷으로 돌리면 검사의 뜻이 사라진다. 못 하면 **못 했다고 적고 끝낸다.**
+_NET_WORDS = ("URLError", "Tunnel connection failed", "403 Forbidden",
+              "Connection refused", "timed out", "Temporary failure")
+try:
+    rb = KboRecordAdapter().fetch(2026)
+except Exception as _e:                                       # noqa: BLE001
+    if not any(w in str(_e) for w in _NET_WORDS):
+        raise
+    print("\n  ⚠️ **소스에 닿지 못했습니다** — " + str(_e)[:70])
+    print("     이 검사는 '소스가 지금 옳은 값을 주는가'를 봅니다.")
+    print("     스냅샷으로 대신할 수 없으므로 **판정을 보류합니다.**")
+    print(f"\n결과: 0 PASS / 0 FAIL / 전체 SKIP (소스 미도달)")
+    sys.exit(0)
 
 # ── A. 원본 대조 — 어댑터를 거치지 않고 HTML을 직접 다시 읽어 비교 ──
 print("\nA. 원본 대조 (HTML 재파싱 후 객체와 대조)")

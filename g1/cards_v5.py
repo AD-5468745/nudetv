@@ -1347,11 +1347,19 @@ KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "�
 
 def caption(*, kind: str, league: Optional[League], head: Headline,
             date_label: str = "", extra_lines: Optional[list[str]] = None,
-            extra_title: str = "") -> list[str]:
+            extra_title: str = "", note: str = "") -> list[str]:
     """`[0]`은 사진에 붙는 캡션, `[1:]`은 이어 보내는 텍스트.
 
     `extra_lines`는 **카드에 없는 것만** 넣는다. 카드에 있는 것을 여기 또 쓰면
     같은 내용이 한 화면에 두 번 나온다 — 그게 고치려던 문제다.
+
+    `note`는 머리줄 끝에 붙는 짧은 단서다(v1.31). **접히지 않는 자리**에 둔다 —
+    기록 기준시각처럼 **신뢰의 근거가 되는 것**은 펼쳐야 보이면 뜻이 없다.
+
+    ⚠️ **여기에 출처 이름을 넣지 않는다.** 이 프로젝트는 "꼬리말은 출처를
+    주장하지 않는다"로 이미 결론을 냈고(약점 107: 'LCK 공식 결과'라 적었는데
+    실제로는 팬 위키였다), 약관상 표기 의무가 있는 소스는 `credit_line`이
+    카드 꼬리말에 따로 붙인다. 그 둘을 섞으면 한쪽이 반드시 낡는다.
     """
     emoji = KIND_EMOJI.get(kind, "")
     lg = LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그"
@@ -1360,6 +1368,8 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
     parts = [f"{emoji} <b>{esc(lg)} {esc(label)}</b>"]
     if date_label:
         parts.append(f" · {esc(date_label)}")
+    if note:
+        parts.append(f" · <i>{esc(note)}</i>")
     head_line = "".join(parts) + f"\n{esc(lead)}"
     if head.sub:
         head_line += f" — {esc(head.sub)}"

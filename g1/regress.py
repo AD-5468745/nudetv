@@ -19,11 +19,16 @@ from contract import (ContentType, Game, GameMeta, GateError, KST, League, Score
 from adapters.kbo import KboAdapter, CODE_TEAM
 import pipeline as P
 
-ok = fail = 0
+ok = fail = skipped = 0
 def check(n, c, d=""):
     global ok, fail
     if c: ok += 1; print(f"  PASS  {n}")
     else: fail += 1; print(f"  FAIL  {n}  {d}")
+def skip(n, why):
+    """판정할 수 없는 검사. **PASS로 세지 않는다** — SKIP을 PASS로 세면
+    총계가 거짓말을 한다(운영지도 §5 경고)."""
+    global skipped
+    skipped += 1; print(f"  SKIP  {n}  ({why})")
 def gate(n, fn, exc=(GateError, UnknownStatus, ValueError)):
     global ok, fail
     try: fn()
@@ -55,7 +60,40 @@ check("v1.10 신설 딕셔너리 완전성",
       set(C.REGULAR_SEASON_GAMES) == set(League) and set(C.LEAGUE_TEAM_COUNT) == set(League))
 
 print("\n2. KBO 경기 수집 (실데이터)")
-games = KboAdapter().fetch(2026, ["08", "09"])
+
+
+def _live_or_snapshot():
+    """실데이터를 받는다. **못 받으면 저장된 스냅샷으로 돈다** (v1.32).
+
+    ⚠️ **조용히 떨어지지 않는다.** 폴백이 성공처럼 보이면 그 뒤의 모든 판단이
+    오염된다(§7-118). 대체 입력으로 돌았으면 **그 사실과 그 입력이 얼마나
+    낡았는지**를 크게 찍는다.
+
+    왜 필요한가 — 2026-09-11 실측: 소스 호스트가 프록시에서 **전부 403**이 되어
+    실데이터 검사 세 가지(`verify_leagues`·`verify_records`·`regress`)를 통째로
+    못 돌렸다. **그날 배포 판정 자체가 막혔다.** 검사가 네트워크 하나에 매달려
+    있으면, 네트워크가 죽는 날 우리는 아무것도 확정하지 못한다.
+    """
+    try:
+        return KboAdapter().fetch(2026, ["08", "09"]), None
+    except Exception as e:                                   # noqa: BLE001
+        import datetime as _dt
+        import os as _os
+        import pathlib as _pl
+        import tick as _T
+        snap = _pl.Path(_os.environ.get("NUDETV_STATE", "state")) / "games"
+        f = snap / "KBO.json"
+        if not f.exists():
+            raise
+        got = _T._load_games("KBO")
+        age = (_dt.datetime.now().timestamp() - f.stat().st_mtime) / 3600
+        return got, f"{type(e).__name__} · 스냅샷 {len(got)}건 ({age:.0f}시간 전)"
+
+
+games, _fallback = _live_or_snapshot()
+if _fallback:
+    print(f"  ⚠️ **소스를 못 받아 저장된 스냅샷으로 돕니다** — {_fallback}")
+    print("     이 실행은 '지금 소스가 정상인가'를 말하지 않습니다.")
 check(f"경기 {len(games)}건 수집", len(games) > 100, len(games))
 check("전 경기 validate 통과", all(g.validate() is None for g in games))
 cx = [g for g in games if g.status is Status.CANCELED]
@@ -297,7 +335,14 @@ check("NPB도 19시간이면 경보",
       len(stale_unresolved([_npb], now_utc=_NOW + timedelta(hours=12))) == 1)
 check("리그별 유예가 기본값과 다름",
       stale_grace_for(League.NPB) > stale_grace_for(League.KBO))
-check("수집된 KBO 경기에 묵은 '예정' 없음", not stale_unresolved(games))
+# ⚠️ **이 검사는 신선한 데이터를 전제한다** (§7-46: 시각에 따라 결과가 달라지는
+# 검증은 '통과'가 증거가 못 된다). 스냅샷으로 떨어진 실행에서는 판정할 수 없으므로
+# **건너뛰되 건너뛴 사실을 밝힌다** — 조용히 통과시키면 폴백이 검사를 무력화한다.
+if _fallback:
+    skip("수집된 KBO 경기에 묵은 '예정' 없음",
+         "스냅샷으로 돌아 시각 의존 검사는 판정 불가")
+else:
+    check("수집된 KBO 경기에 묵은 '예정' 없음", not stale_unresolved(games))
 
 print("\n7. 리그 확장 안전 (v1.11c — 렌더러 매핑 누락 사고)")
 # 사고: LEAGUE_COLORS에 15개 리그 색을 정의해두고 _card()가 리그를 안 넘겨서
@@ -430,5 +475,6 @@ check("그날 경기가 없으면 모닝 브리핑을 만들지 않는다",
       not [i for i in P.build_queue(_far, _QNOW, "-100test", floor_hours=0)
            if i.content_type is ContentType.MORNING])
 
-print(f"\n결과: {ok} PASS / {fail} FAIL")
+print(f"\n결과: {ok} PASS / {fail} FAIL"
+      + (f" / {skipped} SKIP" if skipped else ""))
 sys.exit(1 if fail else 0)

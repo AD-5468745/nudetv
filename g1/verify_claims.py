@@ -1147,6 +1147,161 @@ check("★★ (변이) 연속 추가골이 세 번 이상인 경기가 실제로
       and _gp([(3, "home", 0), (22, "home", 0), (57, "home", 0),
                (77, "home", 0)]).count("달아났다") == 1)
 
+
+# ── ★ v1.31 — 기록 기준시각: **이 숫자가 언제 것인가** ──────────────────
+#
+# 대표님 지시(킹카 대비 보완 3번). 분석·순위표·리더보드는 **30분에 한 번 긁는
+# 기록**으로 그린다. 시점이 섞이면 카드를 아예 안 만드는 규칙은 이미 있는데
+# (§7-131), **정작 그 시점을 밝히지는 않고 있었다.**
+#
+# ⚠️ **출처 이름은 안 적는다.** 이 프로젝트는 "꼬리말은 출처를 주장하지 않는다"로
+#    결론을 냈고(약점 107), 대표님이 소스 이름을 빼라고 하셨으며, 약관 표기
+#    의무가 있는 소스는 `credit_line`이 카드 꼬리말에 따로 붙인다.
+print("\n기록 기준시각 (v1.31)")
+
+import cards_v5 as C5                                          # noqa: E402
+from contract import LeaderEntry as _LE                       # noqa: E402
+from contract import RecordBook as _RB2                       # noqa: E402
+from contract import Standing as _SD2                         # noqa: E402
+from contract import StreakKind as _SK2                       # noqa: E402
+from contract import WLD as _WLD2                             # noqa: E402
+
+_AS_OF = _dt.datetime(2026, 9, 11, 10, 0, tzinfo=_dt.timezone.utc)   # 19:00 KST
+_CODES = ["SS", "KT", "LG", "HT", "OB", "NC", "HH", "SK", "LT", "WO"]
+_ST2 = [_SD2(league=_L.KBO, season="2026", team_code=c, rank=i + 1, games=123,
+             record=_WLD2(73 - i * 2, 47 + i * 2, 3), pct=f"0.{600 - i * 10}",
+             games_behind=str(i * 2), last10=_WLD2(6, 4, 0),
+             streak_kind=_SK2.WIN, streak_len=2)
+        for i, c in enumerate(_CODES)]
+_LD2 = [_LE(category="타율", stat_key="AVG", rank=r + 1, player_id=f"p{r}",
+            name=f"선수{r}", team_code=_CODES[r], value=f"0.3{51 - r}")
+        for r in range(5)]
+_RBX = _RB2(league=_L.KBO, season="2026", collected_utc=_AS_OF,
+            source_url="https://example.test/kbo", standings=_ST2,
+            h2h={}, leaders={"타율": _LD2})
+
+check("★ 수집 시각을 한국시각으로 적는다",
+      C.record_asof_note(_RBX) == "기록 19:00 기준",
+      C.record_asof_note(_RBX))
+check("★★ 수집 시각을 모르면 **빈 문자열** — 지어내지 않는다",
+      C.record_asof_note(None) == ""
+      and C.record_asof_note(object()) == "")
+
+# 붙는 카드 — 기록을 쓰는 셋
+_sc2 = _RV.standings_card(_RBX, _L.KBO, "2026-09-11")
+check("★★ 순위표 캡션에 기준시각이 붙는다",
+      _sc2 is not None and "기록 19:00 기준" in _sc2[1][0],
+      _sc2[1][0][:90] if _sc2 else "None")
+_lc2 = _RV.leaders_card(_RBX, _L.KBO, "2026-09-11", 0)
+check("★★ 리더보드 캡션에 기준시각이 붙는다",
+      _lc2 is not None and "기록 19:00 기준" in _lc2[1][0],
+      _lc2[1][0][:90] if _lc2 else "None")
+
+# ★★ 안 붙어야 하는 카드 — 기록을 안 쓰는 것들
+_kk2 = _RV.kickoff_card([_mkpv()], _L.KBO,
+                        now=_dt.datetime(2026, 9, 10, 9, 20,
+                                         tzinfo=_dt.timezone.utc))
+check("★★ 킥오프에는 안 붙는다 (기록으로 그리지 않는다)",
+      _kk2 is not None and "기준" not in _kk2[1][0], str(_kk2[1])[:90])
+_fl2 = _RV.result_card([_WR[4]], _L.MLB, "2026-09-09")
+check("★★ 종료 속보에는 안 붙는다",
+      _fl2 is not None and "기록" not in _fl2[1][0].split("\n")[0],
+      _fl2[1][0].split("\n")[0] if _fl2 else "None")
+_wr2 = _RV.result_card(_WR, _L.MLB, "2026-09-09")
+check("★★ 정리판에는 안 붙는다",
+      _wr2 is not None and "기록" not in _wr2[1][0].split("\n")[0],
+      _wr2[1][0].split("\n")[0] if _wr2 else "None")
+
+# 출처 이름을 적지 않는다 — 이 프로젝트가 이미 낸 결론(약점 107)
+_allcap = " ".join([_sc2[1][0], _lc2[1][0]])
+check("★★ 출처 이름을 적지 않는다 (약점 107 · 대표님 지시)",
+      not any(w in _allcap for w in ("네이버", "naver", "출처", "example.test",
+                                     "공식", "제공")), _allcap[:110])
+check("  ↳ 약관 표기 의무는 카드 꼬리말(`credit_line`)이 따로 맡는다 — 두 곳이 안 섞인다",
+      C5.credit_line([_L.KBO]) == "" and hasattr(C5, "credit_line"))
+
+# 캡션이 한 장 안에 남는가
+check(f"★ 기준시각을 붙여도 캡션이 한 장 안이다 ({len(_sc2[1][0])}자)",
+      len(_sc2[1][0]) <= C5.CAPTION_MAX and len(_sc2[1]) == 1,
+      f"{len(_sc2[1][0])}자 / 파트 {len(_sc2[1])}")
+
+# 접히지 않는 자리에 있는가 — 신뢰의 근거는 펼쳐야 보이면 뜻이 없다
+check("★★ 기준시각은 접고펼치기 **밖**에 있다",
+      "기록 19:00 기준" in _lc2[1][0].split("<blockquote")[0],
+      _lc2[1][0][:90])
+
+# (변이) 인자를 안 넘기면 지금과 똑같다 — 되돌리는 길이 한 줄이다
+from headline import Headline as _HL                          # noqa: E402
+
+_hl = _HL(rule="TEST", text="현재 순위")
+check("★★ (변이) note를 안 넘기면 옛 캡션 그대로다 — 되돌리기가 한 줄",
+      "기준" not in C5.caption(kind="standings", league=_L.KBO, head=_hl,
+                              date_label="9.11 금")[0]
+      and "기록 19:00 기준" in C5.caption(kind="standings", league=_L.KBO,
+                                       head=_hl, date_label="9.11 금",
+                                       note="기록 19:00 기준")[0])
+
+
+# ── ★ v1.31 — 표본이 얇으면 그 사실을 밝힌다 (킹카 대비 보완 4번) ──────────
+#
+# 킹카는 *"4경기 표본이라 단정하기 이르다"* 를 적는다. 우리 원칙은 더 엄격해서
+# **지킬 수 없으면 말하지 않는다**(§7-108) — 최근 폼은 표본이 모자라면 문단을
+# 빼고, 제목은 실제 표본 수를 따라간다(v1.11p).
+# **다만 순위는 뺄 수가 없다.** 실측으로 빈 자리를 찾았다:
+# **12경기만 치른 시즌 초반에도 "1위 LG"라고 똑같이 말했다.**
+print("\n표본이 얇을 때 (v1.31)")
+
+
+def _thin_rb(games):
+    st = [_SD2(league=_L.KBO, season="2026", team_code=c, rank=i + 1,
+               games=games, record=_WLD2(8 - i, 4 + i, 0), pct="0.600",
+               games_behind=str(i), last10=_WLD2(6, 4, 0),
+               streak_kind=_SK2.WIN, streak_len=2)
+          for i, c in enumerate(["LG", "OB"])]
+    return _RB2(league=_L.KBO, season="2026", collected_utc=_AS_OF,
+                source_url="x", standings=st,
+                h2h={("LG", "OB"): _WLD2(2, 1, 0)}, leaders={})
+
+
+def _thin_line(games):
+    out = _PF.preview_lines(_thin_rb(games), [_mkpv()], _L.KBO,
+                            name_of=lambda t: t.team_code)
+    return out[0] if out else ""
+
+
+check("★★ 시즌 초반이면 표본이 얇다고 밝힌다 (실측 빈 자리)",
+      "아직 열두 경기를 치렀을 뿐이다" in _thin_line(12), _thin_line(12))
+check("★ 문턱 바로 아래까지 밝힌다", "아직" in _thin_line(19), _thin_line(19))
+check("★★ 문턱을 넘으면 말하지 않는다 — 소음이 되면 안 읽는다",
+      "아직" not in _thin_line(20) and "아직" not in _thin_line(123),
+      _thin_line(20))
+check("★ 순위·흐름은 그대로 말한다 (빼는 게 아니라 범위를 밝히는 것이다)",
+      "1위" in _thin_line(12) and "연승" in _thin_line(12))
+check("★★ 경고를 지어내지 않는다 — 숫자에서 나온 사실만",
+      not any(w in _thin_line(12) for w in ("단정", "이르다", "주의", "참고만",
+                                            "믿기 어렵", "불확실")),
+      _thin_line(12))
+check("★ 순위표가 비면 말하지 않는다 ('모른다'와 '아니다'를 뭉개지 않는다)",
+      _PF._pv_thin(_RB2(league=_L.KBO, season="2026", collected_utc=_AS_OF,
+                        source_url="x", standings=[], h2h={}, leaders={})) == "")
+check("★★ **가장 많이 치른 팀**으로 잰다 (우천 순연으로 팀마다 소화가 다르다)",
+      "열두" in _PF._pv_thin(_RB2(
+          league=_L.KBO, season="2026", collected_utc=_AS_OF, source_url="x",
+          standings=[_SD2(league=_L.KBO, season="2026", team_code="LG", rank=1,
+                          games=12, record=_WLD2(8, 4, 0), pct="0.6",
+                          games_behind="0"),
+                     _SD2(league=_L.KBO, season="2026", team_code="OB", rank=2,
+                          games=9, record=_WLD2(5, 4, 0), pct="0.5",
+                          games_behind="2")],
+          h2h={}, leaders={})),
+      _PF._pv_thin(_thin_rb(12)))
+
+# (변이) 문턱을 없애면 시즌 내내 붙어 소음이 되는가
+check("★★ (변이) 문턱이 없으면 9월(123경기)에도 붙어 소음이 된다",
+      _PF.SAMPLE_THIN_GAMES == 20
+      and _PF._pv_thin(_thin_rb(123)) == ""
+      and _PF._pv_thin(_thin_rb(12)) != "")
+
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
 for line in FAIL:

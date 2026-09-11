@@ -36,7 +36,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, assert_card_geometry, format_kickoff,
                       kst_day_label, morning_label, venue_name,
                       cancel_reason_text, foreign_script_chars,
-                      LINEUP_ENABLED, is_upcoming)
+                      LINEUP_ENABLED, is_upcoming, record_asof_note)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
 #
@@ -328,8 +328,10 @@ def standings_card(rb, league: League, day: str, *,
                     head=head, body=body, foot_left=f"{len(rows)}개 구단",
                     group_label=(f"{C5.LEAGUE_LABEL.get(league, '')} {group}".strip()
                                  if group else ""))
+    # v1.31 — **이 숫자가 언제 것인지 밝힌다.** 기록은 30분에 한 번 긁는다.
     return html, list(C5.caption(kind="standings", league=league, head=head,
-                                 date_label=_day_label(day)))
+                                 date_label=_day_label(day),
+                                 note=record_asof_note(rb)))
 
 
 def leaders_card(rb, league: League, day: str, set_idx: int
@@ -349,7 +351,8 @@ def leaders_card(rb, league: League, day: str, set_idx: int
                     head=head, body=body, foot_left=title)
     return html, list(C5.caption(
         kind="leaders", league=league, head=head, date_label=_day_label(day),
-        extra_lines=extra, extra_title="그 밖의 부문 1위" if extra else ""))
+        extra_lines=extra, extra_title="그 밖의 부문 1위" if extra else "",
+        note=record_asof_note(rb)))                       # v1.31
 
 
 def night_card(games: list, day: str
@@ -608,7 +611,8 @@ def analysis_cards(rb, games: list, league: League, day: str, *,
             _extra.append(_q)
     return html, list(C5.caption(kind="analysis", league=league, head=head,
                                  date_label=lab, extra_lines=_extra or None,
-                                 extra_title="경기 분석" if _extra else ""))
+                                 extra_title="경기 분석" if _extra else "",
+                                 note=record_asof_note(rb)))     # v1.31
 
 
 def analysis_card(rb, game, league: League, day: str, *,
@@ -774,7 +778,8 @@ def analysis_card(rb, game, league: League, day: str, *,
     html = C5.shell(kind="analysis", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
     return html, list(C5.caption(kind="analysis", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab,
+                                 note=record_asof_note(rb)))     # v1.31
 
 
 

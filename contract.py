@@ -1494,6 +1494,26 @@ def is_upcoming(g, now_utc: datetime) -> bool:
     return at > now_utc
 
 
+# ── ★ 기록 기준시각 — **언제 것인지 밝힌다** (v1.31, 2026-09-11) ──────────
+#
+# 분석·순위표·리더보드는 **30분에 한 번 긁는 기록**으로 그린다. 그러니 카드의
+# 숫자는 최대 30분 낡았다. 시점이 섞이면 카드를 아예 안 만드는 규칙은 이미
+# 있는데(§7-131), **정작 그 시점을 밝히지는 않고 있었다.**
+#
+# ⚠️ **출처 이름은 여기서 만들지 않는다.** 이 프로젝트는 "꼬리말은 출처를
+# 주장하지 않는다"로 결론을 냈고(약점 107), 약관 표기 의무가 있는 소스는
+# `cards_v5.credit_line`이 카드 꼬리말에 따로 붙인다.
+def record_asof_note(rb, *, prefix: str = "기록") -> str:
+    """'기록 19:00 기준'. 수집 시각을 모르면 **빈 문자열** — 지어내지 않는다."""
+    at = getattr(rb, "collected_utc", None) if rb is not None else None
+    if at is None:
+        return ""
+    try:
+        return f"{prefix} {at.astimezone(KST):%H:%M} 기준"
+    except (AttributeError, ValueError, TypeError):
+        return ""
+
+
 # ── ★ 경기의 **신원** — 이름표와 따로 둔다 (v1.28, 2026-09-10) ──────────
 #
 # `source_key`는 소스가 주는 **이름표**다. 그리고 **그 이름표는 바뀔 수 있다.**
