@@ -38,6 +38,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       cancel_reason_text, foreign_script_chars,
                       LINEUP_ENABLED, is_upcoming, record_asof_note,
                       GOAL_FLASH_ENABLED, goal_flash_enabled_for,
+                      rank_comparable, rank_word,
                       goal_key, goal_sort_key)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
@@ -142,7 +143,8 @@ def _flow_body(game, league: League) -> str | None:
 
 def result_card(games: list, league: League, day: str, *,
                 now: datetime | None = None,
-                extra_body: str = "") -> tuple[str, list[str]] | None:
+                extra_body: str = "",
+                rb=None) -> tuple[str, list[str]] | None:
     """경기 결과 카드 (HTML, 캡션 파트들). 못 만들면 None.
 
     경기가 적고 흐름 데이터가 있으면 **흐름표**를, 아니면 지금까지처럼
@@ -161,8 +163,16 @@ def result_card(games: list, league: League, day: str, *,
     head = None
     if len(todays) == 1:
         head = H.for_single_result(todays[0], league)
-    head = head or H.for_result(todays, league) or H.fallback(
-        "result", final=_fin, off=_off)
+    # ★ **순위표를 넘긴다** (v1.38). 안 넘기면 이 파일이 "결과 카드의
+    # 우선순위 1번"이라 적어 둔 **연속 기록 규칙(R-STREAK)이 영영 안 걸린다.**
+    # 실측: KBO 32일·NPB 33일·K리그1 13일 전부 0회. 그래서 유럽 축구 결과
+    # 카드는 사실상 `N경기 종료` 한 문장뿐이었다.
+    # `verify_headline`은 `standings`를 넘겨 시험하므로 문장 검사가 전부
+    # 통과해도 이 구멍을 못 본다 — **배선은 배선으로 확인해야 한다**(약점 185).
+    head = head or H.for_result(
+        todays, league,
+        standings=(getattr(rb, "standings", None) if rb is not None else None)
+    ) or H.fallback("result", final=_fin, off=_off)
     head = _with_korean_player(head, todays)
     date_label = _date_label(todays[0], now)
 
@@ -330,8 +340,11 @@ def standings_card(rb, league: League, day: str, *,
     head = H.for_standings(rb.standings, league, group=group) or H.fallback(
         "standings", label="현재 순위", group=group)
     body = C5.body_standings(rows, league)
+    _units = list(dict.fromkeys(x.group for x in rows if x.group))
+    _foot = (f"{'·'.join(_units)} {len(rows)}개 구단" if len(_units) > 1
+             else f"{len(rows)}개 구단")
     html = C5.shell(kind="standings", league=league, date_label=_day_label(day),
-                    head=head, body=body, foot_left=f"{len(rows)}개 구단",
+                    head=head, body=body, foot_left=_foot,
                     group_label=(f"{C5.LEAGUE_LABEL.get(league, '')} {group}".strip()
                                  if group else ""))
     # v1.31 — **이 숫자가 언제 것인지 밝힌다.** 기록은 30분에 한 번 긁는다.
@@ -543,9 +556,11 @@ def _analysis_row(rb, game, league: League, no: int,
 
     h2h_text, _h2h_recent, _h2h_full = _h2h_of(rb, a, h, na, history)
     # 한 줄 평은 **규칙 엔진이 만든 첫 줄만** 쓴다. 카드가 말을 짓지 않는다.
+    # 단위가 다르면 순위 뺄셈을 넘기지 않는다 (v1.38) — '몇 계단 차'가 거짓이 된다.
+    _ranks = (sa.rank, sh.rank) if rank_comparable(sa, sh) else None
     v = H.for_preview(away_name=na, home_name=nh, metrics=metrics,
                       h2h_text=h2h_text, h2h_recent=_h2h_recent,
-                      h2h_full=_h2h_full, ranks=(sa.rank, sh.rank))
+                      h2h_full=_h2h_full, ranks=_ranks)
     verdict = (v.lines[0] if (v and v.lines) else "")
     _hl = "올해 맞대결" if _h2h_full else "최근 맞대결"
     if h2h_text and verdict:
@@ -553,7 +568,8 @@ def _analysis_row(rb, game, league: League, no: int,
     elif h2h_text:
         verdict = f"{_hl} {h2h_text}"
     return {"no": no, "time": kst, "away": na, "home": nh,
-            "away_sub": f"{sa.rank}위", "home_sub": f"{sh.rank}위",
+            "away_sub": rank_word(sa, sh, always=True),
+            "home_sub": rank_word(sh, sa, always=True),
             "keys": " · ".join(bits), "verdict": verdict}
 
 
@@ -654,8 +670,9 @@ def analysis_card(rb, game, league: League, day: str, *,
     # 세면 승률과 거의 같은 사실을 두 번 세는 것이 된다 — "3개 중 3개를
     # 가져간다"가 실제보다 크게 들린다. 옛 분석 카드도 순위·승률은 안 셌다.
     # 표에는 남긴다: 독자가 가장 먼저 보는 값이다.
-    add("순위", -sa.rank, -sh.rank, f"{sa.rank}위", f"{sh.rank}위", True,
-        compare=False)
+    # 단위가 다르면 어느 리그의 몇 위인지 밝혀 적는다 — 지우지 않는다.
+    add("순위", -sa.rank, -sh.rank, rank_word(sa, sh, always=True),
+        rank_word(sh, sa, always=True), True, compare=False)
     try:
         add("승점률" if league is League.KL1 else "승률",
             float(sa.pct), float(sh.pct), sa.pct, sh.pct, True)
@@ -749,7 +766,9 @@ def analysis_card(rb, game, league: League, day: str, *,
     verdict = H.for_preview(away_name=na, home_name=nh, metrics=metrics,
                             h2h_text=h2h_text, h2h_recent=_h2h_recent,
                             h2h_full=_h2h_full, form=_form,
-                            streak=_streak or None, ranks=(sa.rank, sh.rank))
+                            streak=_streak or None,
+                            ranks=((sa.rank, sh.rank)
+                                   if rank_comparable(sa, sh) else None))
 
     # **`h2h`는 표 전체다.** 한 쌍의 `WLD`를 넘기면 `for_analysis`가 `.get()`을
     # 부르다 터진다 — 그리고 그 예외는 폴백이 삼켜서, 분석만 조용히 옛 카드로
@@ -1042,7 +1061,7 @@ def goal_card(game, league: League, goal_id: str, *,
                                  date_label=lab))
 
 
-def flash_card(game, league: League, *, now: datetime | None = None
+def flash_card(game, league: League, *, now: datetime | None = None, rb=None
                ) -> tuple[str, list[str]] | None:
     """경기 종료 직후 결과 속보. 경기 하나당 한 장.
 
@@ -1057,7 +1076,7 @@ def flash_card(game, league: League, *, now: datetime | None = None
         return None
     extra = _lineup_body(game, league, with_goals=True) if LINEUP_ENABLED else None
     return result_card([game], league, game.sports_day, now=now,
-                       extra_body=extra or "")
+                       extra_body=extra or "", rb=rb)
 
 
 def _date_label(game, now: datetime | None) -> str:

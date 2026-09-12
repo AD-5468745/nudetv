@@ -43,7 +43,7 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       cancel_reason_text, josa, keep_in_queue, morning_label,
                       # v1.11k — 스냅샷과 기록의 기준 시각 대조에 쓴다.
                       stale_unresolved)
-from contract import assert_card_typography, team_name
+from contract import assert_card_typography, team_name, DecidedBy
 
 # 워터마크(.wm/.wm3)는 읽으라고 넣은 글자가 아니므로 타이포 게이트에서 제외한다.
 #
@@ -1906,6 +1906,9 @@ def dryrun_send(item: QueueItem, payload: dict) -> dict:
 # 여기 들어가는 모든 문장은 RecordBook의 필드를 그대로 치환한 것이다.
 # 형용사·추측·LLM 작문 금지 — 사실 잠금 원칙.
 
+from contract import rank_word as _rank_word                      # noqa: E402
+from contract import rank_comparable as _rank_cmp                 # noqa: E402
+from contract import group_noun as _group_noun                    # noqa: E402
 from contract import (TEAM_NAMES, WLD, LeaderEntry, RecordBook, Standing,  # noqa: E402
                       StreakKind, assert_recordbook)
 
@@ -2053,6 +2056,27 @@ def _longest(cands: list[Standing]) -> tuple[Standing, bool]:
     return tied[0], len(tied) > 1
 
 
+
+def _std_order(standings: list) -> list:
+    """순위표를 **단위(리그·지구)별로 묶어** 세운다 (v1.38).
+
+    단위가 여럿인데 `rank`만으로 세우면 `1 1 2 2 3 3 …`이 섞인다.
+    단위가 하나(KBO)면 예전과 똑같은 순서다.
+    """
+    return sorted(standings, key=lambda x: ((x.group or ""), x.rank))
+
+
+def _std_units(standings: list) -> list:
+    return list(dict.fromkeys(x.group for x in standings if x.group))
+
+
+def _rk(s, other=None) -> str:
+    """'3위' — 단위가 있으면 '센트럴 3위'. 옛 카드도 거짓말을 하면 안 된다."""
+    if other is not None:
+        return _rank_word(s, other)
+    return f"{s.group} {s.rank}위" if s.group else f"{s.rank}위"
+
+
 def record_headline(rb: RecordBook) -> tuple[str, str]:
     """골드 패널에 들어갈 '기록 한 줄'. 결정론적 템플릿만 쓴다.
 
@@ -2063,8 +2087,11 @@ def record_headline(rb: RecordBook) -> tuple[str, str]:
     `max()`도 `for ... : return`도 동률을 조용히 하나로 줄여버려, 같은 표에
     똑같은 9연승 팀이 또 있는데도 한 팀만 "리그 최장"이라 불렀다.
     """
-    order = sorted(rb.standings, key=lambda x: x.rank)
-    top, second = order[0], order[1]
+    order = _std_order(rb.standings)
+    _units = _std_units(rb.standings)
+    # 단위가 여럿이면 '1위'가 여럿이다. 선두 이야기는 **첫 단위 안에서** 한다.
+    _lead = [x for x in order if not _units or x.group == _units[0]]
+    top, second = _lead[0], (_lead[1] if len(_lead) > 1 else _lead[0])
 
     # 1) 5연승 이상 / 5연패 이상
     for kind, word, label in ((StreakKind.WIN, "연승", "연승"),
@@ -2076,7 +2103,7 @@ def record_headline(rb: RecordBook) -> tuple[str, str]:
         # 동률이면 '리그 최장'이라 단정하지 않는다 — 공동임을 밝힌다.
         note = "— 리그 공동 최장" if tied else "— 리그 최장"
         return (label, f"<b>{esc(_tn(s))}</b> {s.streak_len}{word} "
-                       f"{note} (현재 {s.rank}위)")
+                       f"{note} (현재 {_rk(s)})")
 
     # 2) 최근 10경기 8승 이상 / 8패 이상
     #    **순위 순서로 처음 만난 팀이 아니라 최댓값을 뽑는다.** 전에는 같은 표에
@@ -2102,17 +2129,21 @@ def record_headline(rb: RecordBook) -> tuple[str, str]:
     #    또 팀명 뒤에 조사를 박아두면 받침 있는 이름이 전부 비문이 된다
     #    ("보스턴가 2위 …", "전북가", "인천가"). 조사는 josa()가 고른다.
     n1, n2 = _tn(top), _tn(second)
+    # 단위가 여럿이면 어느 단위의 선두인지 밝힌다 — 안 밝히면 1위가 둘이다.
+    _u = f"{_units[0]} " if _units else ""
+    if top is second:
+        return ("선두 경쟁", f"{_u}선두 <b>{esc(n1)}</b>")
     if _gb_zero(second.games_behind):
-        # 순위 순서로 승차 0이 이어지는 데까지가 공동 선두다.
+        # 순위 순서로 승차 0이 이어지는 데까지가 공동 선두다. **같은 단위 안에서만.**
         co = [top]
-        for s in order[1:]:
+        for s in _lead[1:]:
             if not _gb_zero(s.games_behind):
                 break
             co.append(s)
         names = "·".join(esc(_tn(s)) for s in co)
-        return ("선두 경쟁", f"<b>{names}</b> 공동 선두 (승차 없음)")
+        return ("선두 경쟁", f"<b>{names}</b> {_u}공동 선두 (승차 없음)")
     return ("선두 경쟁",
-            f"선두 <b>{esc(n1)}</b> · 2위 {esc(n2)}{josa(n2, '과', '와')} "
+            f"{_u}선두 <b>{esc(n1)}</b> · 2위 {esc(n2)}{josa(n2, '과', '와')} "
             f"{esc(second.games_behind)}경기 차")
 
 
@@ -2135,8 +2166,10 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     정보는 그대로이고 읽기는 편해진다.
     """
     assert_recordbook(rb, require_h2h=bool(rb.h2h))
-    order = sorted(rb.standings, key=lambda x: x.rank)
-    gap = order[1].games_behind if len(order) > 1 else "0"
+    order = _std_order(rb.standings)
+    units = _std_units(rb.standings)
+    _lead = [x for x in order if not units or x.group == units[0]]
+    gap = _lead[1].games_behind if len(_lead) > 1 else "0"
     total = len(order)
     # 30팀(MLB)은 한 장에 안 들어간다. 자르되 몇 중 몇인지 밝힌다.
     if top_n:
@@ -2159,7 +2192,11 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     _pr = ' class="padr"'
     _gb_at = "" if (show_l10 or show_streak) else _pr
     _l10_at = "" if show_streak else _pr
-    head = (f'<tr><th class="pad">순위</th><th>팀</th><th>{wl}</th><th>승률</th>'
+    # **단위가 여럿이면 어느 리그의 몇 위인지 열로 밝힌다 (v1.38).**
+    _uni = len(units) > 1
+    head = (f'<tr><th class="pad">순위</th>'
+            + ('<th>리그</th>' if _uni else "")
+            + f'<th>팀</th><th>{wl}</th><th>승률</th>'
             + f'<th{_gb_at}>승차</th>'
             + (f'<th{_l10_at}>최근10</th>' if show_l10 else "")
             + ('<th class="padr">연속</th>' if show_streak else "")
@@ -2171,7 +2208,8 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
         gb = "—" if s_.rank == 1 else esc(s_.games_behind)
         rows.append(
             f'<tr{cls}><td class="pad">{s_.rank}</td>'
-            f'<td>{esc(TEAM_NAMES[s_.league].get(s_.team_code, s_.team_code))}</td>'
+            + (f'<td>{esc(s_.group or "")}</td>' if _uni else "")
+            + f'<td>{esc(TEAM_NAMES[s_.league].get(s_.team_code, s_.team_code))}</td>'
             f'<td>{_wld(s_.record, has_draw)}</td>'
             f'<td>{esc(pct_text(s_.pct))}</td>'
             + f'<td{_gb_at}>{gb}</td>'
@@ -2183,8 +2221,9 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     lgname = LEAGUE_LABEL.get(rb.league, rb.league.value)
     sub = f"전체 {total}팀 중 상위 {len(order)}팀" if len(order) < total else ""
     # 승차 0.0을 "0.0경기 차"라 쓰면 차이가 있는 것처럼 읽힌다. 공동 선두다.
-    h1 = ('1·2위 <em>승차 없음</em>' if _gb_zero(gap)
-          else f'1·2위 <em>{esc(gap)}경기</em> 차')
+    _u1 = f"{units[0]} " if _uni else ""
+    h1 = (f'{_u1}1·2위 <em>승차 없음</em>' if _gb_zero(gap)
+          else f'{_u1}1·2위 <em>{esc(gap)}경기</em> 차')
     body = (_hdr(*LEAGUE_COLORS[rb.league], lgname, "팀 순위", _dt(day),
                  h1, sub, league=rb.league) +
             f'<div class="body"><table class="stb">{head}{"".join(rows)}</table></div>'
@@ -2379,13 +2418,13 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     _three10 = bool((sa.last10 and sa.last10.draw) or (sh.last10 and sh.last10.draw))
     kst, _ = format_kickoff(game)
 
-    def side(s: Standing, right: bool) -> str:
+    def side(s: Standing, right: bool, other: Standing | None = None) -> str:
         # 한 줄에 몰아넣으면 폭이 모자라 줄바꿈이 깨진다. 두 줄로 나눈다.
         cls = "tr rt" if right else "tr"
         l10 = f"최근10 {_wld(s.last10, _three10)}" if s.last10 else ""
         return (f'<div{" class=rt" if right else ""}>'
                 f'<div class="tn">{esc(TEAM_NAMES[s.league].get(s.team_code, s.team_code))}</div>'
-                f'<div class="{cls}">{s.rank}위 · {_wld(s.record, _three)}</div>'
+                f'<div class="{cls}">{_rk(s, other)} · {_wld(s.record, _three)}</div>'
                 f'<div class="{cls} l2">{l10}</div></div>')
 
     # 막대 색은 '우세팀'이 골드. 원정/홈이 아니라 전적이 색을 정한다.
@@ -2412,10 +2451,10 @@ def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     body = (_hdr(*LEAGUE_COLORS[rb.league], lgname, "맞대결 분석", _dt(day),
                  f'{esc(TEAM_NAMES[rb.league].get(a, a))} <em>vs</em> {esc(TEAM_NAMES[rb.league].get(h, h))}',
                  f'{esc(kst)} · {esc(venue_name(game.venue))}') +
-            f'<div class="body"><div class="vs">{side(sa, False)}'
+            f'<div class="body"><div class="vs">{side(sa, False, sh)}'
             f'<div class="mid"><span class="ml">시즌</span>'
             f'<span class="mv">{wld.win}-{wld.loss}-{wld.draw}</span></div>'
-            f'{side(sh, True)}</div>'
+            f'{side(sh, True, sa)}</div>'
             f'<div class="brow {ca}">' + _bn(TEAM_NAMES[rb.league].get(a, a)) +
             f'<div class="bar"><div class="fill" style="width:{aw}%"></div>'
             + (f'<div class="fdraw" style="width:{dw}%"></div>' if dw else "") +
@@ -2653,16 +2692,26 @@ def caption_result(games: list[Game], day: str, *, as_parts: bool = False,
 def caption_standings(rb: RecordBook, *, as_parts: bool = False):
     """순위표 전체. MLB는 30팀이라 카드엔 10팀만 실린다. as_parts=True면 파트 목록."""
     names = TEAM_NAMES.get(rb.league, {})
-    order = sorted(rb.standings, key=lambda x: x.rank)
+    order = _std_order(rb.standings)
+    units = _std_units(rb.standings)
     # 전적 표기는 **열 단위로 통일한다** — 캡션도 카드와 같은 규칙이다.
     # 행마다 정하면 한 목록에 '80-55'와 '78-63-3'이 섞여, 두 칸짜리가
     # 무승부 0인지 무승부가 없는 리그인지 알 수 없어진다.
     three = any(s.record.draw for s in order)
     # 텔레그램은 가변폭 글꼴이라 `{rank:>2}`로 자리를 맞출 수 없다.
     # 정렬은 안 되고 한 자리 순위 앞에 공백만 생겨 목록이 들쭉날쭉해 보였다.
-    lines = [f"{s.rank}. {esc(names.get(s.team_code, s.team_code))} "
-             f"{_wld(s.record, three)} · {esc(pct_text(s.pct))}"
-             for s in order]
+    def _one(s):
+        return (f"{s.rank}. {esc(names.get(s.team_code, s.team_code))} "
+                f"{_wld(s.record, three)} · {esc(pct_text(s.pct))}")
+
+    if len(units) > 1:
+        # 단위가 여럿이면 목록도 갈라 놓는다 — 안 그러면 1번이 두 번 나온다.
+        lines = []
+        for u in units:
+            lines.append(f"<b>{esc(u)}</b>")
+            lines += [_one(x) for x in order if x.group == u]
+    else:
+        lines = [_one(x) for x in order]
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"전체 순위 {len(rb.standings)}팀</b>\n")
     # 값에 라벨이 없으면 '0.579'가 승률인지 승차인지 알 수 없다.
@@ -2730,7 +2779,9 @@ def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
     if wld is not None:
         lines.append(f"시즌 상대전적 {na} {_wld(wld, three)}")
     for s, nm in ((sa, na), (sh, nh)):
-        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {esc(pct_text(s.pct))}"]
+        _other = sh if s is sa else sa
+        bits = [_rk(s, _other), _wld(s.record, three),
+                f"승률 {esc(pct_text(s.pct))}"]
         if s.last10:
             bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
@@ -3548,8 +3599,10 @@ def _condition_block(sa: Standing, sh: Standing, na: str, nh: str,
                 f'<div class="k">{esc(key)}</div>'
                 f'<div class="vb{cb}">{esc(vb)}</div></div>')
 
-    rows.append(row(f"{sa.rank}위", "순위", f"{sh.rank}위",
-                    None if sa.rank == sh.rank else sa.rank < sh.rank))
+    _same_unit = _rank_cmp(sa, sh)
+    rows.append(row(_rank_word(sa, sh), "순위", _rank_word(sh, sa),
+                    None if (not _same_unit or sa.rank == sh.rank)
+                    else sa.rank < sh.rank))
     try:
         pa, ph = float(sa.pct), float(sh.pct)
         rows.append(row(pct_text(sa.pct), "승률", pct_text(sh.pct),
@@ -3939,33 +3992,45 @@ def analysis_prose(rb: RecordBook, game: Game, *,
 
     # ── ① 대진과 순위 ────────────────────────────────────────────
     s = [f"{_prose_j(nh, '이', '가')} 안방에서 {_prose_j(na, '을', '를')} 맞는다."]
-    gap = abs(sa.rank - sh.rank)
-    if gap:
-        hi, lo = (sa, sh) if sa.rank < sh.rank else (sh, sa)
-        s.append(f"순위는 {_prose_j(team_name_of(league, hi.team_code), '이', '가')} "
-                 f"{hi.rank}위, "
-                 f"{_prose_j(team_name_of(league, lo.team_code), '이', '가')} "
-                 f"{lo.rank}위로 {gap}계단 차이다.")
+
+    # ── **단위가 다르면 뺄셈도 '선두'도 하지 않는다 (v1.38).**
+    # NPB 교류전·MLB 지구 간 경기가 여기 해당한다. 센트럴 1위와 퍼시픽 1위를
+    # 빼면 '0계단 차'가 되고, 둘 다 '선두'가 된다 — 둘 다 문장으로는 거짓이다.
+    # 지우는 대신 어느 리그의 몇 위인지 밝혀 적는다.
+    if not _rank_cmp(sa, sh):
+        s.append(f"{_prose_j(na, '은', '는')} {sa.group} {sa.rank}위, "
+                 f"{_prose_j(nh, '은', '는')} {sh.group} {sh.rank}위다. "
+                 f"소속 {_group_noun(league)}가 달라 "
+                 f"순위를 맞대 놓고 견주지는 않는다.")
     else:
-        s.append(f"둘 다 공동 {sa.rank}위다.")
-    # 축구는 승점차, 야구는 승차 — **같은 칸이 종목마다 다른 뜻이다**(약점 95·159).
-    try:
-        ga, gh = float(sa.games_behind), float(sh.games_behind)
-        if ga != gh:
-            unit = "점" if soccer else "경기"
-            what = "선두와의 승점차" if soccer else "선두와의 승차"
-            # 한쪽이 선두면 "선두와의 차 0"이라고 쓰지 않는다 — 그게 선두다.
-            if ga == 0 or gh == 0:
-                _top, _tn, _bn, _bg = ((sa, na, nh, gh) if ga == 0
-                                       else (sh, nh, na, ga))
-                s.append(f"{_prose_j(_tn, '이', '가')} 선두이고, "
-                         f"{_prose_j(_bn, '은', '는')} {_bg:g}{unit} 뒤에 있다.")
-            else:
-                s.append(f"{what}는 {na} {ga:g}{unit}, {nh} {gh:g}{unit}"
-                         f"{josa(unit, '으로', '로')} "
-                         f"둘 사이가 {abs(ga - gh):g}{unit} 벌어져 있다.")
-    except (TypeError, ValueError):
-        pass
+        gap = abs(sa.rank - sh.rank)
+        if gap:
+            hi, lo = (sa, sh) if sa.rank < sh.rank else (sh, sa)
+            s.append(f"순위는 {_prose_j(team_name_of(league, hi.team_code), '이', '가')} "
+                     f"{hi.rank}위, "
+                     f"{_prose_j(team_name_of(league, lo.team_code), '이', '가')} "
+                     f"{lo.rank}위로 {gap}계단 차이다.")
+        else:
+            s.append(f"둘 다 공동 {sa.rank}위다.")
+        # 축구는 승점차, 야구는 승차 — **같은 칸이 종목마다 다른 뜻이다**(약점 95·159).
+        try:
+            ga, gh = float(sa.games_behind), float(sh.games_behind)
+            if ga != gh:
+                unit = "점" if soccer else "경기"
+                what = "선두와의 승점차" if soccer else "선두와의 승차"
+                # 한쪽이 선두면 "선두와의 차 0"이라고 쓰지 않는다 — 그게 선두다.
+                if ga == 0 or gh == 0:
+                    _top, _tn, _bn, _bg = ((sa, na, nh, gh) if ga == 0
+                                           else (sh, nh, na, ga))
+                    _u = f"{_top.group} " if _top.group else ""
+                    s.append(f"{_prose_j(_tn, '이', '가')} {_u}선두이고, "
+                             f"{_prose_j(_bn, '은', '는')} {_bg:g}{unit} 뒤에 있다.")
+                else:
+                    s.append(f"{what}는 {na} {ga:g}{unit}, {nh} {gh:g}{unit}"
+                             f"{josa(unit, '으로', '로')} "
+                             f"둘 사이가 {abs(ga - gh):g}{unit} 벌어져 있다.")
+        except (TypeError, ValueError):
+            pass
     para.append(" ".join(s))
 
     # ── ② 두 팀의 시즌 (한 문단에 담는다 — 나눠 쓰면 항목표처럼 읽힌다) ──
@@ -4033,7 +4098,11 @@ def analysis_prose(rb: RecordBook, game: Game, *,
     if soccer:
         pos, sot = better("pos", True), better("sot", True)
         if pos and sot and pos[0] == sot[0]:
-            s.append(f"공을 더 쥔 쪽은 {_prose_j(pos[1], '이', '였')}었다. "
+            # ★ 이중 과거 비문 수정 (v1.38). `_prose_j(n,'이','였')`가
+            # 받침 없는 이름에 '였'를 주는데 뒤에 '었다'를 또 붙여
+            # **"제주였었다"·"대구였었다"**가 됐다(받침 있는 김천은 정상).
+            # K리그1 제주·대구·수원FC와 유럽 클럽 다수가 걸린다.
+            s.append(f"공을 더 쥔 쪽은 {_prose_j(pos[1], '이', '')}다. "
                      f"점유율 {pos[2]}%로 {pos[3]}({pos[4]}%)보다 높고, "
                      f"유효슈팅도 {sot[2]}개로 {sot[4]}개인 {sot[3]}보다 많다.")
         elif pos:
@@ -4293,6 +4362,11 @@ def _form_sentence(f: list[dict]) -> str:
 FLOW_BIG_INNING = 4        # 한 이닝 N점 이상이면 '몰아쳤다'
 FLOW_LATE_FROM = 7         # 이 이닝부터 '후반' — 그때 난 점수는 승부에 직결된다
 FLOW_MAX_EVENTS = 6        # 문장이 이보다 길어지면 덜 중요한 추가점부터 뺀다
+
+# 이만큼 벌어진 점수는 '추가점'이 아니라 승부를 굳힌 점수다 (v1.38).
+# 3점은 야구에서 한 이닝에 뒤집기 어려워지는 경계로 잡았다 —
+# 실측 KBO 종료 경기에서 8회 이후 3점 차를 뒤집은 비율은 5% 미만이다.
+FLOW_DECIDING_MARGIN = 3
 FLOW_REGULATION = 9        # 야구 정규 이닝
 
 
@@ -4396,6 +4470,14 @@ def _flow_worth(e: dict) -> bool:
     """
     if e["kind"] in ("first", "turn", "tie", "comeback", "retake"):
         return True
+    # ★ **점수차를 크게 벌린 득점도 말한다** (v1.38).
+    #
+    # 전에는 전반의 추가점을 전부 버렸는데, 그러면 **대승이 가장 빈약하게**
+    # 나갔다 — 실측: 0-6 완승이 `한화가 1회초 한 점을 먼저 냈다. 그 뒤로
+    # 앞뒤가 바뀌지 않았다.` 37자. 6점 중 5점이 통째로 사라진다.
+    # 승부를 굳힌 점수는 '추가점'이 아니라 그 경기의 이야기다.
+    if abs(e["hs"] - e["as"]) >= FLOW_DECIDING_MARGIN:
+        return True
     return e["big"] or e["late"] or e["extra"]
 
 
@@ -4430,12 +4512,45 @@ def flow_prose(game: Game, league: League, *,
 
     picked = [e for e in ev if _flow_worth(e)]
     # 너무 길면 **덜 중요한 추가점부터** 뺀다. 흐름을 바꾼 것은 절대 안 뺀다.
+    #
+    # ★ **마지막 사건은 어떤 경우에도 안 뺀다** (v1.38).
+    # 전에는 앞에서부터 뺄 것을 찾다가 뺄 게 없으면 `break`로 멈춰 **앞 6개만**
+    # 남겼다. 그러면 승부가 갈린 뒤쪽이 통째로 잘린다 — 실측: 12-15로 끝난
+    # 경기의 문단이 `12-9로 다시 앞섰다`에서 끝나, 독자는 12-9로 끝난 줄 안다.
+    # 카드에 찍힌 최종 점수와 텍스트가 **정면으로 어긋나는** 자리였다
+    # (야구 6% · 축구 18%, 실측). 자를 곳은 뒤가 아니라 가운데다.
+    _last = ev[-1] if ev else None
     while len(picked) > max_events:
         drop = next((e for e in picked
-                     if e["kind"] in ("widen", "chase") and not e["extra"]), None)
+                     if e["kind"] in ("widen", "chase") and not e["extra"]
+                     and e is not _last), None)
         if drop is None:
+            # 뺄 것이 없으면 **가운데를 버리고 끝을 지킨다.**
+            if len(picked) > max_events and _last in picked:
+                keep = picked[:max_events - 1] + [_last]
+                if len(keep) < len(picked):
+                    picked = keep
+                    continue
             break
         picked.remove(drop)
+
+    # ★ **말하지 않은 득점이 있으면 증가분을 주장하지 않는다** (v1.38).
+    #
+    # `_flow_worth`가 전반의 추가점을 버리는데 **누적 점수는 그것을 이미
+    # 반영한다.** 그래서 "N점을 뽑아 X-Y"의 N과 X-Y 증가분이 어긋났다 —
+    # 실측 4경기 중 1경기(25%). 예: `두 점을 먼저 냈다 … 한 점을 보태 4-0으로`.
+    # 독자가 문장 안에서 산수를 따라갈 수 없고, 이닝표와 대조하면 틀린 것처럼
+    # 보인다. **말 안 한 점수를 지어내 채우는 대신, 안 세는 문형으로 바꾼다.**
+    _said = set()
+    _skipped_before: dict = {}
+    _run_sum = {True: 0, False: 0}
+    for _e in ev:
+        if _e in picked:
+            _skipped_before[id(_e)] = (_run_sum[True] + _run_sum[False]) > 0
+            _run_sum = {True: 0, False: 0}
+        else:
+            _run_sum[_e["home"]] += _e["run"]
+    del _said
 
     said_extra = walkoff_said = False
     prev_team = None
@@ -4450,16 +4565,24 @@ def flow_prose(game: Game, league: League, *,
         when = _flow_half(e["i"], e["home"])
         verb = "몰아쳐" if e["big"] else "뽑아"
         pts = _flow_pts(e["run"])
+        # 이 사건 앞에 **말하지 않은 득점**이 있으면 증가분을 주장하지 않는다.
+        _gap = _skipped_before.get(id(e), False)
         same = (prev_team == e["home"])
         prev_team = e["home"]
         subj_i = "" if same else f"{nm(e)}{josa(nm(e), '이', '가')} "
         subj_n = "" if same else f"{nm(e)}{josa(nm(e), '은', '는')} "
         if e["kind"] == "first":
-            parts.append(f"{subj_i}{when} {pts}을 먼저 냈다.")
+            # ★ 첫 득점이 빅이닝이면 그렇다고 말한다 (v1.38).
+            # 전에는 `verb`를 안 써서 7점 빅이닝도 `일곱 점을 먼저 냈다`였다 —
+            # 그 경기 최대의 사건이 평범한 문장에 묻혔다.
+            parts.append(f"{subj_i}{when} {pts}을 몰아쳐 앞서 나갔다."
+                         if e["big"] else f"{subj_i}{when} {pts}을 먼저 냈다.")
         elif e["kind"] == "turn":
-            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 뒤집었다.")
+            parts.append(f"{subj_n}{when} {s}{ro} 뒤집었다." if _gap else
+                         f"{subj_n}{when} {pts}을 {verb} {s}{ro} 뒤집었다.")
         elif e["kind"] == "tie":
-            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
+            parts.append(f"{subj_n}{when} {s}{ro} 따라붙었다." if _gap else
+                         f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
         elif e["kind"] in ("comeback", "retake"):
             if e["home"] and e is ev[-1] and e["i"] >= regulation:
                 parts.append(f"{subj_i}{when} {pts}을 {verb} {s}{ro} 경기를 끝냈다.")
@@ -4467,19 +4590,31 @@ def flow_prose(game: Game, league: League, *,
             else:
                 # **'다시'는 전에 앞섰을 때만 쓴다** — 처음 앞서는 것은 역전이다
                 _w = "다시 앞섰다" if e["kind"] == "retake" else "역전했다"
-                parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} {_w}.")
+                parts.append(f"{subj_n}{when} {s}{ro} {_w}." if _gap else
+                             f"{subj_n}{when} {pts}을 {verb} {s}{ro} {_w}.")
         elif e["kind"] == "widen":
-            parts.append(f"{subj_n}{when}에도 {pts}을 보태 {s}{ro} 벌렸다.")
+            # ★ 같은 동사가 되풀이되면 바꾼다 (v1.38).
+            # **무작위가 아니라 데이터로 고른다** — 무작위는 재현도 검사도 안 된다.
+            # 점수차가 크게 벌어졌으면 '쐐기', 아니면 '벌렸다'.
+            _far = abs(e["hs"] - e["as"]) >= FLOW_DECIDING_MARGIN * 2
+            _wv = "쐐기를 박았다" if _far else "벌렸다"
+            parts.append(f"{subj_n}{when} {s}{ro} {_wv}." if _gap else
+                         f"{subj_n}{when}에도 {pts}을 보태 {s}{ro} {_wv}.")
         else:                                     # chase
-            parts.append(f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
+            parts.append(f"{subj_n}{when} {s}{ro} 따라붙었다." if _gap else
+                         f"{subj_n}{when} {pts}을 {verb} {s}{ro} 따라붙었다.")
 
     if len(picked) == 1:
         parts.append("그 뒤로 앞뒤가 바뀌지 않았다.")
 
     # **승부를 정한 점수** — 그 뒤로 아무도 못 따라잡았다는 사실은 표에 없다
-    decisive = next((e for e in reversed(ev)
-                     if e["kind"] in ("turn", "comeback", "retake",
-                                     "first")), None)
+    # ★ **무승부에는 승부가 없다** (v1.38). 축구 쪽 `_goal_decider`에는
+    # 이 가드가 있는데 야구에만 없어서 3-3 경기에 "그 7회말 점수가 승부를
+    # 갈랐다"가 나갔다(실측 2%). 같은 판정을 두 곳에 두면 한쪽이 빠진다.
+    _tied = bool(ev) and ev[-1]["hs"] == ev[-1]["as"]
+    decisive = None if _tied else next(
+        (e for e in reversed(ev)
+         if e["kind"] in ("turn", "comeback", "retake", "first")), None)
     if (decisive is not None and decisive is not ev[0]
             and (decisive["late"] or decisive["extra"]) and not walkoff_said):
         if decisive["home"] and decisive is ev[-1] and decisive["i"] >= regulation:
@@ -4912,7 +5047,15 @@ def _goal_rhythm(parts: list, part_ev: list, ev: list, *,
         except ValueError:
             k = -1
         if k >= 0:
-            if dec.get("added"):
+            # ★ **연장 골에 정규시간 이야기를 붙이지 않는다** (v1.38).
+            # `_goal_abs`가 연장 105분을 105로 주니 `left`가 0이 되어
+            # `정규시간이 끝나갈 때였다`가 붙었다 — 95·105·115·120분 **전부**.
+            # 연장 골은 정규시간이 이미 끝난 뒤의 골이다. 명백한 거짓이었다.
+            _half = goal_clock(int(dec.get("minute") or 0),
+                               int(dec.get("added") or 0), league)[0]
+            if _half == "연장":
+                out[k] += " 연장까지 가서야 갈렸다."
+            elif dec.get("added"):
                 out[k] += " 정규시간이 다 지난 뒤였다."
             elif _goal_abs(dec, league) >= LATE_DECIDER_MINUTE:
                 left = max(0, GOAL_SECOND_HALF_END - _goal_abs(dec, league))
@@ -4930,8 +5073,25 @@ def goal_prose(game: Game, league: League, *,
     meta = getattr(game, "meta", None)
     ev = goal_events(getattr(meta, "goals", ()) or ())
     if len(ev) < 2:
-        # 골이 하나면 카드의 타임라인 한 줄이 이미 전부다.
-        # 0-0이면 말할 것이 아예 없다.
+        # ★ **1-0은 축구에서 가장 흔한 점수다** (v1.38).
+        #
+        # 전에는 골이 하나면 아무 말도 안 했다 — 실측 **19%**(0골 6% + 1골 14%)가
+        # 텍스트 없이 나갔다. 그런데 카드 타임라인은 "누가 언제"만 말하고
+        # **"그전까지 0-0이었고 그 뒤로 안 바뀌었다"는 말하지 않는다.**
+        # 야구 쪽(`flow_prose`)은 이미 1점 경기에 "그 뒤로 앞뒤가 바뀌지
+        # 않았다"를 붙이고 있었다 — **두 종목의 기준이 달랐다.**
+        #
+        # 0-0은 그대로 침묵한다. 말할 사건이 정말로 없다.
+        if len(ev) == 1:
+            e = ev[0]
+            _nm1 = home_name if e["home"] else away_name
+            _w1 = _goal_when(e["minute"], e["added"], league)
+            _abs1 = _goal_abs(e, league)
+            if _abs1 >= LATE_DECIDER_MINUTE:
+                return [f"{_nm1}{josa(_nm1, '이', '가')} {_w1}에 넣은 한 골이 "
+                        f"경기를 갈랐다. 그전까지 양 팀 모두 넣지 못했다."]
+            return [f"{_nm1}{josa(_nm1, '이', '가')} {_w1}에 먼저 넣었고, "
+                    f"그 한 골이 끝까지 지켜졌다."]
         return []
 
     def nm(e):
@@ -5018,12 +5178,22 @@ def goal_prose(game: Game, league: League, *,
 
     # 승부차기·연장 — 계약이 담은 사실만 쓴다
     dec = getattr(getattr(game, "meta", None), "decided_by", None)
-    dv = getattr(dec, "value", "")
     # ⚠️ 승부차기 점수는 **카드가 이미 적는다**(`decided_by` 꼬리표).
     #    여기서는 "그래서 어떻게 갈렸나"만 한 마디로 말한다.
-    if dv == "penalties":
+    #
+    # ★ **문자열을 손으로 적어 비교하다 죽어 있었다** (v1.38).
+    # 여기 `"penalties"` / `"extra_time"`이라 적혀 있었는데 계약의 실제 값은
+    # `"pso"` / `"aet"`다. 그래서 **이 두 문장은 한 번도 나간 적이 없다** —
+    # 승부차기로 갈린 1-1 경기가 비긴 것처럼 끝났다.
+    # 이제 열거형을 직접 비교한다. 이름이 바뀌면 import에서 터지므로
+    # 같은 병이 **조용히** 재발하지 않는다.
+    if dec is DecidedBy.PSO:
         parts.append("승부차기 끝에 갈렸다.")
-    elif dv == "extra_time":
-        parts.append("연장까지 갔다.")
+    elif dec is DecidedBy.AET:
+        # **리듬 문장이 이미 연장을 말했으면 또 말하지 않는다** —
+        # 연장 골이 있으면 위에서 "연장까지 가서야 갈렸다"가 붙는다.
+        # 두 문장이 잇달아 나오면 기계가 쓴 티가 난다.
+        if not any("연장" in x for x in parts):
+            parts.append("연장까지 갔다.")
 
     return [" ".join(parts)] if parts else []

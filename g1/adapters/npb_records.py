@@ -32,35 +32,36 @@ NPB 공식 `npb.jp/bis/{시즌}/stats/` 는 **무인증 정적 HTML**이고, 우
     대각선에서 유도한 것을 그대로 쓴다. 부문 순위의 `佐藤 輝明(神)`도 같은 약칭이라
     같은 표를 재사용한다. 약칭 표기가 바뀌어도 코드를 고칠 일이 없다.
 
-── 두 리그를 하나의 12팀 순위표로 합치는 방법과 근거 ──────────────
-`contract.LEAGUE_TEAM_COUNT[League.NPB] == 12`이고 `assert_recordbook`은
-`ranks == [1..N]`을 **정확히** 요구한다(순위 불연속·중복 금지). 그런데 NPB는
-센트럴 1위와 퍼시픽 1위가 둘 다 1위다. `Standing`에는 소속 리그를 담을 자리가
-**없다**(league/season/team_code/rank/games/record/pct/games_behind/last10/
-streak/home/away가 전부이고, `pct`·`games_behind`는 값이 검증되는 자리다).
-`contract.py`는 고치지 말라는 지시가 있으므로 필드를 늘리는 선택지도 없다.
+── 순위의 단위는 센트럴·퍼시픽이다 (v1.38에서 바로잡음) ──────────
+NPB에 **통합 순위는 없다.** 센트럴 1위와 퍼시픽 1위가 둘 다 1위다.
+그래서 `Standing.group`에 소속 리그를 담고, `rank`·`games_behind`를
+**그 리그 안의 값**으로 적는다. `contract.assert_recordbook`은 v1.12부터
+`group`별로 검사하므로 1위가 둘이어도 막히지 않는다.
 
-그래서 **승차(GB) 기준 통합 순위**로 합친다. 근거:
+**v1.37까지는 12팀을 하나로 세웠다.** 이 자리에 "`Standing`에 소속 리그를
+담을 자리가 없다"고 적혀 있었는데, 그 문장은 `group`이 생긴 v1.12 이후로
+낡은 것이었다. 자리가 생긴 줄 모르고 통합 순위를 계속 내보냈고,
+2026-09-13 실렌더에서 대가가 드러났다 — 한신은 센트럴 1위인데 카드가
+"4위"라 적었고, 머리말은 `2·3위 0경기 차 — 세이부 · 닛폰햄`이라고 말했다
+(둘 다 퍼시픽 팀이다). **없는 개념을 지어내 매일 발행하고 있었다.**
 
-  · GB의 정의 GB_i = ((W₁−W_i) + (L_i−L₁))/2 를 풀면
-        GB_i = (W₁−L₁)/2 − (W_i−L_i)/2
-    즉 **GB는 (승−패)의 단조 함수**다. 기준 팀(1위)이 누구든 상수만 달라진다.
-    따라서 `(승−패)` 내림차순으로 정렬하면 **GB는 반드시 비감소**가 되고
-    `assert_recordbook`의 "게임차 역전" 게이트를 구조적으로 통과한다.
-  · 승률 내림차순으로 정렬하면 이 보장이 없다. 두 리그의 소화 경기 수가 다르면
-    (4월에 흔하다) 승률 순서와 GB 순서가 어긋나 게이트에 걸려 **NPB 순위 카드가
-    통째로 빠진다**. 오늘 데이터로는 두 정렬이 우연히 같지만, 우연에 기대지 않는다.
-  · 1위는 `(승−패)` 최대 팀으로 잡는다 → 모든 팀 GB ≥ 0, 1위 GB = 0.
-  · 동률은 승률 → 승수 → 팀코드 순으로 깬다(결정론).
+게임차는 여전히 (승−패)에서 만든다:
+      GB_i = ((W₁−W_i) + (L_i−L₁))/2 = (W₁−L₁)/2 − (W_i−L_i)/2
+즉 **GB는 (승−패)의 단조 함수**이고, 기준 팀이 누구든 상수만 달라진다.
+그래서 12팀 전체로 한 번 계산한 뒤 **각 리그 1위분을 빼서** 리그 내 승차를
+얻는다. 그 값이 소스의 `差` 열과 정확히 일치해야 한다 —
+`_check_gb_against_source`가 그 대조를 게이트로 건다. 2026-09-03·09-13 실측
+12팀 전부 일치(센트럴 0/0.5/8.5/14.5/17.5/17.0, 퍼시픽 0/7.5/10/20.5/21/33).
 
-**검증**: 이렇게 만든 통합 GB의 '같은 리그 안 1위 대비 차'는 소스의 `差` 열과
-정확히 일치해야 한다. 2026-09-03 실측으로 12팀 전부 일치했다
-(센트럴 0/5/13/16/17/19, 퍼시픽 0/5/7/17.5/18/26.5). 이 대조를 게이트로 건다 —
-GB 계산이 틀리면 여기서 막힌다.
+**순위 순서와 승차 순서는 어긋날 수 있다 — 그것이 정상이다.** 순위는 승률로
+매기고 승차는 (승−패)로 매기는데, 소화 경기 수가 다르면 두 순서가 갈린다.
+2026-09-13 센트럴: 5위 주니치 130경기 17.5 · 6위 히로시마 123경기 17.0.
+`assert_recordbook`은 v1.38부터 이 역전을 **'경기 수가 다르고 승률 순서는
+지켜졌을 때만'** 통과시킨다(그 밖은 표가 밀린 것이다).
 
-원래 리그 순위는 버리지 않는다. `RecordBook`에 담을 자리가 없으므로
-`adapter.sub_league_rank`와 `rb.npb_sub_league`(계약 밖 부가 주석, 게이트는
-이것을 보지 않는다)에 `{팀코드: ("CEN"|"PAC", 리그내순위)}`로 남긴다.
+원래 리그 순위는 `adapter.sub_league_rank`와 `rb.npb_sub_league`에도
+`{팀코드: ("센트럴"|"퍼시픽", 리그내순위)}`로 남긴다 — 이제 `Standing`이
+같은 것을 들고 있으므로 부가 주석일 뿐이다.
 
 ── 부문 순위(leaders)에 관하여 ───────────────────────────────────
 NPB는 부문 순위를 **리그별로** 낸다. 우리 `RecordBook`은 12팀 하나이므로
@@ -398,21 +399,44 @@ class NpbRecordAdapter(NoticeMixin):
         rows.sort(key=sort_key)
         top_diff = diff(rows[0])
 
-        standings: list[Standing] = []
         gb_by_code: dict[str, float] = {}
-        for rank, r in enumerate(rows, start=1):
-            gb = (top_diff - diff(r)) / 2.0
-            gb_by_code[r["code"]] = gb
-            standings.append(Standing(
-                league=League.NPB, season=str(season), team_code=r["code"],
-                rank=rank, games=r["games"], record=r["record"],
-                pct=r["pct"], games_behind=f"{gb:.1f}",
-                # 이 소스는 최근 10경기·연속 기록을 주지 않는다. 없는 것을 만들지 않는다.
-                last10=None, streak_kind=StreakKind.NONE, streak_len=0,
-                home=r["home"], away=r["away"]))
-            self.sub_league_rank[r["code"]] = (r["sub"], r["lg_rank"])
+        for r in rows:
+            gb_by_code[r["code"]] = (top_diff - diff(r)) / 2.0
 
+        # 통합 게임차가 소스의 `差` 열과 맞는지 **먼저** 대조한다.
+        # 아래에서 내보내는 리그 내 게임차는 이 값에서 리그 1위분을 뺀 것이라,
+        # 이 대조가 곧 내보낼 값의 검증이다.
         self._check_gb_against_source(pages, gb_by_code)
+
+        # ── **순위의 단위는 센트럴·퍼시픽이다 (v1.38, 약점 218).**
+        #
+        # 예전에는 12팀을 하나로 세웠다. 이 파일 머리말이 그 이유로 "`Standing`에
+        # 소속 리그를 담을 자리가 없다"고 적어 두었는데, **그 문장은 낡았다** —
+        # `Standing.group`이 v1.12에 생겼다. 자리가 생긴 줄 모르고 통합 순위를
+        # 계속 내보냈고, 2026-09-13 실렌더에서 그 대가가 드러났다:
+        #   · 한신은 센트럴 1위인데 카드가 "4위"라고 적었다.
+        #   · 머리말이 `2·3위 0경기 차 — 세이부 · 닛폰햄`이라고 말했다.
+        #     둘 다 퍼시픽 팀이고, 통합 2·3위는 NPB에 존재하지 않는 개념이다.
+        # NPB에 통합 순위는 없다. 없는 것을 지어내 매일 발행하고 있었다.
+        #
+        # 이제 소속 리그를 `group`에 담고, 순위·게임차를 **그 리그 안의 값**으로
+        # 적는다. `assert_recordbook`은 v1.12부터 단위별로 검사한다.
+        _sub_label = {"c": "센트럴", "p": "퍼시픽"}
+        standings: list[Standing] = []
+        for lg in SUB_LEAGUES:
+            teams = pages[lg]["teams"]
+            base = gb_by_code[teams[0]["code"]]      # 그 리그 1위(소스 순서 첫 행)
+            label = _sub_label[lg]
+            for r in teams:
+                gb = gb_by_code[r["code"]] - base
+                standings.append(Standing(
+                    league=League.NPB, season=str(season), team_code=r["code"],
+                    rank=r["lg_rank"], games=r["games"], record=r["record"],
+                    pct=r["pct"], games_behind=f"{gb:.1f}",
+                    # 이 소스는 최근 10경기·연속 기록을 주지 않는다. 없는 것을 만들지 않는다.
+                    last10=None, streak_kind=StreakKind.NONE, streak_len=0,
+                    home=r["home"], away=r["away"], group=label))
+                self.sub_league_rank[r["code"]] = (label, r["lg_rank"])
 
         # 상대전적 — 리그 내 5팀(표0) + 상대 리그 6팀(표1) = 11팀
         abbrev_all: dict[str, str] = {}

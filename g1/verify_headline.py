@@ -503,7 +503,15 @@ def _g1(aw, hm, sa, sh, rows=(), unit=_U.RUNS, lg=League.KBO):
 
 _h1 = H.for_single_result(_g1("HH", "LT", 11, 6, [(0, 0)] * 7 + [(0, 6), (0, 0)]), League.KBO)
 check("점수를 그대로 말한다", "한화 11 : 6 롯데" == _h1.text, _h1.text)
-check("★ 한 구간에 몰아친 점수를 잡는다", "8회에만 6점" == _h1.sub, _h1.sub)
+# ★ v1.38 — **누가 냈는지 말한다.** 전에는 `8회에만 6점`이라 적었는데,
+# 큰 글씨가 "한화 11 : 6 롯데"로 시작하니 독자는 앞에 적힌 팀이 냈다고 읽는다.
+# 실측 4건 중 2건이 반대로 읽혔다(그 점수를 낸 것은 뒤에 적힌 팀이었다).
+check("★ 한 구간에 몰아친 점수를 잡는다", "한화 8회에만 6점" == _h1.sub, _h1.sub)
+check("★★ 그 점수를 **누가** 냈는지 말한다 (안 밝히면 절반이 반대로 읽힌다)",
+      _h1.sub.startswith("한화") and _h1.facts.get("team") == "한화", str(_h1.facts))
+# (변이) 팀을 빼면 어느 쪽이 냈는지 알 수 없다 — 그것이 고치기 전 상태다
+check("  ↳ (변이) 팀 이름을 빼면 문장만으로는 낸 쪽을 못 가린다",
+      "8회에만 6점" in _h1.sub and "한화" in _h1.sub)
 check("문장의 모든 수가 facts에 있다",
       set(re.findall(r"\d+", _h1.text + _h1.sub))
       <= {str(v) for v in _h1.facts.values()},
@@ -688,6 +696,36 @@ check("★★ 감상을 담은 낱말을 쓰지 않는다 (명승부·짜릿·�
       not any(w in _words for w in
               ("명승부", "짜릿", "역대급", "최고", "환상", "대박", "완벽", "감동")),
       _words)
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★★ 배선 — 규칙이 살아 있으려면 재료가 실제로 건너가야 한다 (v1.38)")
+# ══════════════════════════════════════════════════════════════
+#
+# **문장 시험만으로는 절대 못 잡는 구멍이다.** `for_result`에 `standings`를
+# 넘겨 시험하면 R-STREAK가 잘 나온다 — 그런데 **운영 호출부가 안 넘겼다.**
+# 실측: KBO 32일·NPB 33일·K리그1 13일 전부 연속 기록 머리말 0회.
+# 이 파일이 "결과 카드의 우선순위 1번"이라 적어 둔 규칙이 죽어 있었다.
+# 그래서 **소스를 직접 읽어** 배선을 못 박는다(약점 185: 주석은 증거가 아니다).
+import pathlib as _pl                                            # noqa: E402
+_HERE = _pl.Path(__file__).resolve().parent
+_RV = (_HERE / "render_v5.py").read_text(encoding="utf-8")
+_TK = (_HERE / "tick.py").read_text(encoding="utf-8")
+check("★★★ 결과 카드가 순위표를 머리말에 넘긴다 (안 넘기면 연속 기록이 죽는다)",
+      "H.for_result(" in _RV and "standings=" in _RV,
+      "render_v5가 for_result에 standings를 안 넘깁니다")
+check("★★★ 시계가 결과 카드에 기록을 넘긴다 (넘기지 않으면 위가 늘 None이다)",
+      "R.result_card(" in _TK and "rb=(records" in _TK,
+      "tick이 result_card에 rb를 안 넘깁니다")
+check("  ↳ 종료 속보도 같은 경로다", "rb=(records" in _TK and "flash_card(" in _TK)
+
+# 실제로 규칙이 걸리는지 — 재료를 주면 문장이 나온다
+_wire_st = [_st("LG", 1, 80, 45, streak=(StreakKind.WIN, 8)),
+            _st("OB", 2, 70, 55, streak=(StreakKind.LOSS, 1))]
+_wire_h = H.for_result([_g1("OB", "LG", 5, 3, [])], League.KBO, standings=_wire_st)
+check("★★ 재료가 건너가면 연속 기록이 실제로 걸린다",
+      _wire_h is not None and _wire_h.rule == "R-STREAK",
+      _wire_h.rule if _wire_h else "None")
+
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

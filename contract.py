@@ -1327,15 +1327,45 @@ def morning_label(now_utc: datetime, first_start_utc: "datetime | None" = None
 # 카드 문안에 "가"/"를"/"은"이 하드코딩돼 있어 받침 있는 팀명이 전부 비문이 됐다
 # (실측: "보스턴가 2위 뉴욕양키스에…", "전북가", "인천가"). 팀명·선수명은 변수라
 # 문자열에 조사를 박으면 반드시 절반이 틀린다.
+# ── ★ 영문·숫자로 끝나는 말의 받침 (v1.38) ────────────────────────
+#
+# 한국어 독자는 `WHIP`을 "더블유힙", `T1`을 "티원", `10`을 "십"으로 **읽는다.**
+# 그런데 전에는 한글이 아니면 무조건 "받침 없음"으로 봤다 —
+# 실측으로 나온 오류: `팀WHIP는`(→은) · `최근10는`(→은) · `T1는`(→은) · `DN는`(→은).
+#
+# **한글 팀 이름 29개는 전부 정확했다.** 고칠 곳은 영문 약칭과 숫자뿐이다.
+# 그래서 "읽는 소리의 끝 글자"를 표로 둔다 — 규칙이 아니라 **독음**이라
+# 예외를 표에 적는 것이 정확하다.
+_ROMAN_READING = {
+    "A": "에이", "B": "비", "C": "씨", "D": "디", "E": "이", "F": "에프",
+    "G": "지", "H": "에이치", "I": "아이", "J": "제이", "K": "케이", "L": "엘",
+    "M": "엠", "N": "엔", "O": "오", "P": "피", "Q": "큐", "R": "알",
+    "S": "에스", "T": "티", "U": "유", "V": "브이", "W": "더블유",
+    "X": "엑스", "Y": "와이", "Z": "지",
+}
+# 숫자 독음의 끝 글자 — 0 영 · 1 일 · 3 삼 · 6 육 · 7 칠 · 8 팔 은 받침이 있다.
+_DIGIT_BATCHIM = {"0": True, "1": True, "2": False, "3": True, "4": False,
+                  "5": False, "6": True, "7": True, "8": True, "9": False}
+
+
 def has_final_consonant(word: str) -> bool:
-    """마지막 글자에 받침이 있는가. 한글이 아니면 False(조사 선택은 호출부 기본값)."""
+    """마지막 글자에 받침이 있는가.
+
+    한글이면 유니코드로 판정하고, **영문·숫자로 끝나면 그 글자를 한국어로
+    읽었을 때의 받침**을 본다(`_ROMAN_READING` · `_DIGIT_BATCHIM`).
+    그 밖의 글자는 받침 없음으로 본다 — 모르는 것을 지어내지 않는다.
+    """
     for ch in reversed(word.strip()):
         if ch.isspace():
             continue
         code = ord(ch)
         if 0xAC00 <= code <= 0xD7A3:
             return (code - 0xAC00) % 28 != 0
-        # 한글이 아닌 글자로 끝나면(영문 약칭·숫자) 받침 없음으로 본다.
+        if ch.isdigit():
+            return _DIGIT_BATCHIM.get(ch, False)
+        r = _ROMAN_READING.get(ch.upper())
+        if r:
+            return (ord(r[-1]) - 0xAC00) % 28 != 0
         return False
     return False
 
@@ -4372,6 +4402,48 @@ class Standing:
             raise GateError(f"{self.team_code}: 경기수 {self.games} > 정규시즌 {total}")
 
 
+def rank_comparable(a: "Standing", b: "Standing") -> bool:
+    """두 팀의 순위를 **직접 견줄 수 있는가** (v1.38).
+
+    순위는 `group` 안에서만 뜻이 있다. 센트럴 1위와 퍼시픽 1위는 둘 다 1위이고,
+    그 둘을 "1위 vs 1위"로 늘어놓으면 카드가 거짓말을 한다. 단위가 다르면
+    '몇 계단 차' 같은 뺄셈도 뜻이 없다 — 그래서 뺄셈 전에 이것부터 묻는다.
+    한쪽이라도 단위가 없으면(KBO처럼 리그가 통째로 한 단위) 견줄 수 있다.
+    """
+    if a is None or b is None:
+        return False
+    if not a.group or not b.group:
+        return True
+    return a.group == b.group
+
+
+# 순위 단위를 부르는 **한국어 이름**. MLB는 지구, NPB는 리그다.
+# 카드가 "소속 그룹이 달라"라고 말하면 그건 개발자 말이다.
+GROUP_NOUN: dict = {League.MLB: "지구", League.NPB: "리그"}
+
+
+def group_noun(league: "League | None") -> str:
+    return GROUP_NOUN.get(league, "리그")
+
+
+def rank_word(s: "Standing", other: "Standing | None" = None, *,
+              always: bool = False) -> str:
+    """'3위' — 상대와 단위가 다르면 단위 이름을 붙여 '퍼시픽 3위'로 적는다.
+
+    지우는 대신 **밝힌다.** 교류전 카드에서 순위 줄을 통째로 빼면 독자가 가장
+    먼저 보는 값이 사라진다. 어느 리그의 3위인지 적으면 사실이 된다.
+
+    `always=True`는 **한 카드 안에 여러 경기가 섞이는 자리**에서 쓴다. 어떤 줄은
+    'AL 동부 1위'이고 어떤 줄은 그냥 '2위'면, 읽는 사람은 '2위'가 무엇의 2위인지
+    알 수 없다 — 같은 표 안에서는 표기를 한 가지로 맞춘다.
+    """
+    if s is None:
+        return ""
+    if s.group and (always or (other is not None and not rank_comparable(s, other))):
+        return f"{s.group} {s.rank}위"
+    return f"{s.rank}위"
+
+
 @dataclass(frozen=True)
 class LeaderEntry:
     """부문별 순위 한 줄. value는 소스 원문 문자열 — 절대 재포맷하지 않는다."""
@@ -4512,16 +4584,44 @@ def assert_recordbook(rb: RecordBook, *, require_h2h: bool = True,
             if len(_gbs) > 1:
                 raise GateError(
                     f"{where}: 공동 {_r}위인데 게임차가 다름 {sorted(_gbs)}")
-        prev_gb = None
+        # ── **순위는 승률로, 게임차는 (승−패)로 매겨진다 (v1.38, 약점 219).**
+        #
+        # 이 검사는 "순위가 내려가면 게임차는 커진다"를 당연하게 여겼다. 두 값이
+        # 같은 것을 재는 줄 알았던 것이다. 아니다.
+        #   · 순위  = 승률 = 승/(승+패)          ← 소화 경기 수를 나눠 없앤다
+        #   · 게임차 = ((W₁−Wᵢ)+(Lᵢ−L₁))/2       ← 소화 경기 수가 그대로 남는다
+        # **소화 경기 수가 다르면 두 순서는 어긋날 수 있고, 그것이 정상이다.**
+        # 2026-09-13 실측 NPB 센트럴: 5위 주니치 54-74(130경기) 게임차 17.5 ·
+        # 6위 히로시마 50-69(123경기) 게임차 17.0. 히로시마가 7경기를 덜 치러
+        # 승률은 낮은데 게임차는 작다. NPB 공식 `差` 열도 똑같이 적는다.
+        #
+        # 그래서 역전 자체를 사고로 보지 않고, **역전이 설명되는지**를 본다.
+        # 설명되려면 둘 다 참이어야 한다:
+        #   ① 소화 경기 수가 다르다      — 같은 경기 수면 두 순서는 반드시 같다
+        #   ② 승률 순서는 지켜졌다        — 순위를 매긴 바로 그 값이니 여기서 뒤집히면
+        #                                   그건 표가 한 칸 밀린 것이다
+        # 둘 중 하나라도 어긋나면 예전처럼 막는다.
+        prev = None
         for s in sorted(members, key=lambda x: x.rank):
             s.validate()
             try:
                 gb = float(s.games_behind)
             except ValueError:
                 raise GateError(f"{s.team_code}: 게임차 파싱 불가 {s.games_behind!r}")
-            if prev_gb is not None and gb < prev_gb - 1e-9:
-                raise GateError(f"{where} {s.team_code}: 게임차 역전 {prev_gb} → {gb}")
-            prev_gb = gb
+            if prev is not None and gb < prev[1] - 1e-9:
+                try:
+                    _pp, _cp = float(prev[0].pct), float(s.pct)
+                except (TypeError, ValueError):
+                    _pp = _cp = None
+                _explained = (prev[0].games != s.games
+                              and _pp is not None and _cp is not None
+                              and _pp >= _cp - 1e-9)
+                if not _explained:
+                    raise GateError(
+                        f"{where} {s.team_code}: 게임차 역전 {prev[1]} → {gb} "
+                        f"(경기 {prev[0].games}·{s.games} / 승률 {prev[0].pct}·{s.pct}) "
+                        f"— 소화 경기 수 차이로 설명되지 않습니다")
+            prev = (s, gb)
 
     if require_h2h:
         if not rb.h2h:

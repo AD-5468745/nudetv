@@ -26,7 +26,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from contract import (League, REGULAR_PERIODS, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
-                      Status, StreakKind, TEAM_NAMES, cancel_reason_text, josa)
+                      Status, StreakKind, TEAM_NAMES, cancel_reason_text, josa,
+                      rank_comparable, rank_word)
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,23 @@ BLOWOUT_MARGIN: dict[League, Optional[int]] = {
     League.KBO: 9,
     League.NPB: 6,
     League.MLB: 7,
-    League.KL1: 3,
+    League.KL1: 3,          # 자체 실측 n=41, 상위 10% 지점 = 3
+    # ── 유럽 축구 + MLS (v1.38에서 채움) ──────────────────────────
+    #
+    # **표가 비어 있어서 꺼져 있었다** — "표본이 없어서"가 아니라 v1.15에서
+    # 이 리그들을 켤 때 임계를 안 채운 것이다. 그 결과 유럽 축구 결과 카드는
+    # 사실상 `N경기 종료` 한 문장뿐이었다(실측: 라리가 7일 중 6일, 세리에A 4일 전부).
+    #
+    # ⚠️ **리그별 표본이 얇다**(EPL 10 · 세리에A 10 · 리그1 8 …). 그래서 리그마다
+    # 따로 재지 않고 **축구 전체 n=96으로 한 번 재서 공통값**을 쓴다.
+    #   골 차 분포 0:29 1:34 2:14 3:12 4:3 5:3 7:1 (2026-09-13 실측)
+    #   3골 차 이상 19.8% · **4골 차 이상 7.3%** · 5골 차 이상 4.2%
+    # 다른 종목의 임계가 "상위 10% 지점"이므로 축구도 그 자리인 **4**를 쓴다.
+    # 3은 다섯 경기 중 하나꼴이라 '대승'이라 부르기에 너무 흔하다.
+    # 리그별 표본이 30건을 넘으면 그때 리그마다 다시 잰다.
+    League.EPL: 4, League.LALIGA: 4, League.SERIEA: 4,
+    League.BUNDESLIGA: 4, League.LIGUE1: 4,
+    League.UCL: 4, League.UEL: 4, League.MLS: 4,
     League.LCK: 2,          # 맵 스코어: 2-0 또는 3-0
     League.INTL_LOL: 2,
     League.KBL: None,       # 표본 없음 — 규칙 꺼짐
@@ -101,6 +118,26 @@ def _unit_word(league: League) -> str:
     """'득점'인가 '맵 스코어'인가. 리그마다 다른 것을 뭉개면 카드가 거짓말을 한다."""
     return {ScoreUnit.MAPS: "맵 스코어", ScoreUnit.SETS: "세트 스코어"}.get(
         SCORE_UNIT_BY_LEAGUE.get(league), "득점")
+
+
+# ── ★ 점수를 세는 낱말 (v1.38) ────────────────────────────────────
+#
+# **축구에 '점'은 없다.** 그런데 `for_single_result`가 리그를 보지 않고
+# 전부 "점"이라고 썼다 — 실렌더로 확인: `첼시 1 : 2 아스널 / 한 점 차`.
+# LoL 맵 스코어 3-2도 "한 점 차"였다(지금은 그 리그를 껐지만 표는 남아 있다).
+#
+# `best_games`는 같은 자리에서 이미 바르게 갈라 쓰고 있었다("한 골 차").
+# **한 파일 안에서 두 함수가 다른 말을 하고 있었다** — 그래서 낱말을
+# 여기 한 곳에 모은다(약점 45: 두 곳에서 각자 만들면 반드시 어긋난다).
+_COUNT_WORD = {
+    ScoreUnit.RUNS: "점", ScoreUnit.POINTS: "점",
+    ScoreUnit.GOALS: "골", ScoreUnit.SETS: "세트", ScoreUnit.MAPS: "맵",
+}
+
+
+def count_word(league: "League | None") -> str:
+    """그 리그에서 점수를 세는 낱말. 모르면 '점'(가장 무난한 기본값)."""
+    return _COUNT_WORD.get(SCORE_UNIT_BY_LEAGUE.get(league), "점")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -169,6 +206,11 @@ def for_result(games: list, league: League, *, standings: list | None = None
         reasons.discard("")
         # 사유가 하나로 모이면 그것을 쓴다. 여럿이면 뭉뚱그리지 않는다.
         why = reasons.pop() if len(reasons) == 1 else "취소·연기"
+        # ★ **낱말이 겹치지 않게 한다** (v1.38). 실측: `1경기 경기 취소`.
+        # `cancel_reason_text("中止")`가 긴 표기 "경기 취소"를 돌려주는데
+        # 그 앞에 "{n}경기 "를 붙여서 났다. 기계가 쓴 티가 가장 크게 나는 자리다.
+        if why.startswith("경기 "):
+            why = why[3:]                       # "경기 취소" → "취소"
         # **전 경기가 취소면 그렇다고 말한다.**
         # "2경기 우천취소"만 보면 다른 경기가 남았는지 알 수 없다. 구독자에게
         # 중요한 것은 사유가 아니라 **오늘 볼 경기가 없다**는 사실이다.
@@ -204,30 +246,55 @@ def for_single_result(game, league: League) -> Optional[Headline]:
 
     # ① 한 구간에 몰아친 점수 — 표에서 가장 먼저 눈에 띄는 칸이다
     if rows:
-        best_i = best_v = None
+        best_i = best_v = best_team = None
         for i, (hv, av) in enumerate(rows):
-            for v in (hv, av):
+            # **순서는 언제나 (홈, 원정)이다** — `GameMeta.line_score` 규약.
+            for v, nm in ((hv, hn), (av, an)):
                 if v is not None and (best_v is None or v > best_v):
-                    best_i, best_v = i + 1, v
+                    best_i, best_v, best_team = i + 1, v, nm
         if best_v is not None and best_v >= BIG_PERIOD_RUNS:
             facts["period"] = best_i
             facts["runs"] = best_v
+            # ★ **누가 냈는지 말한다** (v1.38). 전에는 "8회에만 8점"만 적었는데,
+            # 큰 글씨가 "두산 16 : 9 SSG"로 시작하니 독자는 두산이 냈다고 읽는다.
+            # 실측 가능한 4건 중 2건이 **반대로 읽혔다** — 그 8점은 SSG가 냈다.
+            # 팀을 안 밝히면 절반이 거짓이 되고, `facts`에도 팀이 없어
+            # 게이트가 되짚을 수도 없었다(이 파일의 원칙이 그 자리에서 깨져 있었다).
+            facts["team"] = best_team
             unit = SCORE_UNIT_BY_LEAGUE.get(league)
             word = "세트" if unit is ScoreUnit.SETS else (
                 "쿼터" if unit is ScoreUnit.POINTS else "회")
             return Headline(rule="G-BIGPERIOD", text=text,
-                            sub=f"{best_i}{word}에만 {best_v}점", facts=facts)
+                            sub=f"{best_team} {best_i}{word}에만 "
+                                f"{best_v}{count_word(league)}", facts=facts)
 
-    # ② 한 점 차 — 표 없이도 말할 수 있는 사실
-    if abs(a - h) == 1:
-        return Headline(rule="G-CLOSE", text=text, sub="한 점 차", facts=facts)
+    # ② 연장 — 구간 수가 정규를 넘었다 (v1.38 신설)
+    #    `best_games`에는 있는데 여기만 없었다. 연장은 그 경기 최고의 사실인데
+    #    "한 점 차"에 덮여 사라졌다 — 실측: `삼성 4 : 3 LG`가 11회 경기였다.
+    _reg = REGULAR_PERIODS.get(SCORE_UNIT_BY_LEAGUE.get(league))
+    if rows and _reg and len(rows) > _reg:
+        facts["periods"] = len(rows)
+        _pw = _period_word(league)
+        return Headline(rule="G-EXTRA", text=text,
+                        sub=f"연장 {len(rows)}{_pw}", facts=facts)
 
-    # ③ 대승 — 리그별 실측 상위 10% 임계값을 그대로 쓴다
+    # ③ 한 점 차 — 표 없이도 말할 수 있는 사실
+    #    ⚠️ 세트·맵 종목은 **세지 않는다**(BO5에서 3-2는 흔하다).
+    #    `best_games`가 이미 그렇게 하고 있었는데 여기만 안 그랬다.
+    _unit = SCORE_UNIT_BY_LEAGUE.get(league)
+    if abs(a - h) == 1 and _unit in (ScoreUnit.RUNS, ScoreUnit.POINTS,
+                                     ScoreUnit.GOALS):
+        _w = count_word(league)
+        return Headline(rule="G-CLOSE", text=text,
+                        sub=("한 골 차" if _unit is ScoreUnit.GOALS
+                             else f"한 {_w} 차"), facts=facts)
+
+    # ④ 대승 — 리그별 실측 상위 10% 임계값을 그대로 쓴다
     margin = BLOWOUT_MARGIN.get(league)
     if margin and abs(a - h) >= margin:
         facts["margin"] = abs(a - h)
         return Headline(rule="G-BLOWOUT1", text=text,
-                        sub=f"{abs(a - h)}점 차", facts=facts)
+                        sub=f"{abs(a - h)}{count_word(league)} 차", facts=facts)
 
     # ④ 아무 규칙도 안 걸리면 **점수만** 말한다. 없는 이야기를 짓지 않는다.
     return Headline(rule="G-SCORE", text=text, sub="", facts=facts)
@@ -501,8 +568,14 @@ def for_goal(*, scorer: str, team_name: str, when: str, own_goal: bool,
     """
     state = "동점" if tied else (f"{leader} 리드" if leader else "")
     sub = f"{away_score} : {home_score}" + (f" · {state}" if state else "")
-    text = (f"{when} {team_name} 득점 · 자책골" if own_goal
-            else f"{when} {team_name} {scorer}")
+    # ★ **서술어를 넣어 경계를 만든다** (v1.38).
+    # 전에는 `후반 82분 선덜랜드 르 페`처럼 팀과 선수를 띄어쓰기 하나로 붙여
+    # **"선덜랜드 르 페"가 통째로 한 사람 이름처럼** 읽혔다. 유럽 선수는 성만
+    # 오는 경우가 많아 더 그렇다. 게다가 자책골에만 "득점"이라는 서술어가 붙어
+    # **한 규칙 안에 문형이 둘**이었다.
+    # "골"은 지어낸 사실이 아니라 그 사건의 이름이라 FACT_LOCK에 안 걸린다.
+    text = (f"{when} {team_name} 자책골" if own_goal
+            else f"{when} {scorer} 골 · {team_name}")
     return Headline(rule="G-GOAL", text=text, sub=sub,
                     facts={"scorer": scorer, "team": team_name, "when": when,
                            "own_goal": bool(own_goal),
@@ -513,6 +586,20 @@ def for_goal(*, scorer: str, team_name: str, when: str, own_goal: bool,
 # 팀 순위표
 # ══════════════════════════════════════════════════════════════
 
+# ── ★ 승차를 부르는 말 (v1.38) ────────────────────────────────────
+#
+# **축구에 '경기 차'는 없다.** 그런데 `for_standings`가 리그를 보지 않고
+# 전부 "경기 차"라고 썼다 — 실렌더: K리그1 `2·3위 1경기 차`.
+# 그 표의 `games_behind`는 실제로 **승점차**다(서울 59점, 전북 42점 → "17").
+# 그대로 두면 "17경기 차"라는 말이 안 되는 문장이 나올 수 있다.
+_GB_WORD = {ScoreUnit.GOALS: "점 차"}       # 축구 = 승점 차
+
+
+def _gb_word(league: "League | None") -> str:
+    """`games_behind`를 부르는 말. 야구·농구는 '경기 차', 축구는 '점 차'."""
+    return _GB_WORD.get(SCORE_UNIT_BY_LEAGUE.get(league), "경기 차")
+
+
 def for_standings(standings: list, league: League, *, group: str | None = None
                   ) -> Optional[Headline]:
     """`group`이 있으면 그 단위(MLB 지구·NPB 리그) 안에서만 본다.
@@ -520,6 +607,41 @@ def for_standings(standings: list, league: League, *, group: str | None = None
     rows = [s for s in standings if group is None or s.group == group]
     if len(rows) < 2:
         return None
+
+    # ── ★ 단위를 섞은 순위표에는 순위 이야기를 하지 않는다 (v1.38) ──
+    #
+    # 이 함수의 첫 줄이 "단위를 섞으면 '선두'가 거짓이 된다"고 경고해 놓고도
+    # **막지는 않았다.** 부르는 쪽이 `group`을 안 넘기면 그냥 전부 한 줄로 센다.
+    # 실렌더로 확인한 결과(2026-09-13):
+    #   · NPB — 센트럴·퍼시픽 12팀을 한 표로 세워 `2·3위 0경기 차`.
+    #     한신은 센트럴 1위인데 카드가 "4위"라고 말한다. NPB에 통합 순위는 없다.
+    #   · MLB — 지구 6개를 섞으면 1위가 여섯이라 `공동 1위`가 나온다.
+    # **경고 주석은 게이트가 아니다.** 여기서 막는다.
+    # **막되, 버리지 않는다.** 통합 순위 문장은 거짓이지만, 단위 안에서는 참이다.
+    # 그래서 단위마다 규칙을 따로 돌리고 가장 좋은 한 줄을 단위 이름과 함께 낸다
+    # — `센트럴 1·2위 0.5경기 차`. 그냥 폴백으로 떨어뜨리면 매일 "현재 순위"만
+    # 나간다(거짓은 아니지만 아무 말도 아니다).
+    _units = list(dict.fromkeys(s.group for s in rows if s.group))
+    if group is None and len(_units) > 1:
+        _pref = {"S-GAP": 0, "S-RACE": 1, "S-LEAD": 2, "S-STREAK": 3}
+        cands = []
+        for u in _units:
+            h = for_standings(standings, league, group=u)
+            if h is None:
+                continue
+            # 같은 종류끼리는 **더 팽팽한 쪽**이 이긴다. 승차가 없는 규칙은 뒤로.
+            try:
+                tie = float(h.facts.get("gap"))
+            except (TypeError, ValueError):
+                tie = 1e9
+            cands.append((_pref.get(h.rule, 8), tie, u, h))
+        if not cands:
+            return None                   # 폴백(S-RANK)으로 내려간다
+        cands.sort(key=lambda x: (x[0], x[1], x[2]))
+        _, _, u, h = cands[0]
+        return Headline(rule=h.rule, text=f"{u} {h.text}", sub=h.sub,
+                        facts=dict(h.facts, group=u))
+
     rows = sorted(rows, key=lambda s: s.rank)
 
     # ① 선두 다툼
@@ -530,7 +652,7 @@ def for_standings(standings: list, league: League, *, group: str | None = None
     if gap is not None and 0 < gap <= TIGHT_RACE_GB:
         g = f"{gap:g}"
         return Headline(
-            rule="S-GAP", text=f"1·2위 {g}경기 차",
+            rule="S-GAP", text=f"1·2위 {g}{_gb_word(league)}",
             sub=f"{_nm(league, rows[0].team_code)} · {_nm(league, rows[1].team_code)}",
             facts={"gap": gap, "first": rows[0].team_code,
                    "second": rows[1].team_code,
@@ -567,7 +689,7 @@ def for_standings(standings: list, league: League, *, group: str | None = None
         if a.rank == b.rank:
             txt = f"공동 {a.rank}위"
         else:
-            txt = f"{a.rank}·{b.rank}위 {d:g}경기 차"
+            txt = f"{a.rank}·{b.rank}위 {d:g}{_gb_word(league)}"
         return Headline(
             rule="S-RACE", text=txt,
             sub=f"{_nm(league, a.team_code)} · {_nm(league, b.team_code)}",
@@ -578,7 +700,7 @@ def for_standings(standings: list, league: League, *, group: str | None = None
     if gap is not None and gap >= RUNAWAY_GB:
         return Headline(
             rule="S-LEAD",
-            text=f"{_nm(league, rows[0].team_code)} {gap:g}경기 차 선두",
+            text=f"{_nm(league, rows[0].team_code)} {gap:g}{_gb_word(league)} 선두",
             sub=f"2위 {_nm(league, rows[1].team_code)}",
             facts={"gap": gap, "first": rows[0].team_code,
                    "second": rows[1].team_code})
@@ -599,6 +721,13 @@ def for_standings(standings: list, league: League, *, group: str | None = None
 
     # ⑤ 최근 10경기 — 이 값이 있는 리그만(NPB·MLB는 소스에 없다)
     ext = [s for s in rows if s.last10 and s.last10.total >= 10]
+    # ★ **호조를 먼저 본다** (v1.38). 전에는 순위순으로 훑어 먼저 걸리는 쪽을
+    # 썼는데, 부진이 통계적으로 더 극단적이라 **꼴찌의 부진이 순위표 카드의
+    # 얼굴이 되는 일**이 반복됐다(실측: `롯데 최근 10경기 1승`).
+    # 2026-09-06에 ②단계로 그 병을 한 번 고쳤는데 이 ⑤단계는 그대로였다.
+    # 지어내는 게 아니라 **같은 사실 중 무엇을 먼저 보느냐**의 문제다.
+    ext = ([s for s in ext if s.last10.win >= LAST10_HOT]
+           + [s for s in ext if s.last10.win <= LAST10_COLD])
     for s in ext:
         if s.last10.win >= LAST10_HOT or s.last10.win <= LAST10_COLD:
             n = s.last10.win
@@ -667,22 +796,33 @@ def for_analysis(game, league: League, *, standings: list | None = None,
     if h2h:
         wld = h2h.get((home, away))
         if wld:
-            tot = wld.win + wld.loss
+            # ★ **무승부를 센다** (v1.38). 전에는 `win + loss`라 NPB·K리그처럼
+            # 무승부가 흔한 리그에서 "N경기 맞대결"이 실제보다 적게 찍혔다
+            # (실측: 실제 20경기인데 18이라 적었다). 게다가 분모가 작아져
+            # **발동 문턱까지 느슨해졌다**(14/18=0.78이지만 실제 승률은 0.70).
+            tot = wld.total
             if tot >= H2H_MIN_GAMES:
                 hi, lo = max(wld.win, wld.loss), min(wld.win, wld.loss)
                 lead = home if wld.win > wld.loss else away
                 if hi / tot >= H2H_LOPSIDED:
+                    _dr = wld.draw
                     return Headline(
                         rule="AN-H2H",
-                        text=f"시즌 상대전적 {_nm(league, lead)} {hi}-{lo}",
+                        text=(f"시즌 상대전적 {_nm(league, lead)} "
+                              f"{hi}-{lo}" + (f"-{_dr}" if _dr else "")),
                         sub=f"{tot}경기 맞대결",
-                        facts={"lead": lead, "win": hi, "loss": lo, "games": tot})
+                        facts={"lead": lead, "win": hi, "loss": lo,
+                               "draw": _dr, "games": tot})
 
     rank = {s.team_code: s for s in (standings or [])}
     sh, sa = rank.get(home), rank.get(away)
 
     # ② 순위 차
-    if sh and sa:
+    #
+    # **단위가 다르면 뺄셈이 뜻을 잃는다 (v1.38).** 센트럴 1위와 퍼시픽 1위를
+    # 빼면 0계단이고, 센트럴 1위와 퍼시픽 6위를 빼면 5계단이다 — 둘 다 아무 말도
+    # 아니다. NPB 교류전·MLB 지구 간 경기가 여기에 해당한다.
+    if sh and sa and rank_comparable(sh, sa):
         gap = abs(sh.rank - sa.rank)
         if gap >= RANK_GAP_NOTABLE:
             hi = sh if sh.rank < sa.rank else sa
@@ -701,7 +841,7 @@ def for_analysis(game, league: League, *, standings: list | None = None,
                 return Headline(
                     rule="AN-LAST10",
                     text=f"{_nm(league, s.team_code)} 최근 10경기 {s.last10.win}승",
-                    sub=f"현재 {s.rank}위",
+                    sub=f"현재 {rank_word(s, other)}",
                     facts={"team": s.team_code, "last10_win": s.last10.win,
                            "window": s.last10.total, "rank": s.rank})
     return None
@@ -731,7 +871,12 @@ def fallback(kind: str, **kw) -> Headline:
                         facts={"group": kw.get("group")})
     if kind == "leaders":
         n = kw.get("count", 0)
-        return Headline(rule="L-TOP", text=f"{kw.get('set_name', '부문')} {n}개 부문",
+        # ★ 낱말 겹침 방지 (v1.38). 실측: `타격 부문 4개 부문` — `set_name`이
+        # 이미 "…부문"으로 끝나는데 뒤에 또 붙였다. 기계 티가 나는 자리다.
+        _sn = str(kw.get('set_name', '') or '').strip()
+        _label = (f"{_sn} {n}개" if _sn.endswith("부문")
+                  else f"{_sn} {n}개 부문" if _sn else f"{n}개 부문")
+        return Headline(rule="L-TOP", text=_label,
                         facts={"count": n})
     if kind == "analysis":
         return Headline(rule="AN-MATCH", text=kw.get("label") or "오늘의 맞대결",
@@ -993,5 +1138,5 @@ ALL_RULES = frozenset({
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
     "N-COUNT",
     "V-EDGE", "V-SPLIT",
-    "G-BIGPERIOD", "G-CLOSE", "G-BLOWOUT1", "G-SCORE",
+    "G-BIGPERIOD", "G-EXTRA", "G-CLOSE", "G-BLOWOUT1", "G-SCORE",
 })

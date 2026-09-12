@@ -327,8 +327,19 @@ def _collect_records(now: datetime, notes: list) -> dict:
 # 둘을 직접 붙이면 한쪽이 바뀔 때 조용히 블록이 사라진다 —
 # 실제로 그렇게 됐다(수집기는 `bat_avg`를 주는데 렌더는 `avg`를 찾아 ②블록이 빠졌다).
 # 그래서 변환을 **한 곳**에 두고, 이름이 안 맞으면 알림에 싣는다.
+# ── KBO 팀기록 → 카드 라벨 이름표 ─────────────────────────────────
+#
+# ★ **v1.38에서 두 줄을 더했다 (`run` 팀득점 · `kk` 팀탈삼진).**
+#
+# 카드의 라벨표(`pipeline.TEAM_STAT_LABELS_BASEBALL`)는 **일곱 줄**을 원하는데
+# 이 이름표에 다섯 개뿐이라 나머지 두 줄이 영원히 `continue`로 빠졌다.
+# 결과: **KBO 분석 카드만 비교 5줄, MLB·NPB는 7줄** — 같은 종목인데 국내
+# 리그가 더 빈약했다. 게다가 수집기는 `bat_r`을 **필수 지표로 게이트까지
+# 걸어 놓고**(`kbo_teamstats.CARD_METRICS`) 카드로는 안 보내고 있었다.
+# 이미 받고 있는 84개 지표 중 두 개를 이름만 이어 준 것이라 수집 비용은 0이다.
 TEAM_STAT_RENAME = {"avg": "bat_avg", "era": "pit_era", "hr": "bat_hr",
-                    "whip": "pit_whip", "ops": "bat_ops"}
+                    "whip": "pit_whip", "ops": "bat_ops",
+                    "run": "bat_r", "kk": "pit_so"}
 
 
 def _team_stats_for(name: str, notes: list):
@@ -866,9 +877,30 @@ def _load_record_archive(name: str, now: datetime):
         rb = _load_recordbook(json.loads(p.read_text(encoding="utf-8")))
         from contract import assert_recordbook
         assert_recordbook(rb, now_utc=now)
+        if _units_missing(rb):
+            return None
         return rb
     except Exception:                                        # noqa: BLE001
         return None
+
+
+def _units_missing(rb) -> bool:
+    """단위(리그·지구)로 순위를 매기는 리그인데 **보관본에 단위가 없다** (v1.38).
+
+    ★★★ **배포 첫 틱의 얼굴은 v1.36에서 한 번 봤다** (약점 217·220).
+    새 칸을 더하면 "그 칸이 없던 시절"이 반드시 한 번 온다. v1.37 이전 보관본의
+    NPB 순위표는 12팀 **통합 순위**(`group`이 전부 비었고 rank가 1..12)다.
+    그 보관본은 게이트를 그대로 통과한다 — 옛 형식으로는 올바른 표이기 때문이다.
+    그래서 수집이 막힌 틱에 되살아나 **고쳐 놓은 그 거짓말이 다시 나간다**
+    ("한신 4위"). **게이트는 옛 진실과 새 진실을 구별하지 못한다.**
+
+    묵은 것을 버리면 그 틱에 NPB 카드가 없다. **없는 것이 틀린 것보다 낫다** —
+    다음 수집(30분 주기)이 성공하면 바로 채워진다.
+    """
+    from contract import GROUP_NOUN
+    if rb.league not in GROUP_NOUN:
+        return False
+    return not any(s.group for s in rb.standings)
 
 
 def _record_jobs() -> dict:
@@ -2113,7 +2145,9 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # 결과 발송이 통째로 멈춘다 — 검증이 이것을 잡았다.
         _lg = getattr(item, "league", None)
         _r5 = (_try_v5("result",
-                       lambda R: R.result_card(todays, _lg, day, now=_now()))
+                       lambda R: R.result_card(
+                           todays, _lg, day, now=_now(),
+                           rb=(records or {}).get(_lg.value if _lg else "")))
                if _lg is not None else None)
         if _r5:
             return _r5
@@ -2172,7 +2206,9 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             _one = next((g for g in games if g.game_id == item.game_id), None)
             if _one is None:
                 return None                 # 스냅샷에서 사라진 경기 — 만들지 않는다
-            _r5 = _try_v5("flash", lambda R: R.flash_card(_one, _lg, now=_now()))
+            _r5 = _try_v5("flash", lambda R: R.flash_card(
+                _one, _lg, now=_now(),
+                rb=(records or {}).get(_lg.value if _lg else "")))
         # **옛 카드로 떨어지지 않는다.** 이 두 종류는 v5에만 있고 대응물이 없다 —
         # 못 만들면 안 보내는 것이 맞다(빈 카드나 엉뚱한 카드보다 낫다).
         # 놓친 경기는 그날 리그 요약 카드가 반드시 담는다.

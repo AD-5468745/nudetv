@@ -127,9 +127,14 @@ else:
 
 # 지문이 실제로 되돌릴 수 없는지 (해시 길이·형식)
 from contract import channel_ref                              # noqa: E402
-ref = channel_ref("-1004387121384")
+# ⚠️ **이 파일은 공개 저장소에 실린다 — 시험값도 지어낸 값을 쓴다 (v1.38).**
+# 전에는 실제 테스트 채널 ID를 박아 두었다. 지문이 원본을 안 담는지 확인하는
+# 검사인데, 정작 **검사 코드가 원본을 공개 저장소에 담고 있었다.**
+_FAKE_CHAT = "-1009876543210"                 # 존재하지 않는 형식만 맞춘 값
+ref = channel_ref(_FAKE_CHAT)
 check(f"채널 지문이 원본을 안 담는다 ({ref})",
-      "1004387121384" not in ref and ref.startswith("ch") and len(ref) == 14, ref)
+      _FAKE_CHAT.lstrip("-") not in ref and ref.startswith("ch") and len(ref) == 14,
+      ref)
 check("같은 채널은 같은 지문 (중복 방지가 계속 작동)",
       channel_ref("-100111") == channel_ref("-100111"))
 check("다른 채널은 다른 지문",

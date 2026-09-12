@@ -740,6 +740,27 @@ def body_standings(rows: list, league: League) -> str:
            + ('<span class="t3" style="text-align:right">최근10</span>' if has10 else "")
            + ('<span class="t3" style="text-align:right">연속</span>' if has_st else "")
            + '</div>']
+
+    # ── **단위가 여럿이면 표를 갈라 놓는다 (v1.38).**
+    # NPB는 센트럴·퍼시픽이 각자 1위를 갖는다. 갈라 놓지 않으면 `1 2 3 4 5 6
+    # 1 2 3 4 5 6`이 한 줄로 이어져 **표가 고장난 것처럼 보인다.**
+    units = list(dict.fromkeys(x.group for x in rows if x.group))
+    if len(units) > 1:
+        parts = []
+        for u in units:
+            mine = [x for x in rows if x.group == u]
+            parts.append(f'<div class="gh"><span class="bg">{esc(u)}</span>'
+                         f'<span class="cn">{len(mine)}개 구단</span></div>')
+            parts.append(_standings_rows(mine, league, cols, has10, has_st))
+        return "".join(out + parts)
+
+    return "".join(out) + _standings_rows(rows, league, cols, has10, has_st)
+
+
+def _standings_rows(rows: list, league: League, cols: str,
+                    has10: bool, has_st: bool) -> str:
+    """순위표 본문 줄들. 단위(리그·지구)마다 이것을 따로 부른다."""
+    out = []
     for s in sorted(rows, key=lambda x: x.rank):
         gb = "—" if s.games_behind in ("0", "0.0", "") else s.games_behind
         st = ""
