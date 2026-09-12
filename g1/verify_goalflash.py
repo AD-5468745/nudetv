@@ -517,6 +517,88 @@ check("★★ 캡션이 텔레그램 상한 안이다",
       all(len(c) <= C.TELEGRAM_CAPTION_MAX for c in _caps),
       str([len(c) for c in _caps]))
 
+# ══════════════════════════════════════════════════════════════
+print("\n16. ★★★ 배포 첫 틱 — 이미 들어가 있던 골이 쏟아지지 않는다")
+# ══════════════════════════════════════════════════════════════
+#
+# **실제로 날 뻔한 사고 (2026-09-12 23:24).** 배포 직후 진행 중인 축구 경기가
+# 12건이었다(EPL 5 · 분데스 5 · 라리가 1 · 세리에A 1). v1.35 이전 스냅샷에는
+# `goal_seen_at` 칸이 아예 없는데 경기 자체는 늘 수집해 왔으므로
+# `source_key`는 있다 — 그것만 보고 자격을 주면 **그때 이미 들어가 있던 골이
+# 전부 '새 골'로 보여** 한꺼번에 속보로 나간다.
+#
+# 판정 기준은 "이 경기를 본 적이 있나"가 아니라 **"이 경기의 골을 추적한 적이
+# 있나"**여야 한다. 둘은 다르다.
+_tmp2 = pathlib.Path(tempfile.mkdtemp(prefix="gf-first-"))
+_saved_dir2 = T.SNAP_DIR
+try:
+    T.SNAP_DIR = _tmp2
+    # ① v1.35 **이전** 스냅샷을 만든다 — `goal_seen_at` 칸이 없다.
+    _old_game = mkgame(status=Status.LIVE, score=Score(1, 1, ScoreUnit.GOALS),
+                       goals=[G1, G2])
+    T._save_games("EPL", [_old_game])
+    _rows = json.loads((_tmp2 / "EPL.json").read_text(encoding="utf-8"))
+    for _r in _rows:
+        _r.pop("goal_seen_at", None)                 # 옛 판에는 이 칸이 없다
+    (_tmp2 / "EPL.json").write_text(json.dumps(_rows, ensure_ascii=False),
+                                    encoding="utf-8")
+    check("★ 옛 스냅샷에는 `goal_seen_at` 칸이 없다 (시험 전제 확인)",
+          all("goal_seen_at" not in r for r in
+              json.loads((_tmp2 / "EPL.json").read_text(encoding="utf-8"))))
+
+    # ② 첫 틱 — 시계가 쓰는 그 함수를 직접 몬다
+    _known1 = T._goal_tracked("EPL")
+    check("★★★ 첫 틱에는 골 추적 자격이 없다 (옛 스냅샷은 세지 않는다)",
+          _known1 == set(), str(_known1))
+    _t1 = mkgame(status=Status.LIVE, score=Score(1, 1, ScoreUnit.GOALS),
+                 goals=[G1, G2])
+    T._stamp_goals([_t1], NOW, known=_known1)
+    check("★★★ 그래서 이미 들어가 있던 골에 시각이 안 찍힌다",
+          set(_t1.meta.goal_seen_at.values()) == {""},
+          str(_t1.meta.goal_seen_at))
+    check("★★★ 첫 틱 속보 0건 — 채널이 한 번에 밀리지 않는다",
+          not [i for i in P.build_queue([_t1], NOW, "-100test", 0)
+               if i.content_type is ContentType.GOAL_FLASH])
+
+    # ③ (변이) 옛 조건으로 돌리면 **그 사고가 재현된다**
+    _bad_known = {("k", _t1.source_key)}
+    _t1b = mkgame(status=Status.LIVE, score=Score(1, 1, ScoreUnit.GOALS),
+                  goals=[G1, G2])
+    T._stamp_goals([_t1b], NOW, known=_bad_known)
+    check("★★★ (변이) '경기를 본 적 있나'로 판정하면 첫 틱에 속보 2장이 쏟아진다",
+          len([i for i in P.build_queue([_t1b], NOW, "-100test", 0)
+               if i.content_type is ContentType.GOAL_FLASH]) == 2,
+          "이것이 2026-09-12 23:24에 날 뻔한 사고다")
+
+    # ④ 첫 틱이 저장하고 나면 둘째 틱부터 정상이다
+    T._save_games("EPL", [_t1])
+    _known2 = T._goal_tracked("EPL")
+    check("★★ 첫 틱이 저장한 스냅샷에는 칸이 생긴다 → 둘째 틱은 자격이 있다",
+          _known2 and ("k", _t1.source_key) in _known2, str(_known2))
+    _t2 = mkgame(status=Status.LIVE, score=Score(2, 1, ScoreUnit.GOALS),
+                 goals=[G1, G2, G3], stamps=dict(_t1.meta.goal_seen_at))
+    T._stamp_goals([_t2], NOW + timedelta(minutes=6), known=_known2)
+    check("★★★ 둘째 틱에는 **새로 들어간 골만** 시각이 찍힌다",
+          _t2.meta.goal_seen_at[goal_key(G1)] == ""
+          and _t2.meta.goal_seen_at[goal_key(G2)] == ""
+          and _t2.meta.goal_seen_at[goal_key(G3)] == T._iso(
+              NOW + timedelta(minutes=6)),
+          str(_t2.meta.goal_seen_at))
+    check("  ↳ 그 골 한 장만 큐에 오른다 (옛 골은 계속 조용하다)",
+          len([i for i in P.build_queue([_t2], NOW + timedelta(minutes=6),
+                                        "-100test", 0)
+               if i.content_type is ContentType.GOAL_FLASH]) == 1)
+    check("★★ 조용히 지나간 골도 종료 속보 타임라인이 담는다 (정보는 안 사라진다)",
+          (lambda r: r is not None and "원정선수" in r[0] and "홈선수" in r[0])(
+              R.flash_card(mkgame(status=Status.FINAL,
+                                  score=Score(2, 1, ScoreUnit.GOALS),
+                                  goals=[G1, G2, G3]), League.EPL, now=NOW)))
+finally:
+    T.SNAP_DIR = _saved_dir2
+    for _f in _tmp2.glob("*"):
+        _f.unlink()
+    _tmp2.rmdir()
+
 print()
 print("=" * 62)
 print(f"결과: {PASS} PASS / {FAIL} FAIL")

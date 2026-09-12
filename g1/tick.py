@@ -1061,18 +1061,28 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
         # **지금 NPB엔 라인업이 없어 사고가 안 났을 뿐, 같은 병이다.**
         prev: dict = {}
         prev_id: dict = {}
-        # v1.35 — **이전 스냅샷에 이 경기가 있었는가**(내용과 무관하게).
-        # 골 스탬프를 찍을 자격을 판정하는 데 쓴다: 처음 보는 경기의 골은
-        # 우리가 들어가는 것을 **본 적이 없으므로** 속보를 낼 수 없다.
-        # `prev`/`prev_id`는 라인업·스탬프가 있는 행만 담아서 이 판정에 못 쓴다.
-        known: set = set()
+        # ── ★ 골 스탬프를 찍을 자격 (v1.35) ─────────────────────────
+        #
+        # **"이 경기를 본 적이 있나"가 아니라 "이 경기의 골을 추적한 적이
+        # 있나"다.** 둘은 다르고, 그 차이가 배포 첫 틱에 사고를 낸다.
+        #
+        # 처음엔 `source_key`가 옛 스냅샷에 있기만 하면 자격을 줬다. 그런데
+        # **v1.35 이전 스냅샷에는 `goal_seen_at` 칸이 아예 없다** — 경기는
+        # 늘 수집해 왔으니 `source_key`는 있다. 그래서 배포 직후 첫 틱에
+        # 진행 중인 경기의 **이미 들어간 골이 전부 '새 골'로 보이고**,
+        # 지금 시각이 찍혀 한꺼번에 속보로 나간다.
+        # 실측 2026-09-12 23:24 — 그때 진행 중인 축구 경기가 12건이었다
+        # (EPL 5 · 분데스 5 · 라리가 1 · 세리에A 1). 그대로 뒀으면 12~24장이
+        # 한 번에 밀려 나갔다. 내용은 거짓이 아니지만 **채널이 한 번에 밀린다** —
+        # 킹카 채널의 단점으로 우리가 지적한 바로 그 모양이다.
+        #
+        # 그래서 **`goal_seen_at` 칸이 있었던 행만** 자격을 준다. 칸이 없으면
+        # 그 경기는 우리가 골을 추적한 적이 없다는 뜻이고, 그때 이미 있던 골은
+        # "봤다"고 말할 수 없다. `_save_games`가 값이 비어도 그 키를 쓰므로
+        # **v1.35 첫 틱이 지나가면 둘째 틱부터 정상 동작한다** — 조용한 것은
+        # 딱 한 틱이고, 그 틱의 골은 종료 속보 타임라인이 담는다.
+        known: set = _goal_tracked(name)
         for d in _load_raw(name):
-            _k0 = d.get("source_key")
-            if _k0:
-                known.add(("k", _k0))
-            _i0 = game_identity(d)
-            if _i0 is not None:
-                known.add(("i", _i0))
             # v1.35 — `goal_seen_at`도 되살릴 것에 포함한다. 안 넣으면 명단이
             # 없는 경기(라인업 미제공 리그)의 골 스탬프가 매 틱 사라져
             # **같은 골이 매 틱 새 골로 보인다** = 속보 무한 반복.
@@ -1138,6 +1148,27 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
 #
 # 그 골들이 사라지는 것은 아니다 — 종료 속보 카드의 타임라인이 전부 싣는다
 # (`SAFETY_NET_FOR[GOAL_FLASH]`).
+def _goal_tracked(name: str) -> set:
+    """이전 스냅샷에서 **골을 추적한 적이 있는** 경기들 — `(종류, 값)` 집합.
+
+    이름표(`source_key`)와 신원을 둘 다 담는다. 이름표만 보다 NPB에서
+    당한 병을 여기서 되풀이하지 않는다(§7-163 · v1.28).
+    **검사가 이 함수를 직접 몬다** — 시계 안에 묻어 두면 배포 첫 틱의
+    동작을 아무도 못 친다.
+    """
+    out: set = set()
+    for d in _load_raw(name):
+        if "goal_seen_at" not in d:
+            continue                  # v1.35 이전 스냅샷 — 골을 추적한 적이 없다
+        k = d.get("source_key")
+        if k:
+            out.add(("k", k))
+        i = game_identity(d)
+        if i is not None:
+            out.add(("i", i))
+    return out
+
+
 def _stamp_goals(games: list, now: datetime, known: set) -> None:
     """진행 중인 경기의 새 골에 '우리가 처음 본 시각'을 찍는다.
 
