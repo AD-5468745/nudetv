@@ -359,7 +359,29 @@ except ValueError:
 _t = C5.body_timeline(away_name="맨시티", home_name="크리스털", away_win=True,
                       events=[(17, "away", "홀란", ""), (56, "home", "돈나룸마", "자책"),
                               (84, "away", "홀란", "")])
-check("득점 시각이 오름차순으로 정렬된다", _t.index("17′") < _t.index("56′") < _t.index("84′"), "")
+check("득점 시각이 오름차순으로 정렬된다",
+      _t.index("17′") < _t.index("56′") < _t.index("84′"), "")
+# ★★ 리그를 안 넘기면 **보정하지 않는다** — 모르면 지금 동작을 지킨다 (v1.34)
+check("★★ 리그를 모르면 소스 분을 그대로 쓴다",
+      "18′" not in _t and "57′" not in _t and "85′" not in _t, "")
+_tk = C5.body_timeline(away_name="서울", home_name="전북", league=League.KL1,
+                       events=[(2, "away", "클리말라", "", 0)])
+check("★★★ K리그1은 보정한다 (소스 2 → 공식 3′) — 중계가 초까지 준다",
+      ">3′<" in _tk and ">2′<" not in _tk, _tk[:160])
+# ★★ 추가시간이 그려지는가 — 이 자리가 비어 있어서 90+6 결승골이 `90′`로 나갔다
+_ta = C5.body_timeline(away_name="맨시티", home_name="크리스털",
+                       events=[(90, "away", "홀란", "", 5),
+                               (45, "home", "마테타", "", 2)])
+check("★★★ 추가시간이 타임라인에 그려진다 — 전에는 통째로 빠져 `90′`였다",
+      "90+5′" in _ta and "45+2′" in _ta, _ta[:200])
+check("★★★ 추가시간 골이 정규시간 값으로 뭉개지지 않는다",
+      ">90′<" not in _ta and ">45′<" not in _ta, "")
+check("★★ 추가시간 골이 뒤에 온다 (45+2 → 90+5)",
+      _ta.index("45+2′") < _ta.index("90+5′"), "")
+_tak = C5.body_timeline(away_name="서울", home_name="전북", league=League.KL1,
+                        events=[(90, "away", "클리말라", "", 5)])
+check("★★★ K리그1은 추가시간도 보정한다 (소스 90+5 → 공식 90+6′)",
+      "90+6′" in _tak and "90+5′" not in _tak, _tak[:160])
 check("자책골은 소스가 준 표시를 그대로 단다", "(자책)" in _t, "")
 check("득점이 없으면 '득점 없음'을 쓴다 (빈 표를 내지 않는다)",
       "득점 없음" in C5.body_timeline(away_name="A", home_name="B", events=[]), "")

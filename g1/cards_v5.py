@@ -31,7 +31,8 @@ from typing import Optional
 
 from contract import (fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
                       Status, StreakKind, TEAM_NAMES, card_theme, league_accent,
-                      venue_name, cancel_reason_text, is_readable_ko)
+                      venue_name, cancel_reason_text, is_readable_ko,
+                      goal_clock, goal_sort_key)
 
 from headline import Headline
 
@@ -1142,23 +1143,32 @@ def body_periods(*, labels: list, away_name: str, home_name: str,
 
 
 def body_timeline(*, away_name: str, home_name: str, events: list,
-                  away_win: bool = False, home_win: bool = False) -> str:
-    """득점 타임라인 — 축구. `events`는 (분, 'home'|'away', 이름, 꼬리표) 순서쌍.
+                  away_win: bool = False, home_win: bool = False,
+                  league: "League | None" = None) -> str:
+    """득점 타임라인 — 축구. `events`는 (분, 'home'|'away', 이름, 꼬리표[, 추가분]).
 
     **꼬리표는 소스가 주는 것만 쓴다.** 자책골은 `ownGoal` 플래그가 있어서 쓴다 —
     없는 것을 추측해 붙이지 않는다.
+
+    ★ **분은 `contract.goal_clock`이 만든다** (v1.34). 전에는 소스 값을 그대로
+    찍고 **추가시간은 아예 안 그렸다** — 90+6에 들어간 결승골이 `90′`로 나갔고,
+    같은 화면의 텍스트는 `후반 추가시간 4분`이라 말했다. 대표님이 잡으셨다.
+    다섯째 자리(추가분)는 **없어도 된다** — 옛 호출자가 그대로 돈다.
     """
     rows = []
-    for minute, side, name, note in sorted(events, key=lambda e: e[0]):
+    norm = [(e[0], e[1], e[2], e[3], (e[4] if len(e) > 4 else 0)) for e in events]
+    for minute, side, name, note, added in sorted(
+            norm, key=lambda e: goal_sort_key(e[0], e[4])):
         tag = f' <em>({esc(note)})</em>' if note else ""
         cell = f'{esc(name)}{tag}'
+        _, clock = goal_clock(minute, added, league)
         if side == "away":
             rows.append(f'<div class="tl"><span class="r">{cell}</span>'
-                        f'<span class="m">{esc(minute)}′</span>'
+                        f'<span class="m">{esc(clock)}′</span>'
                         f'<span></span></div>')
         else:
             rows.append(f'<div class="tl"><span></span>'
-                        f'<span class="m">{esc(minute)}′</span>'
+                        f'<span class="m">{esc(clock)}′</span>'
                         f'<span>{cell}</span></div>')
     acls = "r win" if away_win else "r"
     hcls = "win" if home_win else ""

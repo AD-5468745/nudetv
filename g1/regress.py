@@ -73,6 +73,12 @@ def _live_or_snapshot():
     실데이터 검사 세 가지(`verify_leagues`·`verify_records`·`regress`)를 통째로
     못 돌렸다. **그날 배포 판정 자체가 막혔다.** 검사가 네트워크 하나에 매달려
     있으면, 네트워크가 죽는 날 우리는 아무것도 확정하지 못한다.
+
+    ★ **둘 다 없으면 예외로 죽지 않고 `(None, 사유)`를 돌려준다** (v1.33).
+    v1.32가 여기에 스냅샷 폴백을 넣었는데, **스냅샷마저 없는 자리에서는 그대로
+    예외가 나 75건이 통째로 죽었다**(2026-09-12 실측). 그러면 네트워크가 필요
+    없는 §1 계약 불변식 15건까지 같이 못 돌린다 — 고치려던 병이 한 곳 남아 있었다.
+    **못 하면 못 했다고 적고 할 수 있는 데까지는 한다.**
     """
     try:
         return KboAdapter().fetch(2026, ["08", "09"]), None
@@ -83,14 +89,31 @@ def _live_or_snapshot():
         import tick as _T
         snap = _pl.Path(_os.environ.get("NUDETV_STATE", "state")) / "games"
         f = snap / "KBO.json"
+        why = f"{type(e).__name__}: {str(e)[:60]}"
         if not f.exists():
-            raise
-        got = _T._load_games("KBO")
+            return None, f"{why} · 스냅샷도 없음"
+        # ★ 스냅샷이 **있어도 읽다가 깨질 수 있다** (v1.33, 2026-09-12 실측).
+        # 폴백 경로에서 예외가 나면 결국 검사가 통째로 죽어, v1.32가 고치려던
+        # 자리로 되돌아간다. **폴백은 폴백답게 실패해야 한다.**
+        try:
+            got = _T._load_games("KBO")
+        except Exception as e2:                              # noqa: BLE001
+            return None, f"{why} · 스냅샷도 못 읽음({type(e2).__name__})"
+        if not got:
+            return None, f"{why} · 스냅샷이 비어 있음"
         age = (_dt.datetime.now().timestamp() - f.stat().st_mtime) / 3600
         return got, f"{type(e).__name__} · 스냅샷 {len(got)}건 ({age:.0f}시간 전)"
 
 
 games, _fallback = _live_or_snapshot()
+if games is None:
+    # §2 이후는 전부 실데이터가 있어야 돈다. 여기서 끝내되 **PASS로 세지 않는다.**
+    print(f"  ⚠️ **실데이터도 스냅샷도 없습니다** — {_fallback}")
+    print("     §2 이후를 돌리지 못했습니다.")
+    print("     이 실행은 '지금 코드가 옳은가'를 말하지 않습니다 — 소스가 돌아오면 다시 도세요.")
+    skip("KBO 실데이터 수집 이후 전부", _fallback)
+    print(f"\n결과: {ok} PASS / {fail} FAIL / {skipped} SKIP  ← 부분 실행 (실데이터 없음)")
+    sys.exit(1 if fail else 0)
 if _fallback:
     print(f"  ⚠️ **소스를 못 받아 저장된 스냅샷으로 돕니다** — {_fallback}")
     print("     이 실행은 '지금 소스가 정상인가'를 말하지 않습니다.")

@@ -32,6 +32,8 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       assert_result_deadline, game_duration_for,
                       kst_day_label, result_deadline,
                       SCORE_UNIT_BY_LEAGUE, ScoreUnit,
+                      GOAL_FIRST_HALF_END, GOAL_SECOND_HALF_END,
+                      goal_clock, goal_sort_key, goal_needs_bump,
                       shift_out_of_quiet_hours, preview_buckets,
                       # v1.11i — 문안 사실성 헬퍼. 조사·사유 표기·모닝 이름·큐 잔류는
                       # 계약이 한 번만 정한다. 렌더마다 다시 지으면 반드시 갈라진다.
@@ -280,6 +282,27 @@ CSS = pathlib.Path(__file__).resolve().parents[1] / "cards" / "v4.html"
 # 승률순으로 합치면 소화 경기 수가 벌어질 때 게임차가 역전해 게이트에 걸린다.
 RECORD_SOURCE_LEAGUES = frozenset({League.KBO, League.NPB})
 """**순위표·리더보드 카드**가 나가는 리그. 기록을 받는 리그와 다르다."""
+
+# ── 리더보드가 **실제로** 나가는 리그 (v1.35) ──────────────────────
+#
+# 리더보드는 `RECORD_SOURCE_LEAGUES`에서 한 겹 더 걸러진다 — **선수 이름이
+# 한글로 안 나오는 리그는 부문 순위를 만들지 않는다**(v1.11m · 약점 90).
+# 지금 NPB가 그렇다(소스가 한자·가나 원문으로 준다).
+#
+# ★ **그 '한 겹 더'가 큐에만 있고 의무 대조에는 없었다** — 큐는
+# `RECORD_SOURCE_LEAGUES and player_names_localized()`로 걸렀는데
+# 시계의 의무 대조는 `RECORD_SOURCE_LEAGUES`만 봤다. 그래서 NPB 경기가
+# 있는 날마다 🔴 "리더보드가 그날 통째로 안 나갔습니다"가 거짓으로 울었다
+# (실측 2026-09-12: 하루 6~18시간). **약점 198 그 자체 — 같은 판정이 두
+# 곳에 있으면 반드시 어긋난다.** 그래서 판정을 **여기 한 곳**에 둔다.
+#
+# ⚠️ 표를 손으로 적지 않는다 — 파생이라 `PLAYER_NAMES_LOCALIZED`를 켜는
+# 순간 큐와 의무 대조가 **함께** 따라온다(약점 161·208).
+LEADERBOARD_LEAGUES = frozenset(
+    l for l in RECORD_SOURCE_LEAGUES if player_names_localized(l))
+"""리더보드 카드의 **큐와 의무 대조가 함께 쓰는** 단일 판정."""
+assert LEADERBOARD_LEAGUES <= RECORD_SOURCE_LEAGUES, (
+    "리더보드 대상이 기록 대상보다 넓습니다 — 재료 없는 리그가 들어왔습니다")
 
 # ── 분석 카드가 나가는 리그 (v1.16, 2026-09-07 대표님 지시) ────────
 #
@@ -763,7 +786,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     # `平良 海馬`·`マルティネス`가 그대로 나갔다 — 한국 구독자는 못 읽는다.
     # 음역은 지어내지 않는다(틀린 이름이 못 읽는 이름보다 나쁘다).
     # 한글 표기표가 생기면 `PLAYER_NAMES_LOCALIZED`만 켜면 된다.
-    if league in RECORD_SOURCE_LEAGUES and player_names_localized(league):
+    if league in LEADERBOARD_LEAGUES:
         _lb0 = now.astimezone(KST).replace(hour=LEADERBOARD_HOUR_KST, minute=0,
                                            second=0, microsecond=0)
         for _lb in (_lb0, _lb0 + timedelta(days=1)):
@@ -4696,22 +4719,30 @@ def wrapup_lines(games: list, league: League, *, name_of=None) -> list[str]:
 # **사건 분류는 야구와 같은 함수(`flow_kind`)를 쓴다** — 판정을 두 벌로 짜면
 # 한쪽만 고치는 날이 온다(약점 198).
 
-GOAL_HALF_MINUTE = 45          # 이 분까지가 전반
-GOAL_FULL_MINUTE = 90          # 이 분까지가 후반 — 넘으면 연장
+# ⚠️ 전·후반 경계는 **계약이 정한다**(`contract.GOAL_FIRST_HALF_END` 등).
+#    여기 다시 적으면 두 값이 조용히 갈라진다(§7-45). 이름만 빌려 쓴다.
+GOAL_HALF_MINUTE = GOAL_FIRST_HALF_END
+GOAL_FULL_MINUTE = GOAL_SECOND_HALF_END
 GOAL_MAX_EVENTS = 6            # 문장이 이보다 길어지면 덜 중요한 것부터 뺀다
 
 
-def _goal_when(minute: int, added: int = 0) -> str:
-    """'전반 12분' · '후반 추가시간 3분' · '연장 105분'.
+def _goal_when(minute: int, added: int = 0,
+               league: "League | None" = None) -> str:
+    """'전반 12분' · '후반 추가시간 6분' · '연장 105분'.
 
-    **추가시간은 소스가 준 `addedTime`이 있을 때만 말한다** — 우리가 추론하지 않는다.
+    ⚠️ **분을 여기서 계산하지 않는다.** 공식 표기는 `contract.goal_clock` 하나가
+    만든다 — 카드(`cards_v5.body_timeline`)도 같은 함수를 쓴다. 두 곳이 각자
+    계산하던 때에 한 화면에서 `90′`와 `후반 추가시간 4분`이 함께 나갔다(v1.34).
+
+    ⚠️ **리그를 반드시 넘긴다.** 소스가 경과 분을 주는 리그와 이미 공식 표기를
+    주는 리그가 섞여 있다(`GOAL_MINUTE_IS_ELAPSED`).
     """
-    if minute > GOAL_FULL_MINUTE:
-        return f"연장 {minute}분"
-    half = "전반" if minute <= GOAL_HALF_MINUTE else "후반"
-    if added:
-        return f"{half} 추가시간 {added}분"
-    return f"{half} {minute}분"
+    half, num = goal_clock(minute, added, league)
+    if half == "연장":
+        return f"연장 {num}분"
+    if "+" in num:
+        return f"{half} 추가시간 {num.split('+', 1)[1]}분"
+    return f"{half} {num}분"
 
 
 def goal_events(goals) -> list[dict]:
@@ -4720,8 +4751,8 @@ def goal_events(goals) -> list[dict]:
     lead = 0
     led: set = set()                  # 이 경기에서 앞선 적이 있는 쪽
     out: list[dict] = []
-    for g in sorted(goals or [], key=lambda x: (getattr(x, "minute", 0),
-                                                getattr(x, "added", 0) or 0)):
+    for g in sorted(goals or [], key=lambda x: goal_sort_key(
+            getattr(x, "minute", 0), getattr(x, "added", 0))):
         side = getattr(g, "side", None)
         if side not in ("home", "away"):
             continue                  # 어느 팀 득점인지 모르면 세지 않는다
@@ -4741,6 +4772,117 @@ def goal_events(goals) -> list[dict]:
 def _goal_sc(e: dict) -> str:
     """그 팀 기준 점수 — 말하는 팀을 앞에 둔다."""
     return f"{e['hs']}-{e['as']}" if e["home"] else f"{e['as']}-{e['hs']}"
+
+
+# ── 경기의 리듬 (v1.34) ───────────────────────────────────────────────
+#
+# 문턱은 **재서 정했다** — 지어내지 않는다(§7-138).
+# 실측 2026-09-12, K리그1·EPL·라리가·세리에A:
+#
+#   | 재 것          | 표본 | 중앙 | 문턱 | 문턱에 걸리는 비율 |
+#   |----------------|------|------|------|--------------------|
+#   | 선제골 시각    | 18   | 20분 | ≤5   | **11%**            |
+#   | 골 사이 간격   | 37   | 12분 | ≥25  | **22%**            |
+#   | 결승골 시각    | 16   | 53분 | ≥80  | **19%**            |
+#
+# 셋 다 **다섯 경기에 한 번쯤** 걸린다. 매번 나오면 말이 헐거워지고,
+# 아예 안 나오면 넣은 뜻이 없다.
+EARLY_GOAL_MINUTE = 5          # 이 분 안에 나온 선제골은 '경기 시작 N분 만에'
+LONG_QUIET_MINUTES = 25        # 이만큼 비면 '그 상태가 이어졌다'고 말할 수 있다
+LATE_DECIDER_MINUTE = 80       # 이 분 뒤에 갈리면 '막바지에 갈렸다'
+
+
+def _goal_abs(e: dict, league: "League | None" = None) -> int:
+    """사건의 절대 시각(분) — **표기 기준**. 추가시간은 정규시간에 이어 붙인다.
+
+    ⚠️ 문턱을 재는 축과 카드에 찍히는 축이 다르면 말이 어긋난다. 실제로
+    `EARLY_GOAL_MINUTE = 5`인데 문장이 "경기 시작 **6분** 만에"로 나왔다 —
+    문턱은 소스 분으로, 표기는 `goal_clock`으로 재고 있었기 때문이다.
+    그래서 여기도 **`goal_clock`과 같은 축**을 쓴다.
+    """
+    m = int(e.get("minute") or 0)
+    a = int(e.get("added") or 0)
+    bump = 1 if goal_needs_bump(league) else 0
+    if a:
+        base = GOAL_FIRST_HALF_END if m <= GOAL_FIRST_HALF_END else GOAL_SECOND_HALF_END
+        return base + a + bump
+    return m + bump
+
+
+def _goal_decider(ev: list) -> "dict | None":
+    """**결승골** — 이 골로 생긴 우위가 **끝까지 유지된** 골.
+
+    '마지막 골'이 아니다. 3-0 경기의 쐐기골은 승부를 가른 골이 아니고,
+    선제골 뒤 동점을 거쳐 다시 갈렸다면 **그 다시 갈린 골**이 결승골이다.
+    그래서 **뒤에서부터** 훑어 '우위가 한 번도 안 깨진 구간'의 첫 골을 찾는다.
+    앞에서부터 찾으면 뒤집힌 선제골을 결승골이라 부르게 된다.
+
+    비긴 경기에는 없다.
+    """
+    if not ev or ev[-1]["hs"] == ev[-1]["as"]:
+        return None
+    win_home = ev[-1]["hs"] > ev[-1]["as"]
+    dec = None
+    for e in reversed(ev):
+        if e["hs"] != e["as"] and (e["hs"] > e["as"]) is win_home:
+            dec = e
+        else:
+            break
+    return dec
+
+
+def _goal_rhythm(parts: list, part_ev: list, ev: list, *,
+                 away_name: str, home_name: str,
+                 league: "League | None" = None) -> list:
+    """사건 나열에 **시간의 결**을 더한다. 걸리는 것이 없으면 그대로 돌려준다.
+
+    **덧붙이기만 한다** — 기존 문장을 뒤에서 고치지 않는다(주어가 앞 문장에
+    걸려 있어 앞에 절을 끼우면 주어가 사라진다. 실제로 그렇게 깨졌다).
+    """
+    if not parts or len(parts) != len(part_ev):
+        return parts
+    out = list(parts)
+    dec = _goal_decider(ev)
+
+    # ① 이른 선제골 — '전반 3분에' → '경기 시작 3분 만에'
+    if (ev and ev[0].get("kind") == "first" and not ev[0].get("added")
+            and _goal_abs(ev[0], league) <= EARLY_GOAL_MINUTE
+            and part_ev[0] is ev[0]):
+        m = goal_clock(ev[0]["minute"], 0, league)[1]
+        out[0] = out[0].replace(f"전반 {m}분에", f"경기 시작 {m}분 만에", 1)
+
+    # ② 오래 비어 있던 구간 — 그동안 무엇이 이어졌나
+    for i, e in enumerate(part_ev):
+        try:
+            j = ev.index(e)
+        except ValueError:
+            continue
+        if j + 1 >= len(ev):
+            continue                     # 마지막 사건 — 그 뒤는 점수가 말한다
+        gap = _goal_abs(ev[j + 1], league) - _goal_abs(e, league)
+        if gap < LONG_QUIET_MINUTES:
+            continue
+        if e["hs"] == e["as"]:
+            out[i] += f" 그 뒤로 {gap}분 동안 균형이 이어졌다."
+        else:
+            who = home_name if e["hs"] > e["as"] else away_name
+            out[i] += (f" 그 뒤로 {gap}분 동안 "
+                       f"{who}{josa(who, '이', '가')} 앞선 채 흘렀다.")
+
+    # ③ 언제 갈렸나 — 늦게 갈린 경기만. **뒤에 덧붙인다.**
+    if dec is not None:
+        try:
+            k = part_ev.index(dec)
+        except ValueError:
+            k = -1
+        if k >= 0:
+            if dec.get("added"):
+                out[k] += " 정규시간이 다 지난 뒤였다."
+            elif _goal_abs(dec, league) >= LATE_DECIDER_MINUTE:
+                left = max(0, GOAL_SECOND_HALF_END - _goal_abs(dec, league))
+                out[k] += (f" 정규시간 종료 {left}분 전이었다." if left
+                           else " 정규시간이 끝나갈 때였다.")
+    return out
 
 
 def goal_prose(game: Game, league: League, *,
@@ -4784,19 +4926,21 @@ def goal_prose(game: Game, league: League, *,
             merged.append([e])
 
     parts: list[str] = []
+    part_ev: list[dict] = []                # 각 문장이 어느 사건에서 나왔나 (리듬용)
     prev_team = None
     for chunk in merged:
         e = chunk[-1]                       # 점수는 **마지막 골 기준**이다
+        part_ev.append(e)
         s = _goal_sc(e)
         ro = _flow_score_ro(s)
         if len(chunk) == 1:
-            when = _goal_when(e["minute"], e["added"])
+            when = _goal_when(e["minute"], e["added"], league)
         else:
             # **같은 반은 두 번 말하지 않는다** — "후반 57분과 후반 77분"이 아니라
             # "후반 57분과 77분"이다. 사람이 그렇게 쓴다.
             whens, prev_half = [], None
             for x in chunk:
-                w = _goal_when(x["minute"], x["added"])
+                w = _goal_when(x["minute"], x["added"], league)
                 half = w.split(" ", 1)[0]
                 whens.append(w.split(" ", 1)[1] if half == prev_half and " " in w
                              else w)
@@ -4821,6 +4965,20 @@ def goal_prose(game: Game, league: League, *,
             parts.append(f"{subj_n}{when}에도 넣어 {s}{ro} 달아났다.")
         else:                                     # chase
             parts.append(f"{subj_n}{when}에 한 골을 만회했다.")
+
+    # ── 경기의 리듬 — **카드가 못 말하는 것만** (v1.34) ────────────────
+    #
+    # 대표님: *"경기흐름에 대한 설명글도 많이 부족해"*. 축구는 골이 적어
+    # 사건만 나열하면 세 문장에서 끝난다. 야구(v1.27)는 이닝이 많아 저절로
+    # 두툼했을 뿐이다.
+    #
+    # ⛔ **카드에 있는 것을 다시 쓰지 않는다**(첫째 규칙) — 분·득점자·점수는
+    #    카드가 그린다. 여기서 더하는 것은 카드가 **표로는 말할 수 없는 것**이다:
+    #    얼마나 빨리 터졌나 · 균형이 얼마나 이어졌나 · 언제 갈렸나.
+    # ⛔ 감상을 담은 낱말(명승부·짜릿·극적)은 쓰지 않는다(FACT_LOCK).
+    #    **재는 것은 시간뿐이고, 시간은 소스가 준 사실이다.**
+    parts = _goal_rhythm(parts, part_ev, ev, away_name=away_name,
+                         home_name=home_name, league=league)
 
     # 승부차기·연장 — 계약이 담은 사실만 쓴다
     dec = getattr(getattr(game, "meta", None), "decided_by", None)

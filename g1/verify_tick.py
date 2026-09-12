@@ -2176,6 +2176,96 @@ _live = {ct.value for ct in C.QUEUED_CONTENT_TYPES
 check("★★★ 발행 중인 콘텐츠가 전부 의무 대조 안에 있다 (모르는 누락 0)",
       _live <= _watched, f"감시 밖: {sorted(_live - _watched)}")
 
+# ═════════════════════════════════════════════════════════════
+print("\n★★★ 리더보드 의무 대상 = 큐 대상 (v1.35 · 약점 198)")
+# ═════════════════════════════════════════════════════════════
+#
+# **실측한 사고 (2026-09-12 마감점검).** 리더보드는 `RECORD_SOURCE_LEAGUES`에서
+# 한 겹 더 걸러진다 — 선수 이름이 한글로 안 나오는 리그는 안 만든다(약점 90).
+# 그 '한 겹 더'가 **큐에만 있고 의무 대조에는 없었다.** 그래서 NPB 경기가
+# 있는 날마다 🔴 "리더보드가 그날 통째로 안 나갔습니다"가 거짓으로 울었다.
+#
+# 실측으로 분 단위까지 맞췄다: 09-11 15:03 UTC 신고 시작 = NPB 마지막 경기
+# 09:00 UTC + 유예 6시간 · 09-12 08:57 종료 = 되짚기 창 24시간 만료.
+# 전 기간 리더보드 발송은 KBO 7건 · NPB **0건**이다(대장 실측).
+#
+# 오탐 하나가 감시를 통째로 꺼뜨린다(약점 112·126·182). 그리고 v1.33의
+# `audit_grid`는 **격자 점검만** 고쳤고 실시간 알림은 안 고쳤다 — 약점 210
+# ("고쳤다는 고친 자리에서만 참이다")이 같은 판에서 재발한 것이다.
+
+_LB_DAY = "2026-09-11"
+_lb_npb = [mkgame(League.NPB, "HAN", "HIR", day=_LB_DAY, hh=18),
+           mkgame(League.NPB, "YOM", "YAK", day=_LB_DAY, hh=18)]
+_lb_kbo = [mkgame(League.KBO, "LG", "OB", day=_LB_DAY, hh=18)]
+_lb_grace = _GS[ContentType.LEADERBOARD] / 3600
+
+
+def _lb_duty(games, only, keys=()):
+    """시계가 하는 것과 같은 순서 — 리그로 먼저 걸러 의무를 만든다."""
+    pool = [g for g in games if g.league in only]
+    if not pool:
+        return []
+    return C.unqueued_per_day(ContentType.LEADERBOARD, pool, list(keys),
+                              max(g.start_utc for g in games)
+                              + timedelta(hours=_lb_grace + 1))
+
+
+# ① 판정이 한 곳에 있고, 파생이다 (손으로 적은 표가 아니다 — 약점 161)
+check("★★★ 리더보드 대상은 기록 대상에서 한 겹 더 걸러진 파생표다",
+      P.LEADERBOARD_LEAGUES == frozenset(
+          l for l in P.RECORD_SOURCE_LEAGUES if C.player_names_localized(l))
+      and P.LEADERBOARD_LEAGUES < P.RECORD_SOURCE_LEAGUES,
+      f"{sorted(l.value for l in P.LEADERBOARD_LEAGUES)}")
+check("  ↳ KBO는 들어 있고 NPB는 빠져 있다 (소스가 한자·가나로 준다)",
+      League.KBO in P.LEADERBOARD_LEAGUES
+      and League.NPB not in P.LEADERBOARD_LEAGUES)
+
+# ② 오탐이 사라졌는가 — NPB는 의무 대상이 아니므로 신고가 없다
+check("★★★ NPB 리더보드는 의무가 없다 (일부러 안 내보내는 것을 사고로 세지 않는다)",
+      not _lb_duty(_lb_npb, P.LEADERBOARD_LEAGUES),
+      str(_lb_duty(_lb_npb, P.LEADERBOARD_LEAGUES)))
+
+# ③ ★ 변이시험 — 옛 조건으로 돌리면 그 거짓 신고가 **되살아난다**
+#    이것이 없으면 "0건"이 미탐 0의 증거가 못 된다(약점 194).
+check("★★★ (변이) 옛 조건(기록 대상 전부)으로 돌리면 NPB 거짓 신고가 되살아난다",
+      len(_lb_duty(_lb_npb, P.RECORD_SOURCE_LEAGUES)) == 1,
+      str(_lb_duty(_lb_npb, P.RECORD_SOURCE_LEAGUES)))
+
+# ④ ★ 반대쪽 — 무디게 한 것이 아니라 무게를 바로잡은 것이다(약점 139·209).
+#    KBO 리더보드가 진짜로 빠지면 **지금도 빨간불이 떠야 한다.**
+check("★★★ KBO 리더보드가 그날 통째로 빠지면 여전히 신고한다 (무디게 하지 않았다)",
+      len(_lb_duty(_lb_kbo, P.LEADERBOARD_LEAGUES)) == 1,
+      str(_lb_duty(_lb_kbo, P.LEADERBOARD_LEAGUES)))
+check("  ↳ 대장에 KBO 리더보드가 한 장이라도 있으면 조용하다",
+      not _lb_duty(_lb_kbo, P.LEADERBOARD_LEAGUES,
+                   [C.idem_key("-100test", ContentType.LEADERBOARD,
+                               f"KBO:{_LB_DAY}")]))
+
+# ⑤ ★ 배선을 grep으로 못 박는다 — 시계가 **그 표를** 쓰는지 본다(약점 185).
+#    문서나 주석이 "쓴다"고 말하는 것은 증거가 아니다.
+_tick_src = (pathlib.Path(__file__).resolve().parent / "tick.py").read_text(
+    encoding="utf-8")
+check("★★★ 시계의 리더보드 의무가 그 파생표를 쓴다 (배선을 grep으로 확인)",
+      "(ContentType.LEADERBOARD," in _tick_src
+      and "P.LEADERBOARD_LEAGUES" in _tick_src
+      and "(ContentType.LEADERBOARD,   \"리더보드\",    P.RECORD_SOURCE_LEAGUES)"
+          not in _tick_src,
+      "시계가 아직 기록 대상 전부를 쓰고 있습니다")
+
+# ⑥ ★ 격자 점검(v1.33)과 시계가 **같은 판정**을 해야 한다.
+#    둘이 다른 표현으로 같은 것을 말하므로, 어긋나면 여기서 세운다(약점 198).
+import audit_grid as _AG26                                    # noqa: E402
+for _l in P.RECORD_SOURCE_LEAGUES:
+    # 격자는 "경기가 있는데 0건"까지 가야 빨간불이다. 리그 관문에서 접히면
+    # 초록(OK)이고, 그때가 곧 "이 리그엔 리더보드 의무가 없다"는 뜻이다.
+    _grade, _why = _AG26.explain_zero(_l, ContentType.LEADERBOARD,
+                                      in_season_flag=True, games=3,
+                                      material=None)
+    _grid_has_duty = _grade != _AG26.OK
+    check(f"  ↳ [{_l.value}] 격자와 시계가 리더보드 판정을 같게 한다",
+          _grid_has_duty == (_l in P.LEADERBOARD_LEAGUES),
+          f"격자 {_grade}/{_why} vs 시계 의무 {_l in P.LEADERBOARD_LEAGUES}")
+
 check("(재확인) 킥오프 의무 분모는 상태와 무관하다",
       len(C.kickoff_duty_groups(_lv_games)) == 1
       and len(C.kickoff_duty_groups(

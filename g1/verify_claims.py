@@ -1066,7 +1066,11 @@ def _gp(games):
 # 실데이터 모양 (UCL 2026-09-09, 리버풀 2-1 AT 마드리드)
 _LIV = _gp([(17, "away", 0), (40, "home", 0), (50, "home", 0)])
 check("★★ 선취·동점·역전을 순서대로 말한다", bool(_LIV), _LIV)
+# ⚠️ 표본이 **UCL**이다 — 유럽은 소스가 이미 공식 표기를 주므로 보정하지 않는다
+#    (`contract.GOAL_MINUTE_IS_ELAPSED`). 그래서 17·50이 그대로 맞다.
 check("★ 전반·후반을 가른다", "전반 17분" in _LIV and "후반 50분" in _LIV, _LIV)
+check("★★ 유럽 리그는 소스 분을 보정하지 않는다 (K리그1만 보정한다)",
+      "전반 18분" not in _LIV and "후반 51분" not in _LIV, _LIV)
 check("★★ 동점을 거쳐 앞서면 '역전'이라 한다 — '다시'가 아니다",
       "역전했다" in _LIV and "다시 앞섰다" not in _LIV, _LIV)
 # ★ 이 검사가 **배포된 야구 문장의 사실 오류를 잡았다** (v1.30에서 발견).
@@ -1122,6 +1126,7 @@ _ADD = _PF.goal_prose(
                            added=3)))),
     _L.UCL, away_name="원정", home_name="홈")
 check("★ 추가시간은 소스가 준 값이 있을 때만 말한다",
+      # UCL이라 보정 없음 — 소스 addedTime=3이 그대로 90+3이다
       "추가시간 3분" in (_ADD[0] if _ADD else ""), str(_ADD))
 
 # 사건 분류기를 야구와 함께 쓴다 (약점 198)
@@ -1301,6 +1306,287 @@ check("★★ (변이) 문턱이 없으면 9월(123경기)에도 붙어 소음�
       _PF.SAMPLE_THIN_GAMES == 20
       and _PF._pv_thin(_thin_rb(123)) == ""
       and _PF._pv_thin(_thin_rb(12)) != "")
+
+
+# ── ★★★ v1.34 — 골 시각을 공식 표기로 · 경기의 리듬 ───────────────────
+#
+# 대표님이 채널에서 잡으셨다 (2026-09-12):
+#   *"전북 서울 경기 결과에 나온 시간과, 실제 골이 들어간 시간이 다른 것 같아"*
+#   *"추가6분에 결승골 들어간것 같은데, 첫골도 3분에 들어간거 같고"*
+#   *"그리고 경기흐름에 대한 설명글도 많이 부족해"*
+#
+# **두 지적이 다 맞았다.** 소스는 '완료된 분'을 주는데 공식 표기는 '진행 중인
+# 분'이다. 그리고 카드는 추가시간을 **아예 안 그려** 90+6 결승골이 `90′`였다.
+print("\n골 시각 공식 표기 (v1.34)")
+
+from contract import goal_clock as _GC                        # noqa: E402
+from contract import goal_sort_key as _GSK                     # noqa: E402
+
+# ── A. 실측 대조 — ★ 리그마다 다르다 ────────────────────────────────
+#
+# 처음엔 전 리그에 1을 더하려 했다. **표본이 K리그1 하나뿐이었는데 네 리그를
+# 쟀다고 적었기 때문이다**(약점 202를 검사 만드는 쪽이 범했다).
+# 리그별로 다시 재니 갈렸다 — 유럽은 소스가 이미 공식 표기를 준다.
+#
+#   K리그1 (중계가 초까지 준다 · 25골 대조, 불일치 0)
+#     클리말라 time=2    실제 2:55   → 3′
+#     모따     time=25   실제 25:55  → 26′
+#     클리말라 time=90+5 실제 95:40  → 90+6′
+#   EPL (외부 공식 기록 대조 — 아스널 3-0 코벤트리)
+#     하베르츠 15 · 사카 23 · 외데고르 49 → **그대로** 15′·23′·49′
+#   분데스리가 (외부 공식 기록 대조 — 바이에른 5-1 슈투트가르트)
+#     21 · 52 · 55 · 82 · 90+2 → **그대로**
+_KREAL = [((2, 0), "전반", "3"), ((25, 0), "전반", "26"), ((90, 5), "후반", "90+6")]
+for (m, a), want_h, want_n in _KREAL:
+    _h, _n = _GC(m, a, _L.KL1)
+    check(f"★★★ K리그1 실측 대조 — 소스 {m}+{a} → {want_h} {want_n}",
+          (_h, _n) == (want_h, want_n), f"{_h} {_n}")
+
+# 해외 리그 — **여덟 리그를 외부 공식 기록과 전수 대조했다** (2026-09-12).
+# 표본은 실제 경기다. 하나라도 어긋나면 그 리그를 목록에 넣어야 한다는 뜻이다.
+_ABROAD = [
+    (_L.EPL,        "아스널 3-0 코벤트리",     [(15, 0), (23, 0), (49, 0), (90, 2)],
+     ["15", "23", "49", "90+2"]),
+    (_L.BUNDESLIGA, "바이에른 5-1 슈투트가르트", [(21, 0), (52, 0), (55, 0), (82, 0), (90, 2)],
+     ["21", "52", "55", "82", "90+2"]),
+    (_L.LALIGA,     "빌바오 1-3 세비야",       [(15, 0), (50, 0), (57, 0), (70, 0)],
+     ["15", "50", "57", "70"]),
+    (_L.SERIEA,     "로마 4-0 피오렌티나",     [(27, 0), (52, 0), (60, 0), (86, 0)],
+     ["27", "52", "60", "86"]),
+    (_L.LIGUE1,     "릴 2-2 PSG",              [(21, 0), (84, 0), (90, 1), (90, 5)],
+     ["21", "84", "90+1", "90+5"]),
+    (_L.UCL,        "리버풀 2-1 AT 마드리드",  [(17, 0), (40, 0), (50, 0)],
+     ["17", "40", "50"]),
+    (_L.MLS,        "시카고 2-1 샬럿",         [(18, 0), (20, 0), (68, 0)],
+     ["18", "20", "68"]),
+]
+for _lg, _tag, _src, _want in _ABROAD:
+    check(f"★★★ {_lg.value} 실측 대조 ({_tag}) — 소스가 **그대로** 공식이다",
+          [_GC(m, a, _lg)[1] for m, a in _src] == _want,
+          str([_GC(m, a, _lg)[1] for m, a in _src]))
+check("★★★ 리그1 표본이 **추가시간도 보정하지 않는다**를 못 박는다 (90+1 · 90+5)",
+      _GC(90, 1, _L.LIGUE1)[1] == "90+1" and _GC(90, 5, _L.LIGUE1)[1] == "90+5")
+check("⏳ 유로파리그는 미확인이다 — 2026-09-24 개막, 종료 경기 0건이었다."
+      " 지금은 보정하지 않는다(추론이 아니라 기본값이다)",
+      _L.UEL not in C.GOAL_MINUTE_IS_ELAPSED
+      and _GC(17, 0, _L.UEL)[1] == "17")
+check("★★ 확인한 해외 리그가 하나도 목록에 없다 (일곱 리그)",
+      not (C.GOAL_MINUTE_IS_ELAPSED & {lg for lg, _, _, _ in _ABROAD}))
+
+check("★★★ 보정 대상은 계약이 정한다 — 목록을 두 곳에 적지 않는다",
+      C.goal_needs_bump(_L.KL1) and not C.goal_needs_bump(_L.EPL)
+      and not C.goal_needs_bump(_L.BUNDESLIGA)
+      and C.GOAL_MINUTE_IS_ELAPSED == frozenset({_L.KL1}))
+check("★★★ **모르는 리그는 보정하지 않는다** — 모르면 지금 동작을 지킨다",
+      _GC(15, 0, None)[1] == "15" and _GC(15, 0)[1] == "15"
+      and _GC(90, 2, _L.UEL)[1] == "90+2")
+check("  ↳ 새 리그를 추론으로 넣지 않는다 (§7-79) — 확인된 것만 목록에 있다",
+      len(C.GOAL_MINUTE_IS_ELAPSED) == 1)
+
+# ★★ 반 판정은 **원본 분**으로 — 더한 뒤 판정하면 전반 골이 후반으로 간다
+check("★★ K리그1 45분 골은 전반이다 (더한 뒤 판정하면 46이 되어 후반으로 넘어간다)",
+      _GC(45, 0, _L.KL1) == ("전반", "46"), str(_GC(45, 0, _L.KL1)))
+check("★ 46분 골은 후반이다", _GC(46, 0, _L.KL1) == ("후반", "47"))
+check("★ 전반 추가시간은 45+N으로 적는다",
+      _GC(45, 1, _L.KL1) == ("전반", "45+2")
+      and _GC(45, 1, _L.EPL) == ("전반", "45+1"))
+check("★ 연장은 연장이라 부른다", _GC(105, 0, _L.KL1)[0] == "연장")
+check("★ 이상한 값에 죽지 않는다",
+      _GC(0, 0, _L.EPL)[1] == "0" and _GC(-3, -2, _L.KL1)[1] == "1")
+
+# ── B. ★★★ 카드와 텍스트가 같은 값을 쓰는가 (이 판의 핵심) ──────────
+#
+# 전에는 두 곳이 각자 계산했다. 카드는 소스 값을 그대로 찍고 **추가시간을 버렸고**
+# (`90′`), 텍스트는 `후반 추가시간 4분`이라 말했다. **한 화면에서 두 말이 달랐다.**
+_g134 = _G(league=_L.KL1, season="2026", source_key="v134-real",
+           home=_TR(_L.KL1, "전북"), away=_TR(_L.KL1, "서울"),
+           start_utc=_dt.datetime(2026, 9, 12, 7, 30, tzinfo=_dt.timezone.utc),
+           home_tz="Asia/Seoul", status=_ST.FINAL,
+           score=_SC(1, 2, C.ScoreUnit.GOALS), venue="전주 월드컵",
+           meta=_GM(goals=(_GO(minute=2, side="away", name="클리말라",
+                               own_goal=False, added=0),
+                           _GO(minute=25, side="home", name="모따",
+                               own_goal=False, added=0),
+                           _GO(minute=90, side="away", name="클리말라",
+                               own_goal=False, added=5))))
+_g134.validate()
+_card134 = _RV.flash_card(_g134, _L.KL1,
+                          now=_dt.datetime(2026, 9, 12, 9, 40,
+                                           tzinfo=_dt.timezone.utc))
+_html134 = _card134[0] if _card134 else ""
+_text134 = " ".join(_card134[1]) if _card134 else ""
+
+check("★★★ 카드 타임라인이 공식 표기로 그린다 (3′ · 26′ · 90+6′)",
+      all(f">{m}′<" in _html134 for m in ("3", "26", "90+6")),
+      [m for m in ("3", "26", "90+6") if f">{m}′<" not in _html134])
+check("★★★ 카드에 옛 표기가 남아 있지 않다 (2′ · 25′ · 90′)",
+      not any(f">{m}′<" in _html134 for m in ("2", "25", "90")),
+      [m for m in ("2", "25", "90") if f">{m}′<" in _html134])
+check("★★★ 텍스트도 같은 값을 말한다 — 한 화면 두 말 금지 (약점 67)",
+      "3분" in _text134 and "전반 26분" in _text134
+      and "추가시간 6분" in _text134, _text134[-140:])
+check("★★ 텍스트에 옛 값이 없다",
+      "전반 2분" not in _text134 and "전반 25분" not in _text134
+      and "추가시간 5분" not in _text134 and "추가시간 4분" not in _text134)
+
+# ★★★ 유럽 경기도 **카드와 텍스트가 같은 값**인가 — 보정 없이도
+_gepl = _G(league=_L.EPL, season="2026-27", source_key="v134-epl",
+           home=_TR(_L.EPL, "아스널"), away=_TR(_L.EPL, "코벤트리"),
+           start_utc=_dt.datetime(2026, 8, 21, 19, 0, tzinfo=_dt.timezone.utc),
+           home_tz="Europe/London", status=_ST.FINAL,
+           score=_SC(3, 0, C.ScoreUnit.GOALS), venue=None,
+           meta=_GM(goals=(_GO(minute=15, side="home", name="하베르츠",
+                               own_goal=False, added=0),
+                           _GO(minute=23, side="home", name="사카",
+                               own_goal=False, added=0),
+                           _GO(minute=90, side="home", name="외데고르",
+                               own_goal=False, added=2))))
+_gepl.validate()
+_cepl = _RV.flash_card(_gepl, _L.EPL,
+                       now=_dt.datetime(2026, 8, 21, 21, 0,
+                                        tzinfo=_dt.timezone.utc))
+check("★★★ EPL 카드는 소스 분을 그대로 그린다 (15′ · 23′)",
+      ">15′<" in _cepl[0] and ">23′<" in _cepl[0]
+      and ">16′<" not in _cepl[0], "")
+check("★★★ EPL 추가시간도 그려진다 (90+2′) — 전에는 `90′`로 나갔다",
+      ">90+2′<" in _cepl[0] and ">90′<" not in _cepl[0], "")
+
+# ★★ 판정이 한 곳뿐인가 — 두 경로가 같은 함수를 부르는가
+check("★★ 표기 규칙이 계약 한 곳에 있다 (카드도 텍스트도 goal_clock을 부른다)",
+      "goal_clock" in (_PATH_C5 := (pathlib.Path(__file__).resolve().parent
+                                    / "cards_v5.py").read_text("utf-8"))
+      and "goal_clock" in (pathlib.Path(__file__).resolve().parent
+                           / "pipeline.py").read_text("utf-8"))
+check("  ↳ 카드가 분을 스스로 계산하지 않는다",
+      "+ 1" not in _PATH_C5.split("def body_timeline")[1].split("def ")[0])
+
+# ── C. 정렬 — 추가시간을 빼먹으면 90+1과 90+9가 뒤섞인다 ────────────
+check("★ 정렬 키가 추가시간을 본다",
+      _GSK(90, 1) < _GSK(90, 9) and _GSK(45, 3) < _GSK(46, 0))
+_mix = _PF.goal_events((_GO(minute=90, side="home", name="A",
+                            own_goal=False, added=9),
+                        _GO(minute=90, side="away", name="B",
+                            own_goal=False, added=1)))
+check("★★ 90+1이 90+9보다 먼저 온다", _mix[0]["added"] == 1, str(_mix))
+
+# ── D. 옛 호출자가 그대로 도는가 (되돌리는 길이 열려 있다) ──────────
+check("★★ 추가시간 없는 4자리 사건도 그대로 그려진다 (옛 호출자가 돈다)",
+      ">12′<" in C5.body_timeline(away_name="A", home_name="B",
+                                  events=[(12, "home", "선수", "")]))
+
+
+# ── E. 경기의 리듬 (v1.34) ───────────────────────────────────────────
+#
+# 대표님: *"경기흐름에 대한 설명글도 많이 부족해"* · *"구성할 수 있는 내용이
+# 많으면 더 길어져도 좋아"*.
+# ⛔ 카드에 있는 것(분·득점자·자책·점수)은 **여기서 다시 쓰지 않는다.**
+print("\n경기의 리듬 (v1.34)")
+
+
+def _mkfoot(goals, hs, as_):
+    """(소스분, 'home'|'away', 추가분) 목록으로 K리그 경기를 만든다."""
+    gl = tuple(_GO(minute=m, side=s, name=f"선수{i}", own_goal=False, added=a)
+               for i, (m, s, a) in enumerate(goals))
+    g = _G(league=_L.KL1, season="2026", source_key=f"rh{hs}{as_}{len(gl)}",
+           home=_TR(_L.KL1, "전북"), away=_TR(_L.KL1, "서울"),
+           start_utc=_dt.datetime(2026, 9, 12, 7, 30, tzinfo=_dt.timezone.utc),
+           home_tz="Asia/Seoul", status=_ST.FINAL,
+           score=_SC(hs, as_, C.ScoreUnit.GOALS), venue=None, meta=_GM(goals=gl))
+    g.validate()
+    return g
+
+
+def _rh(goals, hs, as_):
+    o = _PF.goal_prose(_mkfoot(goals, hs, as_), _L.KL1,
+                       away_name="서울", home_name="전북")
+    return o[0] if o else ""
+
+
+# 실경기 — 대표님이 보신 그 경기
+_R1 = _rh([(2, "away", 0), (25, "home", 0), (90, "away", 5)], 1, 2)
+check("★★★ 실경기 문장이 사실과 맞는다 (3분 · 26분 · 추가 6분)",
+      "경기 시작 3분 만에" in _R1 and "전반 26분" in _R1
+      and "추가시간 6분" in _R1, _R1)
+check("★★ 오래 이어진 균형을 말한다 (카드가 못 말하는 것)",
+      "균형이 이어졌다" in _R1, _R1)
+check("★★ 언제 갈렸는지 말한다", "정규시간이 다 지난 뒤였다" in _R1, _R1)
+check(f"★ 문장이 두툼해졌다 ({len(_R1)}자 — 전에는 84자)", len(_R1) > 100, _R1)
+
+# ① 이른 선제골 — 문턱은 **표기 기준**이다
+check("★★ 이른 선제골은 '경기 시작 N분 만에'로 말한다",
+      "경기 시작 5분 만에" in _rh([(4, "home", 0), (80, "away", 0)], 1, 1))
+check("★★ 문턱을 넘으면 평소대로 말한다 — 매번 붙으면 뜻이 없다",
+      "경기 시작" not in _rh([(5, "home", 0), (80, "away", 0)], 1, 1))
+check("  ↳ 문턱과 표기가 **같은 축**이다 (전에는 5로 재고 6이라 적었다)",
+      _PF.EARLY_GOAL_MINUTE == 5
+      and _PF._goal_abs({"minute": 4, "added": 0}, _L.KL1) == 5
+      and _PF._goal_abs({"minute": 90, "added": 5}, _L.KL1) == 96)
+check("  ↳ 유럽은 보정 없이 잰다 (같은 축을 쓴다)",
+      _PF._goal_abs({"minute": 4, "added": 0}, _L.EPL) == 4
+      and _PF._goal_abs({"minute": 90, "added": 2}, _L.EPL) == 92)
+
+# ② 오래 비어 있던 구간 — 그동안 무엇이 이어졌나
+_R2 = _rh([(12, "away", 0), (70, "home", 0), (85, "home", 0)], 2, 1)
+check("★★ 한 팀이 앞선 채 흘렀으면 그렇게 말한다",
+      "앞선 채 흘렀다" in _R2, _R2)
+check("★ 짧은 공백은 말하지 않는다 (매번 붙으면 헐거워진다)",
+      "동안" not in _rh([(10, "home", 0), (15, "away", 0), (38, "home", 0)],
+                       2, 1))
+
+# ③ ★★ 결승골 판정 — **뒤에서부터** 찾는다
+check("★★★ 뒤집힌 선제골을 결승골이라 부르지 않는다",
+      _PF._goal_decider(_PF.goal_events(_mkfoot(
+          [(2, "away", 0), (25, "home", 0), (90, "away", 5)],
+          1, 2).meta.goals))["minute"] == 90)
+check("★★ 쐐기골이 아니라 갈린 골을 고른다 (3-0의 결승골은 선제골이다)",
+      _PF._goal_decider(_PF.goal_events(_mkfoot(
+          [(8, "home", 0), (30, "home", 0), (66, "home", 0)],
+          3, 0).meta.goals))["minute"] == 8)
+check("★★ 비긴 경기에는 결승골이 없다",
+      _PF._goal_decider(_PF.goal_events(_mkfoot(
+          [(20, "away", 0), (75, "home", 0)], 1, 1).meta.goals)) is None)
+check("★ 비긴 경기에 '갈렸다'고 말하지 않는다",
+      "갈" not in _rh([(20, "away", 0), (75, "home", 0)], 1, 1))
+
+# ④ 늦게 갈린 경기만 말한다
+check("★★ 막바지에 갈리면 남은 시간을 말한다",
+      "정규시간 종료 4분 전이었다" in _R2, _R2)
+check("★★ 일찍 갈렸으면 말하지 않는다",
+      "정규시간" not in _rh([(8, "home", 0), (30, "home", 0),
+                           (66, "home", 0)], 3, 0))
+
+# ⑤ ⛔ 카드에 있는 것을 다시 쓰지 않는다 · 감상 낱말 금지
+_ALL = " ".join([_R1, _R2,
+                 _rh([(8, "home", 0), (30, "home", 0), (66, "home", 0)], 3, 0)])
+check("★★★ 득점자 이름을 쓰지 않는다 (카드가 그린다)", "선수" not in _ALL)
+check("★★ 감상을 담은 낱말을 쓰지 않는다 (FACT_LOCK)",
+      not any(w in _ALL for w in ("명승부", "짜릿", "역대급", "환상", "대단",
+                                  "극적", "치열", "혈투", "완벽")), _ALL)
+check("★★ 주어가 사라지지 않는다 — 앞에 절을 끼우지 않고 뒤에 덧붙인다",
+      " — " not in _ALL, _ALL)
+
+# ⑥ 문턱이 실측값인가 (지어낸 숫자가 아닌가 — §7-138)
+check("★★ 문턱 셋이 전부 계약에 상수로 있다 (본문에 숫자를 박지 않았다)",
+      _PF.EARLY_GOAL_MINUTE == 5 and _PF.LONG_QUIET_MINUTES == 25
+      and _PF.LATE_DECIDER_MINUTE == 80)
+
+# (변이) 표기 보정을 빼면 실측과 어긋나는가 — 이 판의 값어치
+_saved_set = C.GOAL_MINUTE_IS_ELAPSED
+try:
+    C.GOAL_MINUTE_IS_ELAPSED = frozenset()
+    check("★★★ (변이) K리그1을 목록에서 빼면 실측(3′·90+6′)과 어긋난다",
+          C.goal_clock(2, 0, _L.KL1)[1] == "2"
+          and C.goal_clock(90, 5, _L.KL1)[1] == "90+5")
+finally:
+    C.GOAL_MINUTE_IS_ELAPSED = _saved_set
+check("  ↳ 되돌린 뒤 다시 맞는다", C.goal_clock(2, 0, _L.KL1)[1] == "3")
+try:
+    C.GOAL_MINUTE_IS_ELAPSED = frozenset(_L)
+    check("★★★ (변이) 유럽을 목록에 넣으면 공식 기록(15′)과 어긋난다",
+          C.goal_clock(15, 0, _L.EPL)[1] == "16")
+finally:
+    C.GOAL_MINUTE_IS_ELAPSED = _saved_set
+check("  ↳ 되돌린 뒤 EPL이 다시 맞는다", C.goal_clock(15, 0, _L.EPL)[1] == "15")
 
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

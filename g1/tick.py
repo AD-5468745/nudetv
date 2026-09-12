@@ -2750,7 +2750,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             (ContentType.ANALYSIS,      "경기 분석",   P.ANALYSIS_LEAGUES),
             (ContentType.LEAGUE_RESULT, "전경기 정리판", None),
             (ContentType.STANDINGS,     "팀 순위표",   P.RECORD_SOURCE_LEAGUES),
-            (ContentType.LEADERBOARD,   "리더보드",    P.RECORD_SOURCE_LEAGUES),
+            (ContentType.LEADERBOARD,   "리더보드",    P.LEADERBOARD_LEAGUES),
         )
         for _ct, _label, _only in _DAY_DUTY:
             if _ct in DISABLED_CONTENT_TYPES:

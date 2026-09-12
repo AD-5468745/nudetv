@@ -97,10 +97,13 @@ def _flow_body(game, league: League) -> str | None:
 
     if getattr(meta, "goals", ()):                    # 축구 — 구간이 없다
         return C5.body_timeline(
-            away_name=aw, home_name=hm,
+            away_name=aw, home_name=hm, league=league,
             away_win=bool(game.score and game.score.away > game.score.home),
             home_win=bool(game.score and game.score.home > game.score.away),
-            events=[(g.minute, g.side, g.name, "자책" if g.own_goal else "")
+            # ★ 다섯째 자리가 **추가시간**이다 (v1.34). 이 한 자리가 빠져 있어서
+            #   90+6에 들어간 결승골이 카드에 `90′`로 그려졌다.
+            events=[(g.minute, g.side, g.name, "자책" if g.own_goal else "",
+                     getattr(g, "added", 0) or 0)
                     for g in meta.goals])
 
     rows = list(getattr(meta, "line_score", ()) or ())
