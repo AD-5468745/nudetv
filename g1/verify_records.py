@@ -9,8 +9,9 @@ from datetime import datetime, timedelta, timezone
 
 from adapters.kbo_records import KboRecordAdapter, _RANK, _TOP5, _UA
 from adapters.kbo import TEAM_CODE, CODE_TEAM
-from contract import (GateError, LeaderEntry, StreakKind, UnknownStatus, WLD,
-                      assert_recordbook, leader_value_num, RECORD_MAX_AGE_SECONDS)
+from contract import (GateError, LeaderEntry, Standing, StreakKind,
+                      UnknownStatus, WLD, assert_recordbook,
+                      leader_value_num, RECORD_MAX_AGE_SECONDS)
 
 ok = fail = 0
 def check(name, cond, detail=""):
@@ -154,10 +155,58 @@ def _ranked(base, pairs):
     return x
 
 
-_order = [s.team_code for s in sorted(rb.standings, key=lambda x: x.rank)]
-_gb = {s.team_code: s.games_behind for s in rb.standings}
-# 실제 표에 동률이 있든 없든 항상 같은 시험이 되게, 8·9번째를 공동 8위로 만든다.
+# ── ★ 이 절만은 **오늘 데이터에 매달리지 않는다** (v1.35, 2026-09-12) ──
+#
+# 전에는 여기서 실제 순위표(`rb`)를 변형해 시험했다. 그러다 **검사가 오늘의
+# 숫자에 따라 켜졌다 꺼졌다 했다**: 2026-09-12 오전에는 1위 KT와 2위 SS의
+# 게임차가 둘 다 `0`이라, "공동인데 게임차가 다름"을 만들려고 값을 바꿔도
+# 원래 값과 구별이 안 돼 **변이가 무력화**됐다(그날 2 FAIL, 오후엔 0 FAIL).
+#
+# 같은 코드가 같은 답을 못 내는 검사는 검사가 아니다. **게이트의 게이트는
+# 게이트만 시험해야 하므로 표본을 고정한다.** 원본 대조(A절)와 오늘 데이터가
+# 게이트를 통과하는지(B절)는 그대로 실데이터를 쓴다 — 그쪽은 실데이터가
+# 목적 자체다.
+# **표본은 스스로 정합해야 한다.** 게이트가 승률·상대전적·홈원정을 서로
+# 검산하므로, 아무 숫자나 넣으면 시험대가 먼저 무너진다. 그래서 상대전적에서
+# 나머지를 **계산해서** 만든다 — 손으로 적은 숫자가 하나도 없다.
+_FIX_CODES = ["LG", "OB", "KT", "SS", "HH", "NC", "LT", "HT", "SK", "WO"]
+_N = len(_FIX_CODES)
+_PAIR_W, _PAIR_L = 10, 6           # 위 순위 팀이 아래 팀에게 16경기 중 10승
+_fix = copy.deepcopy(rb)
+_fix.h2h = {}
+for _i, _a in enumerate(_FIX_CODES):
+    for _j, _b in enumerate(_FIX_CODES):
+        if _i == _j:
+            continue
+        _fix.h2h[(_a, _b)] = (WLD(_PAIR_W, _PAIR_L, 0) if _i < _j
+                              else WLD(_PAIR_L, _PAIR_W, 0))
+
+
+def _fix_row(i, code):
+    rows = [w for (a, _), w in _fix.h2h.items() if a == code]
+    rec = WLD(sum(w.win for w in rows), sum(w.loss for w in rows), 0)
+    half_w, half_l = rec.win // 2, rec.loss // 2
+    return Standing(
+        league=rb.league, season=rb.season, team_code=code, rank=i + 1,
+        games=rec.total, record=rec,
+        pct=f"{rec.win / (rec.win + rec.loss):.3f}",
+        # 게임차 = (1위와의 승차 + 패차) / 2. 한 계단마다 승이 4 줄고 패가 4 는다.
+        games_behind=("0" if i == 0 else f"{i * 4}"),
+        last10=WLD(5, 5, 0), streak_kind=StreakKind.WIN, streak_len=1,
+        home=WLD(half_w, half_l, 0),
+        away=WLD(rec.win - half_w, rec.loss - half_l, 0))
+
+
+_fix.standings = [_fix_row(_i, _c) for _i, _c in enumerate(_FIX_CODES)]
+_fix.leaders = {k: [_dc.replace(e, team_code=_FIX_CODES[0])
+                    if e.team_code not in _FIX_CODES else e
+                    for e in v] for k, v in rb.leaders.items()}
+_order = [s.team_code for s in sorted(_fix.standings, key=lambda x: x.rank)]
+_gb = {s.team_code: s.games_behind for s in _fix.standings}
+# 8·9번째를 공동 8위로 만든다. **게임차가 서로 다른 표본**이라 아래
+# "공동인데 게임차가 다름" 변이가 언제나 실제로 값을 바꾼다.
 _t8, _t9, _t10 = _order[7], _order[8], _order[9]
+assert _gb[_t8] != _gb[_t9], "고정 표본의 게임차가 겹치면 변이가 무력화된다"
 _tie = [(_t8, 8, _gb[_t8]), (_t9, 8, _gb[_t8]), (_t10, 10, _gb[_t10])]
 
 
@@ -172,20 +221,24 @@ def _pass_case(name, x):
         print(f"  FAIL  {name}  게이트가 정상 데이터를 막음: {str(e)[:70]}")
 
 
-_pass_case("공동 8위 [..8,8,10] 통과", _ranked(rb, _tie))
+_pass_case("고정 표본 자체가 게이트를 통과한다 (시험대가 멀쩡한지 먼저)", _fix)
+_pass_case("공동 8위 [..8,8,10] 통과", _ranked(_fix, _tie))
 _pass_case("공동 1위 [1,1,3..] 통과",
-           _ranked(rb, [(_order[0], 1, _gb[_order[0]]),
-                        (_order[1], 1, _gb[_order[0]])]))
+           _ranked(_fix, [(_order[0], 1, _gb[_order[0]]),
+                          (_order[1], 1, _gb[_order[0]])]))
 expect_gate("동률인데 건너뛰지 않음 [..8,8,9]",
-            lambda: assert_recordbook(_ranked(rb, _tie[:2] + [(_t10, 9)])))
+            lambda: assert_recordbook(_ranked(_fix, _tie[:2] + [(_t10, 9)])))
 expect_gate("동률 없이 건너뜀 [..6,8,8,10]",
-            lambda: assert_recordbook(_ranked(rb, [(_order[6], 8)] + _tie)))
+            lambda: assert_recordbook(_ranked(_fix, [(_order[6], 8)] + _tie)))
 expect_gate("두 칸 건너뜀 [..8,8,11]",
-            lambda: assert_recordbook(_ranked(rb, _tie[:2] + [(_t10, 11)])))
+            lambda: assert_recordbook(_ranked(_fix, _tie[:2] + [(_t10, 11)])))
 expect_gate("공동인데 게임차가 다름 (파싱 밀림)",
-            lambda: assert_recordbook(_ranked(rb, [(_t8, 8, _gb[_t8]),
-                                                   (_t9, 8, _gb[_t9] + "9"),
-                                                   (_t10, 10, _gb[_t10])])))
+            lambda: assert_recordbook(_ranked(_fix, [(_t8, 8, _gb[_t8]),
+                                                     (_t9, 8, _gb[_t9]),
+                                                     (_t10, 10, _gb[_t10])])))
+check("★★ (변이의 변이) 이 절은 오늘 숫자와 무관하다 — 게임차가 전부 다른 고정 표본",
+      len({s.games_behind for s in _fix.standings}) == len(_fix.standings),
+      str([s.games_behind for s in _fix.standings]))
 
 expect_gate("스냅샷 6시간 초과", lambda: assert_recordbook(
     rb, now_utc=rb.collected_utc + timedelta(seconds=RECORD_MAX_AGE_SECONDS + 60)))

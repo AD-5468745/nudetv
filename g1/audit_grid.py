@@ -85,7 +85,7 @@ try:
     from contract import (  # noqa: E402
         DISABLED_CONTENT_TYPES, DISABLED_LEAGUES, IDEM_SEP, KST,
         QUEUED_CONTENT_TYPES, ContentType, League, in_season,
-        player_names_localized,
+        player_names_localized, goal_flash_leagues,
     )
     from pipeline import ANALYSIS_LEAGUES, RECORD_SOURCE_LEAGUES  # noqa: E402
 except Exception as _e:                                   # pragma: no cover
@@ -139,6 +139,12 @@ def explain_zero(
     # 아예 만들지 않는다 — v1.11m의 결정이고, 계약이 그 답을 들고 있다.
     if ct is ContentType.LEADERBOARD and not player_names_localized(league):
         return OK, "선수 이름 한글 표기 없음"
+    # v1.35 — 경기 중 득점 속보는 **축구만** 돈다. 야구·농구·배구의 0은
+    # 고장이 아니라 결정이고, 그 결정은 계약(`goal_flash_leagues`)에 있다.
+    # 여기에 안 적으면 여섯 리그가 매일 빨간불로 뜨고, 그 소음이 진짜
+    # 고장을 덮는다(약점 112·209).
+    if ct is ContentType.GOAL_FLASH and league not in goal_flash_leagues():
+        return OK, "득점 속보 미대상 (축구만)"
     if not in_season_flag:
         return OK, "비시즌"
     if games is None:

@@ -53,6 +53,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
+                      GOAL_FLASH_ENABLED, goal_flash_enabled_for, goal_key,
                       DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
                       unqueued_per_day, josa, is_upcoming, game_identity,
                       DISABLED_LEAGUES, DISABLED_CONTENT_TYPES)
@@ -1060,8 +1061,23 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
         # **지금 NPB엔 라인업이 없어 사고가 안 났을 뿐, 같은 병이다.**
         prev: dict = {}
         prev_id: dict = {}
+        # v1.35 — **이전 스냅샷에 이 경기가 있었는가**(내용과 무관하게).
+        # 골 스탬프를 찍을 자격을 판정하는 데 쓴다: 처음 보는 경기의 골은
+        # 우리가 들어가는 것을 **본 적이 없으므로** 속보를 낼 수 없다.
+        # `prev`/`prev_id`는 라인업·스탬프가 있는 행만 담아서 이 판정에 못 쓴다.
+        known: set = set()
         for d in _load_raw(name):
-            if not (d.get("lineup") or d.get("lineup_seen_at")):
+            _k0 = d.get("source_key")
+            if _k0:
+                known.add(("k", _k0))
+            _i0 = game_identity(d)
+            if _i0 is not None:
+                known.add(("i", _i0))
+            # v1.35 — `goal_seen_at`도 되살릴 것에 포함한다. 안 넣으면 명단이
+            # 없는 경기(라인업 미제공 리그)의 골 스탬프가 매 틱 사라져
+            # **같은 골이 매 틱 새 골로 보인다** = 속보 무한 반복.
+            if not (d.get("lineup") or d.get("lineup_seen_at")
+                    or d.get("goal_seen_at")):
                 continue
             k = d.get("source_key")
             if k:
@@ -1080,6 +1096,14 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
                 g.meta.lineup = old["lineup"]
             if old.get("lineup_seen_at"):
                 g.meta.lineup_seen_at = old["lineup_seen_at"]   # 한 번 적히면 안 바뀐다
+            # v1.35 — 골 스탬프도 되살린다. **덮어쓰지 않고 합친다**:
+            # 이 틱에 이미 무언가 적혔을 수 있고, 옛 스탬프가 이겨야 한다
+            # (한 번 적힌 시각은 안 바뀐다).
+            if old.get("goal_seen_at"):
+                merged = dict(old["goal_seen_at"])
+                merged.update({k: v for k, v in (g.meta.goal_seen_at or {}).items()
+                               if k not in merged})
+                g.meta.goal_seen_at = merged
         # ② 조회
         ad.reset_notices()
         n_lu = ad.fill_lineups(games, now)
@@ -1092,8 +1116,58 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
         for g in games:
             if g.meta.lineup and not g.meta.lineup_seen_at:
                 g.meta.lineup_seen_at = _iso(now)
+        # ④ **골을 처음 본 시각** (v1.35) — 경기 중 득점 속보의 예약 시각.
+        _stamp_goals(games, now, known)
     except Exception as e:                                   # noqa: BLE001
         soft.append(f"{name}: 라인업 보강을 건너뜀 ({e.__class__.__name__})")
+
+
+# ── ★ 골을 처음 본 시각 (v1.35) ────────────────────────────────────
+#
+# `_mark_first_final`과 같은 원칙 위에 서 있다: **전환을 실제로 봤을 때만
+# 찍는다.** 처음 보는 경기의 골은 언제 들어갔는지 모르고, 그 시각을 `지금`으로
+# 적으면 리그를 새로 붙인 날이나 시계가 4시간 쉰 뒤에 **끝난 경기의 골이
+# 무더기로 '속보'로 나간다.**
+#
+# 자격이 없는 골은 빈 문자열 `""`로 찍는다. `None`이나 미기록과 다르다:
+#   · 미기록이면 다음 틱에 **새 골로 보여** 같은 판정을 다시 하게 된다.
+#     그때 경기가 이미 우리 스냅샷에 있으니 자격이 생겨 결국 나간다 —
+#     막으려던 바로 그 사고가 한 틱 늦게 일어난다.
+#   · `""`는 "봤고, 속보 대상은 아니다"를 뜻한다. 시각이 아니므로 예약 시각으로
+#     오해될 수 없고, 큐 생성부가 `if not stamp`로 자연히 건너뛴다.
+#
+# 그 골들이 사라지는 것은 아니다 — 종료 속보 카드의 타임라인이 전부 싣는다
+# (`SAFETY_NET_FOR[GOAL_FLASH]`).
+def _stamp_goals(games: list, now: datetime, known: set) -> None:
+    """진행 중인 경기의 새 골에 '우리가 처음 본 시각'을 찍는다.
+
+    · 축구가 아니거나 꺼진 리그면 아무것도 안 한다(`goal_flash_enabled_for`).
+    · **진행 중(LIVE)인 경기만** 찍는다. 종료된 경기의 골에 찍으면 종료 속보와
+      같은 사실을 두 번 말하게 되고, 그 속보는 이미 늦었다.
+    · 처음 보는 경기면 `""`로 찍어 **속보 대상에서 뺀다**(위 설명).
+    · 한 번 찍힌 값은 절대 안 바꾼다 — 바꾸면 그 골이 영원히 '방금'이 된다.
+    """
+    if not GOAL_FLASH_ENABLED:
+        return
+    for g in games:
+        if not goal_flash_enabled_for(getattr(g, "league", None)):
+            continue
+        goals = (g.meta.goals or ()) if g.meta else ()
+        if not goals:
+            continue
+        stamps = dict(g.meta.goal_seen_at or {})
+        # 이 경기를 전에 본 적이 있나 — 이름표와 신원 둘 다로 찾는다
+        # (NPB에서 이름표만 보다 당한 병. §7-163 / v1.28).
+        _gid = game_identity(g)
+        seen_before = (("k", g.source_key) in known
+                       or (_gid is not None and ("i", _gid) in known))
+        live = getattr(g, "status", None) is Status.LIVE
+        for go in goals:
+            k = goal_key(go)
+            if k in stamps:
+                continue                  # 이미 찍혔다 — 절대 안 바꾼다
+            stamps[k] = _iso(now) if (live and seen_before) else ""
+        g.meta.goal_seen_at = stamps
 
 
 def _mark_first_final(name: str, games: list, now: datetime) -> None:
@@ -1216,6 +1290,9 @@ def _save_games(name: str, games: list) -> None:
         # 선발 명단은 발표되면 안 바뀌므로 저장해도 '지난 값이 살아나는' 문제가 없다.
         "lineup": g.meta.lineup,
         "lineup_seen_at": g.meta.lineup_seen_at,
+        # **골을 처음 본 시각** (v1.35). fix49와 같은 자리다 — 여기 없으면
+        # 매 틱 모든 골이 '새 골'로 보여 같은 속보가 무한히 반복된다.
+        "goal_seen_at": g.meta.goal_seen_at or None,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -1319,7 +1396,9 @@ def _load_games(name: str) -> list:
                           first_final_at=d.get("first_final_at"),
                           # v1.17 — 없으면 None이라 옛 스냅샷도 그냥 읽힌다.
                           lineup=d.get("lineup") or None,
-                          lineup_seen_at=d.get("lineup_seen_at"))))
+                          lineup_seen_at=d.get("lineup_seen_at"),
+                          # v1.35 — 없으면 빈 dict라 옛 스냅샷도 그냥 읽힌다.
+                          goal_seen_at=dict(d.get("goal_seen_at") or {}))))
     # **저장된 라인업 안의 한국 선수를 되살린다** (v1.17c).
     # `player_lines`는 스냅샷에 담지 않는 칸이라(야구 기록 경로의 몫) 축구는
     # `lineup["korean"]`에 실어 저장했다. 여기서 되돌리지 않으면 카드가
@@ -2015,11 +2094,22 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
     # 한 번 당한 병이다(약점 127).
     elif item.content_type in (ContentType.KICKOFF, ContentType.FINAL_FLASH,
-                               ContentType.LINEUP):
+                               ContentType.LINEUP, ContentType.GOAL_FLASH):
         _lg = getattr(item, "league", None)
         if _lg is None:
             return None
-        if item.content_type is ContentType.LINEUP:
+        if item.content_type is ContentType.GOAL_FLASH:
+            # **경기 중 득점 속보 (v1.35)** — 골 하나. scope 뒤의 `#이름`이
+            # 어느 골인지 말한다(`contract.goal_scope`). 이름을 못 찾으면
+            # 만들지 않는다 — 그 경기의 '아무 골'로 떨어지면 엉뚱한 골이
+            # 같은 멱등키로 나간다(모닝이 시간대 키를 못 찾을 때와 같은 판정).
+            _gid = item.scope.split("#", 1)[1] if "#" in item.scope else ""
+            _one = next((g for g in games if g.game_id == item.game_id), None)
+            if _one is None or not _gid:
+                return None
+            _r5 = _try_v5("goal",
+                          lambda R: R.goal_card(_one, _lg, _gid, now=_now()))
+        elif item.content_type is ContentType.LINEUP:
             # **선발 라인업 (v1.17)** — 경기 하나. 킥오프와 달리 묶지 않는다:
             # 22명이 들어가는 카드라 두 경기만 합쳐도 카드가 무너지고, 명단은
             # 경기마다 발표 시각이 달라 애초에 같은 순간에 모이지 않는다.

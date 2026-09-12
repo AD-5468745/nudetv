@@ -36,7 +36,9 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, assert_card_geometry, format_kickoff,
                       kst_day_label, morning_label, venue_name,
                       cancel_reason_text, foreign_script_chars,
-                      LINEUP_ENABLED, is_upcoming, record_asof_note)
+                      LINEUP_ENABLED, is_upcoming, record_asof_note,
+                      GOAL_FLASH_ENABLED, goal_flash_enabled_for,
+                      goal_key, goal_sort_key)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
 #
@@ -49,6 +51,7 @@ USE_V5 = {
     "kickoff": True,         # 그 경기 시작 10~1분 전
     "flash": True,           # 그 경기 종료 직후 — 흐름표가 실제로 보이는 자리
     "lineup": True,          # v1.17: 그 경기 선발 명단 — 옛 카드에 대응물이 없다
+    "goal": True,            # v1.35: 경기 중 득점 속보 — 옛 카드에 대응물이 없다
     "morning": True,         # 2026-09-06 대표님: "모든 이미지 카드와 정보는 v5"
     "standings": True,       #   ↳ 그날 지적하신 카드가 이것이다
     "leaders": True,
@@ -953,6 +956,89 @@ def lineup_card(game, league: League, *, now: datetime
     html = C5.shell(kind="kickoff", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
     return html, list(C5.caption(kind="kickoff", league=league, head=head,
+                                 date_label=lab))
+
+
+def goal_card(game, league: League, goal_id: str, *,
+              now: datetime | None = None) -> tuple[str, list[str]] | None:
+    """경기 중 득점 속보 (v1.35). **골 하나당 한 장.**
+
+    대표님 지시(2026-09-12): *"유료는 아직보류 나머지는 모두 업그레이드하자"*.
+    킹카티비 대비 실질 격차로 판정한 유일한 항목이다(그쪽은 텍스트 + 채널
+    바로가기로만 알린다 — 카드는 없다).
+
+    `goal_id`는 `contract.goal_key(goal)`이 만든 이름이다. **순번이 아니다** —
+    VAR 취소로 앞 골이 사라져도 남은 골의 이름이 밀리지 않는다.
+
+    ── 이 함수가 지키는 것 ────────────────────────────────────
+    ① **그 골까지만 그린다.** 머리말이 "후반 12분"이라고 말하는데 본문 점수가
+       후반 35분 것이면 한 화면이 두 시점을 말한다(약점 67).
+    ② **경기가 끝났으면 안 만든다.** 늦게 도착한 속보가 "1 : 0"이라고 말하는
+       동안 채널에는 이미 최종 2 : 1이 올라가 있다. 그 골은 종료 속보의
+       타임라인이 싣는다(`SAFETY_NET_FOR`) — 사라지지 않는다.
+       보내는 순간 다시 판정한다(`REJUDGE_AT_SEND` · 약점 104).
+    ③ **소스가 준 것만 쓴다.** 골이 목록에서 사라졌으면(VAR 취소) 만들지 않는다.
+    """
+    if not (GOAL_FLASH_ENABLED and goal_flash_enabled_for(league)):
+        return None
+    # ② 종료된 경기에는 '경기 중' 속보가 없다.
+    if getattr(game, "is_terminal", False):
+        return None
+    goals = list((game.meta.goals if game.meta else ()) or ())
+    if not goals:
+        return None
+    goals.sort(key=lambda g: goal_sort_key(getattr(g, "minute", 0),
+                                           getattr(g, "added", 0)))
+    idx = next((i for i, g in enumerate(goals) if goal_key(g) == goal_id), None)
+    if idx is None:
+        return None                        # ③ 취소됐거나 사라진 골
+    # ── ★ 골 목록이 점수와 맞는지 먼저 확인한다 (v1.35) ──────────
+    #
+    # 이 카드는 **골 목록만으로 점수를 센다**(그 골 시점의 점수여야 하므로).
+    # 그러려면 목록이 완전해야 하는데, 완전하다는 보장이 어디에도 없다:
+    #   · 어댑터가 한 틱에 조회하는 경기 수에 상한이 있다(`GOALS_MAX_PER_TICK`)
+    #   · 점수와 득점자는 **서로 다른 응답**에서 온다 — 한쪽이 앞설 수 있다
+    #   · 자책골을 소스가 어느 편으로 묶는지 우리는 실측한 적이 없다
+    #     (실측 2026-09-12: 보관된 스냅샷에 자책골 표본 0건)
+    #
+    # 그래서 **맞춰 보고, 안 맞으면 안 만든다.** 전부 더한 값이 소스가 준
+    # 점수와 같을 때만 이 카드의 산수를 믿는다. 안 맞으면 침묵한다 —
+    # 틀린 점수를 말하는 것보다 아무 말도 안 하는 편이 낫다. 그 골은
+    # 스탬프가 남아 있으므로 목록이 맞춰지면 창(30분) 안에서 다시 시도되고,
+    # 끝내 못 맞춰도 종료 속보가 최종 점수와 타임라인을 싣는다.
+    _hs_all = sum(1 for g in goals if getattr(g, "side", None) == "home")
+    _as_all = sum(1 for g in goals if getattr(g, "side", None) == "away")
+    _sc = getattr(game, "score", None)
+    if _sc is not None and (_hs_all, _as_all) != (_sc.home, _sc.away):
+        return None
+    upto = goals[:idx + 1]
+    this = goals[idx]
+    # 그 골 시점의 점수 — **현재 점수가 아니다**(①).
+    hs = sum(1 for g in upto if getattr(g, "side", None) == "home")
+    as_ = sum(1 for g in upto if getattr(g, "side", None) == "away")
+    aw, hm = C5._nm(league, game.away), C5._nm(league, game.home)
+    is_home = getattr(this, "side", None) == "home"
+    team = hm if is_home else aw
+    import pipeline as _Pg                  # 순환 import를 피해 함수 안에서
+    when = _Pg._goal_when(getattr(this, "minute", 0),
+                          getattr(this, "added", 0) or 0, league)
+    leader = "" if hs == as_ else (hm if hs > as_ else aw)
+    head = H.for_goal(scorer=(getattr(this, "name", "") or "").strip() or "득점",
+                      team_name=team, when=when,
+                      own_goal=bool(getattr(this, "own_goal", False)),
+                      away_score=as_, home_score=hs,
+                      tied=(hs == as_), leader=leader)
+    body = C5.body_goal(
+        away_name=aw, home_name=hm, away_score=as_, home_score=hs,
+        league=league,
+        events=[(g.minute, g.side, g.name, "자책" if g.own_goal else "",
+                 getattr(g, "added", 0) or 0) for g in upto])
+    lab = _day_label(game.sports_day, [game])
+    foot = ((venue_name(game.venue) or "") if game.venue
+            else C5.LEAGUE_LABEL.get(league, ""))
+    html = C5.shell(kind="goal", league=league, date_label=lab,
+                    head=head, body=body, foot_left=foot)
+    return html, list(C5.caption(kind="goal", league=league, head=head,
                                  date_label=lab))
 
 

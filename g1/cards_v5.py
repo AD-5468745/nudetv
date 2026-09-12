@@ -62,6 +62,11 @@ KIND_META = {
     # 카드라 시간표와 구분이 안 되면 둘 다 소음이 된다(대표님 불만 ④).
     "kickoff":  ("경기 시작", "M5 3l14 9-14 9z"),
     "result":   ("경기 결과", "M4 12.5l5 5L20 6.5"),
+    # v1.35 — 경기 중 득점 속보. **결과(체크)와 다른 아이콘**을 쓴다:
+    # 한 경기에서 속보 여러 장 + 결과 한 장이 연달아 나가므로, 같은 그림이면
+    # 무엇이 최종 점수인지 스크롤에서 구분되지 않는다. 골망 모양이다.
+    "goal":     ("득점", "M12 2l9 6.5v9L12 22 3 17.5v-9zM12 2v20M3 8.5h18"
+                         "M3 17.5h18"),
     "standings": ("팀 순위", "M3 20h5v-6H3zM9.5 20h5V4h-5zM16 20h5v-9h-5z"),
     "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
     "analysis": ("경기 분석", "M12 4v16M5 8h14M7.5 8l-3 6h6zM16.5 8l-3 6h6z"),
@@ -668,13 +673,47 @@ def body_scoreboard(games: list, league: League, *,
             # 점수는 이 카드의 주인공이고, 팀명 칸이 대신 좁아지는 편이 낫다.
             cols = ("140px 1fr 260px 1fr" if (numbered and with_time)
                     else ("70px 1fr 280px 1fr" if numbered else "110px 1fr 280px 1fr"))
-        out.append(
-            f'<div class="li" style="grid-template-columns:{cols}">{lead}'
-            f'<span class="{lc}" style="text-align:right">{esc(_nm(league, g.away))}</span>'
+        out.append(_score_row(away_name=_nm(league, g.away),
+                              home_name=_nm(league, g.home),
+                              mid=mid, lc=lc, rc=rc, cols=cols, lead=lead))
+    return "".join(out)
+
+
+def _score_row(*, away_name: str, home_name: str, mid: str,
+               lc: str = "t2", rc: str = "t2",
+               cols: str = "1fr 300px 1fr", lead: str = "") -> str:
+    """`원정 — 가운데 — 홈` 한 줄. **결과판과 득점 속보가 같은 줄을 쓴다.**
+
+    v1.35에서 떼어냈다. 득점 속보 카드(`body_goal`)가 같은 줄을 그리는데,
+    거기서 마크업을 다시 쓰면 홈 배지 규격이나 열 너비를 한쪽만 고치는 사고가
+    난다(약점 45: 두 곳에서 각자 만들면 반드시 어긋난다).
+    """
+    return (f'<div class="li" style="grid-template-columns:{cols}">{lead}'
+            f'<span class="{lc}" style="text-align:right">{esc(away_name)}</span>'
             f'{mid}<span class="{rc}">'
             f'<b class="tn">{"@ " if HOME_BADGE_STYLE == "at" else ""}'
-            f'{esc(_nm(league, g.home))}</b>{home_badge()}</span></div>')
-    return "".join(out)
+            f'{esc(home_name)}</b>{home_badge()}</span></div>')
+
+
+def body_goal(*, away_name: str, home_name: str,
+              away_score: int, home_score: int, events: list,
+              league: "League | None" = None) -> str:
+    """경기 중 득점 속보 본문 (v1.35) — **지금 점수 + 그때까지의 골.**
+
+    `events`는 `body_timeline`과 같은 꼴이되 **이 골까지만** 담는다. 뒤에
+    들어간 골을 함께 그리면 "후반 12분 득점"이라는 머리말과 본문이 서로 다른
+    시점을 말하게 된다(약점 67: 한 화면에 함께 보이는 것은 함께 맞아야 한다).
+
+    점수도 같은 이유로 **그 골 시점의 점수**다 — 경기의 현재 점수가 아니다.
+    """
+    a, h = int(away_score), int(home_score)
+    mid = f'<span class="sc">{a} <i>:</i> {h}</span>'
+    row = _score_row(away_name=away_name, home_name=home_name, mid=mid,
+                     lc=("t2" if a > h else "t2 dim"),
+                     rc=("t2" if h > a else "t2 dim"))
+    return row + body_timeline(away_name=away_name, home_name=home_name,
+                               events=events, league=league,
+                               show_header=False)
 
 
 def body_standings(rows: list, league: League) -> str:
@@ -1144,7 +1183,8 @@ def body_periods(*, labels: list, away_name: str, home_name: str,
 
 def body_timeline(*, away_name: str, home_name: str, events: list,
                   away_win: bool = False, home_win: bool = False,
-                  league: "League | None" = None) -> str:
+                  league: "League | None" = None,
+                  show_header: bool = True) -> str:
     """득점 타임라인 — 축구. `events`는 (분, 'home'|'away', 이름, 꼬리표[, 추가분]).
 
     **꼬리표는 소스가 주는 것만 쓴다.** 자책골은 `ownGoal` 플래그가 있어서 쓴다 —
@@ -1172,7 +1212,12 @@ def body_timeline(*, away_name: str, home_name: str, events: list,
                         f'<span>{cell}</span></div>')
     acls = "r win" if away_win else "r"
     hcls = "win" if home_win else ""
-    head = (f'<div class="th2"><span class="{acls}">{esc(away_name)}</span>'
+    # v1.35 — **바로 위에 같은 두 이름이 있으면 머리줄을 생략한다.**
+    # 득점 속보 카드는 점수 줄(`_score_row`)이 이미 `원정 — 점수 — 홈`을
+    # 그리고, 타임라인의 좌/우가 그 줄과 같은 축이다. 머리줄을 또 그리면
+    # 한 화면에서 팀 이름이 세 번 나온다(머리말·점수 줄·머리줄).
+    head = ("" if not show_header else
+            f'<div class="th2"><span class="{acls}">{esc(away_name)}</span>'
             f'<span class="c">득점</span>'
             f'<span class="{hcls}">{esc(home_name)}</span></div>')
     if not rows:
@@ -1351,7 +1396,7 @@ CAPTION_MAX = 1024
 FOLLOW_MAX = 4096
 
 KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
-              "standings": "📊",
+              "goal": "⚽", "standings": "📊",
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 

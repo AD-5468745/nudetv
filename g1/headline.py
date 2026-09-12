@@ -479,6 +479,36 @@ def for_lineup(away_name: str, home_name: str, minutes_left: int) -> Headline:
                     facts={"minutes": m, "away": away_name, "home": home_name})
 
 
+def for_goal(*, scorer: str, team_name: str, when: str, own_goal: bool,
+             away_score: int, home_score: int, tied: bool, leader: str
+             ) -> Headline:
+    """경기 중 득점 속보 머리말 (v1.35).
+
+    ⚠️ **'방금'이라고 쓰지 않는다.** 이 카드는 우리가 그 골을 *본* 시각에
+    예약되고, 페이서가 미루면 거기서 몇 분 더 늦는다. 시계가 5분마다 도니
+    보통은 몇 분 안이지만 **그걸 문장으로 약속할 수는 없다**
+    (킥오프 머리말이 "곧"을 안 쓰는 것과 같은 규칙 · §108).
+
+    그래서 시각은 **경기 시각으로만** 말한다 — "후반 12분"은 언제 읽어도
+    참이다. 늦게 도착해도 거짓이 되지 않는 문장만 쓴다.
+
+    ⚠️ **자책골에는 선수 이름을 팀 옆에 붙이지 않는다.** `team_name`은
+    *점수가 올라간 팀*인데, 자책골을 넣은 선수는 **반대 팀 소속**이다.
+    "전북 김○○"처럼 나란히 적으면 소속을 틀리게 말하는 것이 된다. 소스가
+    선수의 소속을 따로 주지 않으므로(실측: `scorers`는 득점한 쪽으로만 묶인다)
+    **모르는 것을 지어내지 않고** 이름을 뺀다. 이름은 본문 타임라인이
+    '(자책)' 표시와 함께 정확한 줄에 싣는다.
+    """
+    state = "동점" if tied else (f"{leader} 리드" if leader else "")
+    sub = f"{away_score} : {home_score}" + (f" · {state}" if state else "")
+    text = (f"{when} {team_name} 득점 · 자책골" if own_goal
+            else f"{when} {team_name} {scorer}")
+    return Headline(rule="G-GOAL", text=text, sub=sub,
+                    facts={"scorer": scorer, "team": team_name, "when": when,
+                           "own_goal": bool(own_goal),
+                           "away": int(away_score), "home": int(home_score)})
+
+
 # ══════════════════════════════════════════════════════════════
 # 팀 순위표
 # ══════════════════════════════════════════════════════════════
@@ -957,6 +987,7 @@ ALL_RULES = frozenset({
     "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-COUNT",
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
     "A-COUNTDOWN", "K-COUNTDOWN", "L-STARTING", "N-ONE",
+    "G-GOAL",                      # v1.35 — 경기 중 득점 속보
     "S-GAP", "S-RACE", "S-LEAD", "S-STREAK", "S-LAST10", "S-RANK",
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",

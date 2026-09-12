@@ -34,6 +34,8 @@ from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       SCORE_UNIT_BY_LEAGUE, ScoreUnit,
                       GOAL_FIRST_HALF_END, GOAL_SECOND_HALF_END,
                       goal_clock, goal_sort_key, goal_needs_bump,
+                      GOAL_FLASH_ENABLED, goal_flash_enabled_for,
+                      goal_key, goal_scope,
                       shift_out_of_quiet_hours, preview_buckets,
                       # v1.11i — 문안 사실성 헬퍼. 조사·사유 표기·모닝 이름·큐 잔류는
                       # 계약이 한 번만 정한다. 렌더마다 다시 지으면 반드시 갈라진다.
@@ -676,6 +678,40 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                         scheduled_utc=_fat, league=league,
                         sports_day=g.sports_day, game_id=g.game_id,
                         render_at_utc=_fat))
+
+            # ③ **경기 중 득점 속보 (v1.35)** — 골마다 한 장.
+            #
+            # 대표님 지시(2026-09-12): *"유료는 아직보류 나머지는 모두 업그레이드하자"*
+            #
+            # 예약 시각은 **그 골을 처음 본 시각**이다(`meta.goal_seen_at`).
+            # 라인업·종료 속보와 같은 꼴 — 시계가 아니라 데이터가 시각을 준다.
+            # 소스는 골의 벽시계 시각을 주지 않으므로(경기 시각만 준다)
+            # 킥오프+경기분으로 환산하면 하프타임·추가시간만큼 늘 틀린다.
+            #
+            # **빈 문자열은 건너뛴다.** `tick._stamp_goals`가 "봤지만 들어가는
+            # 것은 못 봤다"를 그렇게 적는다(처음 보는 경기, 종료 경기). 그 골은
+            # 속보 대상이 아니고, 종료 속보 타임라인이 대신 싣는다.
+            if GOAL_FLASH_ENABLED and goal_flash_enabled_for(league):
+                _stamps = (getattr(g.meta, "goal_seen_at", None) or {}) if g.meta else {}
+                for _go in (g.meta.goals if g.meta else ()) or ():
+                    _gk = goal_key(_go)
+                    _raw = _stamps.get(_gk)
+                    if not _raw:
+                        continue          # 안 봤거나 속보 대상이 아니다
+                    try:
+                        _gat = datetime.fromisoformat(_raw)
+                    except (TypeError, ValueError):
+                        continue          # 깨진 값 하나가 그 경기를 죽이지 않는다
+                    if _gat > hi or not keep_in_queue(_gat, now,
+                                                     ContentType.GOAL_FLASH):
+                        continue
+                    _gsc = goal_scope(g, _go)
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.GOAL_FLASH, _gsc),
+                        content_type=ContentType.GOAL_FLASH, scope=_gsc,
+                        scheduled_utc=_gat, league=league,
+                        sports_day=g.sports_day, game_id=g.game_id,
+                        render_at_utc=_gat))
 
     # 리그 결과 카드 — sports_day의 미종결 0건일 때. 큐에는 하드 데드라인으로 예약
     by_day: dict[str, list[Game]] = defaultdict(list)

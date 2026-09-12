@@ -700,6 +700,66 @@ def goal_sort_key(minute: int, added: int = 0) -> tuple[int, int]:
     return (max(0, int(minute or 0)), max(0, int(added or 0)))
 
 
+# ── ★ 골 하나를 가리키는 이름 (v1.35) ────────────────────────────────
+#
+# 득점 속보는 **골마다 한 장**이라 골마다 이름이 필요하다. 그 이름이 곧
+# 멱등키의 일부가 되므로, 같은 골이 같은 이름을 갖고 **다른 골이 같은 이름을
+# 갖지 않는 것**이 전부다.
+#
+# ⚠️ **순번(첫 골·둘째 골…)을 쓰면 안 된다.** VAR로 앞 골이 취소되면 뒤 골이
+# 한 칸씩 당겨져 **이미 보낸 키를 다른 골이 물려받는다** — 그 골은 "이미
+# 보냈다"는 이유로 영영 안 나간다. 소스가 골 고유 id를 주지 않으므로
+# (실측: naver 응답에 골 id 없음) 골의 **내용**으로 이름을 만든다.
+#
+# 시각(분+추가시간) · 어느 편 · 득점자 세 가지를 쓴다. 같은 선수가 같은 분에
+# 같은 편으로 두 번 넣는 일은 축구에 없다.
+def goal_key(goal) -> str:
+    """골 하나의 이름. `12+2:home:손흥민` 꼴."""
+    m = max(0, int(getattr(goal, "minute", 0) or 0))
+    a = max(0, int(getattr(goal, "added", 0) or 0))
+    side = str(getattr(goal, "side", "") or "?")
+    # 이름에 `:`가 들어가면 scope가 갈라진다 — 미리 막는다.
+    name = str(getattr(goal, "name", "") or "?").replace(":", "·").strip() or "?"
+    return f"{m}{f'+{a}' if a else ''}:{side}:{name}"
+
+
+def goal_scope(game, goal) -> str:
+    """득점 속보 하나를 가리키는 scope — `경기scope#골이름`.
+
+    `game_scope`와 마찬가지로 **한 곳에서만 만든다**(약점 45). 큐 생성부와
+    의무 대조가 각자 만들면 반드시 어긋난다.
+    """
+    return f"{game_scope(game)}#{goal_key(goal)}"
+
+
+# ── 경기 중 득점 속보 (v1.35) ────────────────────────────────────────
+#
+# **되돌리는 법: 이 한 줄을 False로.** 큐 생성·감시·격자 점검이 전부 이것을 본다.
+GOAL_FLASH_ENABLED = True
+
+
+def goal_flash_leagues() -> frozenset:
+    """득점 속보를 내보내는 리그. **손으로 적은 목록이 아니다.**
+
+    조건은 하나뿐이다 — **점수 단위가 골인 리그**(= 축구). 야구·농구·배구는
+    득점이 잦아 채널이 점수판이 된다(KBO 5경기 40~50점, MLB 15경기 130점).
+    리그를 새로 붙여도 이 표를 고칠 필요가 없다: 축구면 자동으로 켜진다.
+
+    꺼진 리그(`DISABLED_LEAGUES`)는 뺀다 — 안 그러면 격자 점검이 그 칸의 0을
+    '설명 못 함'으로 신고한다(약점 112: 유령 경고가 진짜 고장을 덮는다).
+    """
+    if not GOAL_FLASH_ENABLED:
+        return frozenset()
+    return frozenset(
+        lg for lg, unit in SCORE_UNIT_BY_LEAGUE.items()
+        if unit is ScoreUnit.GOALS and lg not in DISABLED_LEAGUES)
+
+
+def goal_flash_enabled_for(league: "League | None") -> bool:
+    """이 리그에서 득점 속보를 내보내는가. **한 곳에서만 판정한다.**"""
+    return league is not None and league in goal_flash_leagues()
+
+
 @dataclass
 class GameMeta:
     decided_by: DecidedBy = DecidedBy.REGULAR
@@ -779,6 +839,20 @@ class GameMeta:
     # `first_final_at`과 같은 규칙: 한 번 적히면 다시 안 바꾼다.
     # 이 값이 곧 라인업 카드의 예약 시각이다.
     lineup_seen_at: Optional[str] = None
+
+    # ── 경기 중 득점 속보 (v1.35, 축구 전용) ──────────────────────
+    #
+    # **골마다 '우리가 그 골을 처음 본 시각'**을 적는다.
+    #   {"12:home:손흥민": "2026-09-12T10:31:00+00:00", ...}
+    # 키는 `contract.goal_key(goal)`이 만든다 — 순번이 아니라 내용이라
+    # VAR로 앞 골이 취소돼도 남은 골의 이름이 밀리지 않는다.
+    #
+    # `first_final_at`·`lineup_seen_at`과 같은 규칙: **한 번 적히면 안 바뀐다.**
+    # 매 틱 갱신하면 그 골이 영원히 '방금'이 되어 속보가 무한 반복된다.
+    #
+    # 취소된 골의 스탬프는 남겨 둔다(삭제하지 않는다) — 지우면 소스가 잠깐
+    # 흔들려 골이 사라졌다 돌아올 때 **같은 골이 두 번** 나간다.
+    goal_seen_at: dict = field(default_factory=dict)
 
     # v1.9 신설 — 코리안리거·리더보드
     player_lines: list[PlayerLine] = field(default_factory=list)
@@ -953,6 +1027,21 @@ class ContentType(str, Enum):
     # 얹을 수 없다. 시각이 아니라 **데이터가 도착한 순간**이 예약 시각이다
     # (`meta.lineup_seen_at` — FINAL_FLASH의 `first_final_at`과 같은 꼴).
     LINEUP = "lineup"
+    # **경기 중 득점 속보 (v1.35, 2026-09-12 대표님 지시: "나머지는 모두 업그레이드하자").**
+    #
+    # 골이 들어간 것을 **경기가 끝나기 전에** 알린다. 축구만이다 —
+    # 야구·농구는 득점이 너무 잦아(KBO 5경기 40~50점, MLB 15경기 130점)
+    # 같은 규칙을 걸면 채널이 점수판이 된다. 축구는 실측 하루 평균 34골,
+    # 최악 90골(2026-09-06)이라 감당한다.
+    #
+    # ⚠️ **예약 시각은 '골이 들어간 시각'이 아니라 '우리가 그 골을 처음 본
+    # 시각'이다.** 소스는 골의 실제 벽시계 시각을 주지 않는다 — 경기 시각
+    # (전반 12분)만 준다. 킥오프 + 12분으로 환산하면 하프타임 15분과
+    # 추가시간만큼 언제나 틀린다. `first_final_at`·`lineup_seen_at`과 같은
+    # 원칙이다: **모르는 것을 지어내지 않는다.**
+    # 대신 문구는 **경기 시각으로만** 말한다("후반 12분") — "방금"이라고
+    # 하지 않으므로 몇 분 늦게 나가도 거짓이 되지 않는다.
+    GOAL_FLASH = "goal_flash"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
     KOREAN_DAILY = "korean_daily"          # v1.9: 코리안리거 데일리
@@ -1017,6 +1106,18 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # (`render_v5.lineup_card`가 막는다) — 모닝 브리핑이 정오에 안 나가는 것과
     # 같은 종류이지, 시계가 뜸해서 사라지는 누락과는 다르다.
     ContentType.LINEUP: 4 * 3600,
+    # **경기 중 득점 속보 (v1.35).** 여기는 라인업과 반대로 **일부러 좁게 둔다.**
+    #
+    # 라인업은 킥오프 전이면 언제 나가도 참이라 창을 넓힐 수 있었다. 득점
+    # 속보는 다르다 — 경기가 끝난 뒤에 도착하는 "지금 1-0" 카드는 참도
+    # 거짓도 아니고 **그냥 쓸모가 없다**(이미 종료 속보가 최종 점수를 냈다).
+    # 넓은 창은 여기서 값이 아니라 소음이다.
+    #
+    # 30분은 실측 평범한 시계 공백(최대 12.2분)의 2.5배다. 시계가 정상이면
+    # 골은 전부 나가고, 240분짜리 대형 공백에서는 **일부러 사라진다** —
+    # 그 자리는 종료 속보 타임라인이 채운다(`SAFETY_NET_FOR`).
+    # 그래서 `MUST_ALERT_ON_MISS`에도 넣지 않는다: 이건 누락이 아니라 설계다.
+    ContentType.GOAL_FLASH: 1800,
     ContentType.POLL: 1800,
     # v1.11k: 30분 → 3h. 창 90분이라 240분 시계에서 62%가 사라졌다.
     # 분석 카드는 경기 전 정보라 늦으면 값이 떨어지지만, 경기 시작 전이면 유효하다.
@@ -1121,6 +1222,9 @@ PACER_PRIORITY: dict[ContentType, int] = {
     # 킥오프는 창이 9분뿐이다 — 페이서가 뒤로 미루면 그대로 사라진다.
     ContentType.KICKOFF: 0,
     ContentType.FINAL_FLASH: 1,
+    # **득점 속보는 창이 30분뿐이다** — 페이서가 뒤로 미루면 그대로 사라진다.
+    # 킥오프와 같은 0을 준다: 경기 중에만 값이 있는 카드라 미룰 자리가 없다.
+    ContentType.GOAL_FLASH: 0,
     # 라인업도 창이 좁다(킥오프 전에만 유효) — 페이서가 뒤로 미루면 사라진다.
     ContentType.LINEUP: 1,
     ContentType.INPLAY_BOARD: 1,
@@ -1355,6 +1459,9 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 처음 본 시각'이므로 그보다 이른 시점에는 명단이 존재하지 않는다.
     # 앞창을 열면 빈 명단으로 카드가 나간다.
     ContentType.LINEUP: 0,
+    # **득점 속보도 같다.** 예약이 '그 골을 처음 본 시각'이므로 그보다 이른
+    # 시점에는 골이 존재하지 않는다. 앞창을 열 자리가 원리적으로 없다.
+    ContentType.GOAL_FLASH: 0,
     # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)
@@ -1423,6 +1530,10 @@ QUEUED_CONTENT_TYPES: frozenset = frozenset({
     ContentType.KICKOFF, ContentType.FINAL_FLASH,
     # v1.17 — 선발 라인업. **게이트가 보게 넣는다**(위와 같은 이유).
     ContentType.LINEUP,
+    # v1.35 — 경기 중 득점 속보. 축구만 도는데도 **게이트가 보게 넣는다**:
+    # 안 넣으면 창이 좁아져도 아무 데도 안 나타난다(약점 50).
+    # 축구 아닌 리그의 0은 `GOAL_FLASH_LEAGUES`가 격자 점검에 설명한다.
+    ContentType.GOAL_FLASH,
     # ⚠️ **나이트 브리핑은 여기 없다 (2026-09-07).** 아래 참고.
 })
 
@@ -1475,6 +1586,15 @@ SAFETY_NET_FOR: dict["ContentType", "ContentType"] = {
     # 라인업이 같은 판정을 받은 것과 같은 처리다: 정보가 보존되지 않는 체인은
     # 안전망이 아니므로, 안전망에 기대는 대신 자기 창으로 견딘다.
     ContentType.FINAL_FLASH: ContentType.LEAGUE_RESULT,  # 그날 결과 요약이 담는다
+    # **경기 중 득점 속보 → 종료 속보 (v1.35).**
+    #
+    # 이건 거짓 안전망이 아니다 — 정보가 실제로 보존되는지 확인하고 넣는다.
+    # 종료 속보 카드는 `cards_v5.body_timeline`으로 그 경기의 **모든 골**을
+    # 시각·득점자까지 그린다(흐름 문장은 최대 6개로 줄이지만 타임라인은
+    # 전부 싣는다). 즉 득점 속보가 통째로 사라진 경기라도, 어떤 골이 몇 분에
+    # 누구에게서 나왔는지는 종료 속보가 반드시 말한다.
+    # 종료 속보 자신의 창은 6시간이라 최악 공백 240분을 견딘다.
+    ContentType.GOAL_FLASH: ContentType.FINAL_FLASH,
     # ⚠️ **선발 라인업(v1.17)은 여기 없다 — 넣으려다 검증에 지고 뺐다.**
     #
     # 종료 속보가 같은 명단을 담으니 안전망이라고 적었는데, 검사가 두 가지를
@@ -1492,7 +1612,26 @@ SAFETY_NET_FOR: dict["ContentType", "ContentType"] = {
 # (있다고 적힌 START_ALERT는 꺼졌다). 파생으로 두면 안전망을 빼는 순간
 # 좁다는 사실까지 함께 사라져 검사가 눈을 감는다.
 NARROW_BY_DESIGN: frozenset = frozenset({
-    ContentType.KICKOFF, ContentType.FINAL_FLASH,
+    ContentType.KICKOFF,
+    # v1.35 — 경기 중 득점 속보(창 30분). 경기가 끝난 뒤 도착하면 쓸모가
+    # 없으므로 넓힐 수 없다. 짝은 위 `SAFETY_NET_FOR`의 종료 속보다.
+    ContentType.GOAL_FLASH,
+    # ⚠️ **종료 속보는 v1.35에서 뺐다 — 더 이상 좁지 않기 때문이다.**
+    #
+    # 여기 적힌 때(v1.18)의 유예는 3,600초(1시간)였다. v1.18b가 그것을
+    # 21,600초(6시간)로 넓혀 **창이 360분 > 최악 공백 240분**이 됐는데,
+    # 이 집합은 그대로 남았다. 그래서 계약이 "좁다"고 말하는 것과 실제 값이
+    # 어긋난 채로 넉 달을 지났다.
+    #
+    # 그냥 낡은 표가 아니라 **실제로 검사를 막았다**: `regress`의
+    # "안전망은 240분을 견딘다" 검사가 `net not in NARROW_BY_DESIGN`을
+    # 요구하므로, 종료 속보를 안전망으로 쓰려면 여기 남아 있을 수 없다.
+    # 거짓 안전망을 막으려고 만든 검사가 **참인 안전망까지** 막고 있었다
+    # (약점 211과 같은 꼴: 막으려고 넣은 장치가 살아 있는 경로를 막았다).
+    #
+    # 되돌리는 법: 유예를 다시 좁히면 여기에 되넣어야 한다. 안 넣으면
+    # 위 `regress` 검사가 "240분을 못 견딘다"로 먼저 깨진다 — 사람이
+    # 기억할 필요가 없게 두 검사가 서로를 붙든다.
 })
 
 # **놓치면 반드시 알려야 하는 콘텐츠** (v1.18 신설).
@@ -1778,6 +1917,35 @@ def unqueued_per_game(content_type: "ContentType", games: list, idem_keys,
 DAILY_DUTY_CONTENT: frozenset = frozenset({
     "morning", "analysis", "league_result", "standings", "leaderboard",
 })
+
+# ── 의무 대조에서 **일부러** 뺀 콘텐츠 (v1.35) ───────────────────────
+#
+# "발행 중인 콘텐츠는 전부 의무 대조 안에 있다"는 것이 이 시스템의 약속이다
+# (`verify_tick`의 ★★★ 검사). 그 약속을 **조용히** 깨는 것이 가장 나쁘다 —
+# 검사 쪽 목록에 한 줄 더해 통과시키면 계약은 아무것도 모르는 채로 남는다.
+# 그래서 예외를 **계약이 선언하고, 이유를 함께 적고, 아래 단언이 그 이유가
+# 참인지 확인한다.**
+#
+# **경기 중 득점 속보.** 창이 30분이라 시계가 뜸한 날에는 일부러 사라진다.
+# 그런데도 알리지 않는 이유는 **그것이 누락이 아니기 때문**이다:
+#   · 그 골의 시각·득점자·점수를 종료 속보 카드의 타임라인이 전부 싣는다
+#   · 종료 속보는 창 6시간으로 최악 공백을 견디고, **자신이 의무 대조 대상**이다
+# 즉 득점 속보를 놓쳐도 그 사실이 아무 데도 안 실리는 일은 없다.
+# 알림을 걸면 정상 운영에서 매일 뜨는 경고가 되어 진짜 고장을 덮는다
+# (약점 112·126·182: 오탐 하나가 감시를 통째로 꺼뜨린다).
+DUTY_EXEMPT_CONTENT: dict["ContentType", str] = {
+    ContentType.GOAL_FLASH:
+        "창 30분은 설계다 — 놓친 골은 종료 속보 타임라인이 전부 싣고, "
+        "그 종료 속보가 의무 대조 대상이다",
+}
+
+assert all(
+    SAFETY_NET_FOR.get(_ct) is not None
+    and (SAFETY_NET_FOR[_ct].value in DAILY_DUTY_CONTENT
+         or SAFETY_NET_FOR[_ct] in MUST_ALERT_ON_MISS)
+    for _ct in DUTY_EXEMPT_CONTENT), (
+    "의무 대조에서 뺀 콘텐츠 중 '감시받는 안전망'이 없는 것이 있습니다 — "
+    "그건 예외가 아니라 모르는 누락입니다")
 
 
 def _day_scope_seen(content_type: "ContentType", idem_keys) -> set:
@@ -2881,7 +3049,11 @@ BRAND_BUTTON_TEXT = "경기 보러가기"
 # 버튼을 다는 콘텐츠. **지금은 킥오프 하나다.**
 # 늘리려면 이 집합에 넣기만 하면 된다 — 되돌리기도 한 줄이다.
 # (여기가 비면 버튼 기능 전체가 꺼진다.)
-BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup"})
+# v1.35 — 경기 중 득점 속보를 더했다. 대표님이 정하신 문구가 '경기 보러가기'인데,
+# **그 문구가 가장 맞는 순간이 바로 이 카드**다: 방금 골이 났다는 것을 읽은
+# 사람에게 경기로 가는 길을 준다. 카드가 언제나 1장이라 앨범 제약에도 안 걸린다.
+# (원 지시는 킥오프였다 — 이건 같은 취지의 확장이고, 되돌리기는 이 한 낱말이다.)
+BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup", "goal_flash"})
 
 
 def brand_button() -> list[list[dict]]:

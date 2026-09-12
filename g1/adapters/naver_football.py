@@ -160,7 +160,13 @@ LINEUP_MAX_PER_TICK = 8
 LINEUP_LOOKAHEAD_SECONDS = 3 * 3600
 # 득점자를 조회할 경기 수 상한(한 틱). 라인업과 따로 둔다 — 대상이 다르다
 # (라인업은 킥오프 전후, 골은 진행·종료 경기).
-GOALS_MAX_PER_TICK = 8
+#
+# **v1.35에서 8 → 12.** 경기 중 득점 속보를 켜면서 진행 중인 경기는 매 틱
+# 다시 조회하게 됐다(아래 `fill_goals` 참조). 한 리그의 동시 진행 최대는
+# EPL 토요일 10경기·MLS 14경기라 8이면 매 틱 몇 경기가 밀린다.
+# 12를 넘는 부분은 **다음 틱으로 밀릴 뿐 사라지지 않는다** — 진행 중인
+# 경기는 계속 대상이고, 속보 창이 30분이라 5분 시계에서 여유가 있다.
+GOALS_MAX_PER_TICK = 12
 
 # 소스 상태값 → 계약 상태. **문서화된 도메인 전체를 적는다.**
 # 모르는 값이 오면 `UnknownStatus`로 올려 **그 경기만** 건너뛴다 —
@@ -694,13 +700,32 @@ class NaverFootballAdapter(NoticeMixin):
         ⚠️ **라인업 안의 `goal` 필드는 쓰지 않는다.** 실측 2026-09-08: 득점이
         난 경기에서도 그 값이 전부 0이었다. 골의 유일한 출처는 경기 상세의
         `game.scorers`다.
+
+        ── ★ **진행 중인 경기는 골이 있어도 다시 조회한다** (v1.35) ──
+
+        여기 원래 `if not (g.meta and g.meta.goals)` 한 줄이 **모든** 경기에
+        걸려 있었다. 종료 경기에는 옳다 — 결과는 안 변하니 한 번만 받으면
+        된다. 그러나 **진행 중인 경기에 같은 줄을 걸면 첫 골 이후의 골을
+        영영 모른다.** 1-0에서 멈춘 채 경기가 끝날 때까지 그대로였다.
+
+        그동안은 티가 안 났다. 골을 쓰는 곳이 종료 속보 카드뿐이었고,
+        그때는 이미 종료 상태라 어차피 다시 받았기 때문이다. 경기 중
+        득점 속보를 켜는 순간 이 줄은 **속보를 첫 골 하나로 잘라 버린다.**
+
+        그래서 대상을 둘로 나눈다:
+          · 진행 중(LIVE) — **매 틱 다시 받는다.** 골은 계속 늘어난다.
+          · 종료 — 골이 비어 있을 때만. 이미 받았으면 다시 받지 않는다.
+        진행 중인 경기를 앞에 둔다 — 상한에 걸리면 밀리는 쪽은 종료 경기여야
+        한다(그쪽은 늦어도 정리판·종료 속보 창 6시간 안에 들어온다).
         """
         if not LINEUP_ENABLED:
             return 0
-        todo = [g for g in games
-                if g.is_terminal or g.status is Status.LIVE]
-        todo = [g for g in todo if not (g.meta and g.meta.goals)]
-        todo.sort(key=lambda g: g.start_utc, reverse=True)   # fix54와 같은 이유
+        live = [g for g in games if g.status is Status.LIVE]
+        term = [g for g in games
+                if g.is_terminal and not (g.meta and g.meta.goals)]
+        live.sort(key=lambda g: g.start_utc)                 # 먼저 시작한 경기부터
+        term.sort(key=lambda g: g.start_utc, reverse=True)   # fix54와 같은 이유
+        todo = live + term
         done = 0
         for g in todo[:limit]:
             gid = g.source_key.rsplit("-", 1)[-1]

@@ -729,7 +729,7 @@ check("실제 렌더도 폰트 게이트를 통과한다",
 # "큐에는 오르는데 한 번도 렌더된 적이 없는" 상태로 며칠을 갈 수 있다.
 # `QUEUED_CONTENT_TYPES`를 기준으로 삼아, 콘텐츠를 또 켜면 이 검사가 **먼저** 깨진다.
 print("\n11. 발송 경로 — 큐에 오르는 모든 종류가 실제로 만들어지는가")
-from contract import QUEUED_CONTENT_TYPES                             # noqa: E402
+from contract import QUEUED_CONTENT_TYPES, Goal                       # noqa: E402
 
 _day = "2026-08-29"
 _full = {
@@ -769,7 +769,22 @@ _lug.meta.lineup = {
 # 킥오프보다 넉넉히 앞서 관측된 것으로 둔다 — 큐가 '킥오프 15분 전까지
 # 관측된 것'만 만들기 때문이다(그 경계 자체는 아래 12-B에서 따로 친다).
 _lug.meta.lineup_seen_at = T._iso(NOW - timedelta(minutes=3))
-_full["EPL"] = [_lug]
+
+# **경기 중 득점 속보(v1.35)도 같은 이유로 표본이 필요하다.** 예약 시각이
+# '그 골을 처음 본 시각'(`meta.goal_seen_at`)이라, 그 값이 찍힌 진행 중
+# 경기가 없으면 종류가 통째로 안 잡힌다 — 위 둘과 판박이다.
+# **진행 중(LIVE)**이어야 한다: 종료된 경기의 골은 속보 대상이 아니다.
+_gg = mkgame(League.EPL, "LIV", "MCI", day=_EPL_DAY, hh=20,
+             status=Status.LIVE, score=Score(2, 1, ScoreUnit.GOALS))
+_gg.meta.goals = (Goal(minute=12, side="away", name="원정선수", own_goal=False,
+                       added=0),
+                  Goal(minute=57, side="home", name="홈선수", own_goal=False,
+                       added=0),
+                  Goal(minute=90, side="home", name="홈선수2", own_goal=False,
+                       added=4))
+_gg.meta.goal_seen_at = {C.goal_key(_x): T._iso(NOW - timedelta(minutes=3))
+                         for _x in _gg.meta.goals}
+_full["EPL"] = [_lug, _gg]
 _items = T.build_all_queues(_full, NOW, "-100test")
 _kinds = {i.content_type for i in _items}
 check(f"큐에 오르는 {len(QUEUED_CONTENT_TYPES)}종이 다 오른다 ({len(_items)}건)",
@@ -1294,7 +1309,17 @@ _sim_lu.meta.lineup = {s: {"formation": "433",
 # 킥오프 80분 전에 관측된 것으로 둔다 — 실측한 발표 시점(약 1시간 전)에 맞춘 값이고,
 # 큐 조건('킥오프 15분 전까지')도 넉넉히 통과한다.
 _sim_lu.meta.lineup_seen_at = T._iso(_sim_lu.start_utc - timedelta(minutes=80))
-_sim["EPL"] = [_sim_lu]
+# **종료 속보(v1.14)도 여기 넣는다 (v1.35에서 추가).**
+#
+# 전에는 이 시뮬레이션에 `first_final_at`을 가진 경기가 하나도 없어서
+# 종료 속보가 아예 안 만들어졌고, 그것이 `NARROW_BY_DESIGN`에 들어 있던
+# 덕분에 **'못 걸린다'가 아니라 '검사 밖'인 채로 통과했다.**
+# v1.18b가 이 카드의 창을 1시간 → 6시간으로 넓혔으니 100분 시계에서
+# 반드시 걸려야 한다 — 그 주장을 실제로 치는 자리가 여기다.
+_sim_ff = mkgame(League.EPL, "LIV", "MCI", day=_sim_day, hh=21,
+                 status=Status.FINAL, score=Score(2, 1, ScoreUnit.GOALS))
+_sim_ff.meta.first_final_at = T._iso(_sim_ff.start_utc + timedelta(minutes=115))
+_sim["EPL"] = [_sim_lu, _sim_ff]
 _base = datetime(2026, 8, 30, 20, 0, tzinfo=timezone.utc)   # KST 05:00
 _seen: set = set()
 for _step in range(20):                                     # 100분 x 20 = 33시간
@@ -2173,8 +2198,22 @@ _watched = ({ct.value for ct in (ContentType.KICKOFF, ContentType.FINAL_FLASH,
                                  ContentType.LINEUP)} | set(C.DAILY_DUTY_CONTENT))
 _live = {ct.value for ct in C.QUEUED_CONTENT_TYPES
          if ct not in C.DISABLED_CONTENT_TYPES}
+# **예외는 계약이 선언한 것만 인정한다** (v1.35). 여기 목록을 손으로 늘리면
+# 계약은 모르는 채로 검사만 초록이 된다 — 그게 거짓 안전망의 모양이다.
+_exempt = {ct.value for ct in C.DUTY_EXEMPT_CONTENT}
 check("★★★ 발행 중인 콘텐츠가 전부 의무 대조 안에 있다 (모르는 누락 0)",
-      _live <= _watched, f"감시 밖: {sorted(_live - _watched)}")
+      _live <= (_watched | _exempt),
+      f"감시 밖: {sorted(_live - _watched - _exempt)}")
+check("  ↳ 예외는 계약이 이유와 함께 선언한 것뿐이다",
+      all(isinstance(v, str) and len(v) > 20
+          for v in C.DUTY_EXEMPT_CONTENT.values()),
+      str({k.value: v for k, v in C.DUTY_EXEMPT_CONTENT.items()}))
+check("  ↳ ★★ 예외마다 '의무 대조를 받는 안전망'이 실제로 있다",
+      all(C.SAFETY_NET_FOR.get(_ct) is not None
+          and (C.SAFETY_NET_FOR[_ct].value in C.DAILY_DUTY_CONTENT
+               or C.SAFETY_NET_FOR[_ct] in C.MUST_ALERT_ON_MISS)
+          for _ct in C.DUTY_EXEMPT_CONTENT),
+      str({k.value: C.SAFETY_NET_FOR.get(k) for k in C.DUTY_EXEMPT_CONTENT}))
 
 # ═════════════════════════════════════════════════════════════
 print("\n★★★ 리더보드 의무 대상 = 큐 대상 (v1.35 · 약점 198)")
