@@ -292,7 +292,10 @@ jobs:
                   ok=1
                   for f in $u; do
                     case "$f" in
-                      state/alerts.json|state/burst.json|state/health.json)
+                      state/alerts.json|state/burst.json|state/health.json|\
+                      state/discussion.json|state/daily_index.json)
+                        # 지도·고정글 기록은 잃어도 **댓글이 채널로 떨어질 뿐**이다.
+                        # 대장과 급이 다르므로 충돌 시 내 쪽을 쓰고 넘어간다.
                         git checkout --ours -- "$f" && git add -- "$f" || ok=0 ;;
                       *) ok=0 ;;   # 대장이 여기 오면 사람이 봐야 한다
                     esac
@@ -314,6 +317,7 @@ jobs:
 
           save_ledger() {
             git add -A state/ledger.jsonl state/alerts.json state/burst.json state/health.json \
+                       state/discussion.json state/daily_index.json \
                        state/.gitkeep 2>/dev/null || true
             git diff --cached --quiet && return 0
             git commit -q -m "state: $(date -u +'%Y-%m-%d %H:%M') UTC" || return 1
@@ -407,6 +411,7 @@ jobs:
           # burst.json도 함께 — 폭주 차단 상태가 실행 사이에 살아남아야
           # 차단이 뜻을 갖습니다(메모리에 두면 다음 실행이 또 폭주합니다).
           git add -A state/ledger.jsonl state/alerts.json state/burst.json state/health.json \
+                     state/discussion.json state/daily_index.json \
                      state/.gitkeep 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "변경 없음"
