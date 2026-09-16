@@ -59,6 +59,8 @@ class DiscussionState:
         self.offset: int = 0
         self.map: dict = {}          # 채널 글 번호(str) → 그룹 글 번호(int)
         self.answered: dict = {}     # 그룹 글 번호(str) → True (두 번 답하지 않는다)
+        # 버튼을 이미 채운 채널 글. **두 번 고치면 텔레그램이 오류를 준다.**
+        self.buttoned: dict = {}
         self._load()
 
     def _load(self) -> None:
@@ -69,6 +71,7 @@ class DiscussionState:
         self.offset = int(d.get("offset") or 0)
         self.map = dict(d.get("map") or {})
         self.answered = dict(d.get("answered") or {})
+        self.buttoned = dict(d.get("buttoned") or {})
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,8 +83,12 @@ class DiscussionState:
         if len(self.answered) > 4000:
             keep = sorted(self.answered, key=lambda k: int(k))[-2000:]
             self.answered = {k: self.answered[k] for k in keep}
+        if len(self.buttoned) > 2000:
+            keep = sorted(self.buttoned, key=lambda k: int(k))[-1000:]
+            self.buttoned = {k: self.buttoned[k] for k in keep}
         self.path.write_text(json.dumps(
-            {"offset": self.offset, "map": self.map, "answered": self.answered},
+            {"offset": self.offset, "map": self.map,
+             "answered": self.answered, "buttoned": self.buttoned},
             ensure_ascii=False), encoding="utf-8")
 
     # ── 지도 ──────────────────────────────────────────────────
@@ -166,6 +173,34 @@ def edit_text(transport, chat_id, message_id, text: str, *,
     except Exception:                                    # noqa: BLE001
         # **같은 내용으로 고치면 텔레그램이 오류를 준다.** 그건 실패가 아니다.
         return False
+
+
+def set_buttons(transport, chat_id, message_id, buttons) -> bool:
+    """이미 올린 글의 버튼을 갈아 끼운다 (v1.39). 실패하면 False.
+
+    **앵커 버튼이 나중에 붙는 이유.** 버튼 주소는 그 경기 토론방 글을
+    가리켜야 하는데, 그 번호는 앵커가 채널에 올라간 **뒤에야** 텔레그램이
+    만든다(자동 전달). 그래서 보낼 때는 없고, 알게 된 다음 틱에 채운다.
+    """
+    try:
+        transport.call("editMessageReplyMarkup", {
+            "chat_id": chat_id, "message_id": int(message_id),
+            "reply_markup": {"inline_keyboard": buttons}})
+        return True
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
+def thread_link(discussion_chat_id: str, thread_message_id: int) -> str:
+    """그 경기 토론방 글로 바로 가는 주소.
+
+    공개 그룹은 `@아이디`, 비공개는 `-100…` 번호다 — 주소 꼴이 서로 다르다.
+    """
+    cid = str(discussion_chat_id or "").strip()
+    if cid.startswith("@"):
+        return f"https://t.me/{cid[1:]}/{int(thread_message_id)}"
+    inner = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+    return f"https://t.me/c/{inner}/{int(thread_message_id)}"
 
 
 def pin(transport, chat_id, message_id, *, notify: bool = False) -> bool:

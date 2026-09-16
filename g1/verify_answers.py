@@ -394,6 +394,57 @@ finally:
     T.DAILY_INDEX_ENABLED = _saved_idx
 
 
+# ══════════════════════════════════════════════════════════════
+print("\n8. 앵커 버튼 — 토론방으로 가는 자리")
+# ══════════════════════════════════════════════════════════════
+from contract import BUTTON_CONTENT_TYPES, DISCUSSION_BUTTON_TEXT  # noqa: E402
+
+check("★★ 앵커에 버튼이 붙는다 (채널에 나가는 유일한 장이다)",
+      "anchor" in BUTTON_CONTENT_TYPES, str(sorted(BUTTON_CONTENT_TYPES)))
+check("  ↳ 문구가 정해져 있다", "토론방" in DISCUSSION_BUTTON_TEXT)
+
+check("★★ 공개 그룹과 비공개 그룹의 주소 꼴이 다르다",
+      D.thread_link("@g", 41) == "https://t.me/g/41"
+      and D.thread_link("-1009999999999", 41) == "https://t.me/c/9999999999/41",
+      D.thread_link("@g", 41))
+
+
+class _BtnTr:
+    def __init__(self): self.sets = []
+    def call(self, method, payload, files=None):
+        if method == "editMessageReplyMarkup":
+            self.sets.append(payload)
+            return {"ok": True}
+        return {"message_id": 1}
+
+
+_bst = D.DiscussionState(pathlib.Path(tempfile.mkdtemp()) / "b.json")
+_bst.remember(983, 41)
+_saved_dc = T.DISCUSSION_CHAT_ID
+try:
+    T.DISCUSSION_CHAT_ID = "@somegroup"
+    _btr = _BtnTr()
+    T._fill_thread_buttons(_btr, _bst, "-100t")
+    check("★★ 전달 번호를 알면 그 앵커에 버튼을 채운다", len(_btr.sets) == 1,
+          str(len(_btr.sets)))
+    _rows = _btr.sets[0]["reply_markup"]["inline_keyboard"] if _btr.sets else []
+    check("  ↳ 버튼이 **그 경기 토론방 글**을 가리킨다",
+          _rows and _rows[0][0]["url"] == "https://t.me/somegroup/41",
+          str(_rows[:1]))
+    check("  ↳ 문구가 '토론방'이다", _rows and "토론방" in _rows[0][0]["text"])
+    _btr2 = _BtnTr()
+    T._fill_thread_buttons(_btr2, _bst, "-100t")
+    check("★★ 같은 앵커를 두 번 고치지 않는다 (텔레그램이 오류를 준다)",
+          len(_btr2.sets) == 0, str(len(_btr2.sets)))
+    T.DISCUSSION_CHAT_ID = ""
+    _btr3 = _BtnTr()
+    T._fill_thread_buttons(_btr3, D.DiscussionState(
+        pathlib.Path(tempfile.mkdtemp()) / "c.json"), "-100t")
+    check("★★ 토론방이 없으면 아무것도 안 한다", len(_btr3.sets) == 0)
+finally:
+    T.DISCUSSION_CHAT_ID = _saved_dc
+
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

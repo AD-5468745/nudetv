@@ -3201,7 +3201,16 @@ BRAND_BUTTON_TEXT = "경기 보러가기"
 # **그 문구가 가장 맞는 순간이 바로 이 카드**다: 방금 골이 났다는 것을 읽은
 # 사람에게 경기로 가는 길을 준다. 카드가 언제나 1장이라 앨범 제약에도 안 걸린다.
 # (원 지시는 킥오프였다 — 이건 같은 취지의 확장이고, 되돌리기는 이 한 낱말이다.)
-BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup", "goal_flash"})
+# v1.39 — **앵커에도 단다.** 채널에 나가는 그 경기의 유일한 한 장이고,
+# 영상 보러 갈 사람이 가장 먼저 보는 자리다.
+BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup", "goal_flash",
+                                             "anchor"})
+
+# 토론방으로 보내는 버튼 문구 (v1.39 · 대표님 지시).
+#
+# **텔레그램이 그리는 `댓글 남기기` 바는 문구를 못 바꾼다.** 그래서 그 위에
+# 우리 버튼을 하나 더 단다 — 사람들은 위 버튼을 먼저 본다.
+DISCUSSION_BUTTON_TEXT = "🗣 토론방 · 경기정보 보기"
 
 
 def brand_button() -> list[list[dict]]:

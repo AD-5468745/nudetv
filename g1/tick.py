@@ -2137,6 +2137,33 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
 _INDEX_POOL: dict = {}
 
 
+def _fill_thread_buttons(transport, disc, channel: str) -> None:
+    """전달 번호를 알게 된 앵커에 **그 경기 토론방으로 가는 버튼**을 채운다.
+
+    보낼 때는 못 단다 — 토론방 글 번호는 채널에 올라간 **뒤에** 텔레그램이
+    만들기 때문이다. 그래서 알게 된 다음 틱에 버튼만 갈아 끼운다.
+
+    **한 번만 한다.** 같은 내용으로 두 번 고치면 텔레그램이 오류를 준다.
+    """
+    if disc is None or not DISCUSSION_CHAT_ID:
+        return
+    try:
+        import discussion as _DS2
+        from contract import (BRAND_BUTTON_TEXT, BRAND_URL,
+                              DISCUSSION_BUTTON_TEXT)
+    except Exception:                                    # noqa: BLE001
+        return
+    for ch_id, th_id in list(disc.map.items())[-60:]:
+        if disc.buttoned.get(str(ch_id)):
+            continue
+        rows = [[{"text": DISCUSSION_BUTTON_TEXT,
+                  "url": _DS2.thread_link(DISCUSSION_CHAT_ID, th_id)}]]
+        if BRAND_URL:
+            rows.append([{"text": BRAND_BUTTON_TEXT, "url": BRAND_URL}])
+        if _DS2.set_buttons(transport, channel, ch_id, rows):
+            disc.buttoned[str(ch_id)] = True
+
+
 # ── 토론방 도우미 (v1.39) ──────────────────────────────────────
 
 # 앵커 댓글로 내려보낼 종류. **앵커 자신과 채널에 남길 것은 뺀다.**
@@ -2765,6 +2792,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             _asks = _DS.poll(tr, disc)
             if _asks:
                 _answer_questions(tr, disc, _asks, snaps, records)
+            # 전달 번호를 새로 알게 된 앵커에 **토론방 버튼**을 채운다.
+            _fill_thread_buttons(tr, disc, channel)
             disc.save()
         except Exception as e:                           # noqa: BLE001
             print(f"  ⚠️ 토론방 준비 실패 — 채널로 보냅니다: "
