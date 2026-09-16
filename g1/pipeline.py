@@ -428,6 +428,59 @@ ANCHOR_ENABLED = True
 ANCHOR_LEAD_SECONDS = 3 * 3600
 
 
+# ── 오늘의 경기 (v1.39) ────────────────────────────────────────
+#
+# 대표님 설계(2026-09-17): *"오늘의 경기를 정리해서 텍스트로 자정 이후 가장
+# 빠른시간에 한번 발송"*. 채널 맨 위에 고정해 두고, 앵커가 하나 생길 때마다
+# 이 글을 고쳐 **그 경기로 가는 바로가기**를 채운다.
+#
+# **텍스트다 — 카드가 아니다.** 고정된 글은 사람이 자주 열어 훑는 자리라
+# 사진보다 글자가 낫고, 무엇보다 **고쳐 쓸 수 있어야** 링크를 채울 수 있다
+# (사진 캡션도 고칠 수는 있지만 앨범은 못 고친다).
+DAILY_INDEX_HOUR = 0
+DAILY_INDEX_MINUTE = 5
+
+
+def daily_index_text(games: list, day: str, *, links: dict | None = None,
+                     name_of=None) -> str:
+    """그날 전 리그 편성 한 통. 경기가 없으면 빈 문자열.
+
+    `links`는 `{game_id: 바로가기 주소}`다 — 앵커가 생긴 경기에만 붙는다.
+    처음 올릴 때는 비어 있고, 앵커가 설 때마다 채워 넣는다.
+    """
+    todays = [g for g in games if g.sports_day == day]
+    if not todays:
+        return ""
+    nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
+    lk = links or {}
+    d = datetime.strptime(day, "%Y-%m-%d")
+    head = (f"📌 <b>{d.month}월 {d.day}일 "
+            f"({'월화수목금토일'[d.weekday()]}) 오늘의 경기</b>")
+
+    # 리그 묶음 순서는 **나이트 브리핑과 같은 표**를 쓴다(두 곳이면 어긋난다).
+    order = {lg: i for i, lg in enumerate(NIGHT_LEAGUE_ORDER)}
+    by: dict = {}
+    for g in todays:
+        by.setdefault(g.league, []).append(g)
+
+    lines = [head, ""]
+    total = 0
+    for lg in sorted(by, key=lambda x: order.get(x, 99)):
+        gs = sorted(by[lg], key=lambda g: g.start_utc)
+        total += len(gs)
+        lines.append(f"{LEAGUE_EMOJI.get(lg, '•')} <b>"
+                     f"{LEAGUE_LABEL.get(lg, lg.value)}</b> {len(gs)}경기")
+        for g in gs:
+            k = g.start_utc.astimezone(KST)
+            row = (f"{k:%H:%M} {nm(lg, g.away)} vs {nm(lg, g.home)}")
+            url = lk.get(g.game_id)
+            lines.append(f"· {row} → <a href=\"{esc(url)}\">보기</a>" if url
+                         else f"· {row}")
+        lines.append("")
+    lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
+    return "\n".join(lines).strip()
+
+
 def build_queue(games: list[Game], now: datetime, channel: str,
                 floor_hours: int = 6, horizon_hours: int = 30) -> list[QueueItem]:
     """한 리그의 큐를 만든다. 틱의 자가치유·수집 잡의 add는 floor_hours=0으로 부른다.

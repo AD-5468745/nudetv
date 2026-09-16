@@ -346,6 +346,50 @@ check("★ 댓글로 내려보낼 종류가 적혀 있다 (여기 없으면 채�
       and ContentType.ANCHOR not in T.THREADED_CONTENT_TYPES)
 
 
+# ══════════════════════════════════════════════════════════════
+print("\n7. 오늘의 경기 — 고정 글과 바로가기")
+# ══════════════════════════════════════════════════════════════
+_IDX = [_real("SS", "OB", day="2026-09-17", hh=18),
+        _real("LG", "HT", day="2026-09-17", hh=18),
+        _real("WO", "NC", day="2026-09-18", hh=18)]
+_t = P.daily_index_text(_IDX, "2026-09-17", name_of=nm)
+check("★★ 그날 경기만 싣는다 (내일 것이 섞이지 않는다)",
+      "2경기" in _t and "키움" not in _t, _t[:120])
+check("  ↳ 날짜와 요일을 말한다", "9월 17일" in _t and "(목)" in _t, _t[:60])
+check("  ↳ 리그 묶음과 시각이 있다", "KBO" in _t and "18:00" in _t, _t[:160])
+check("★★ 경기가 없으면 빈 글이다 (빈 통을 올리지 않는다)",
+      P.daily_index_text(_IDX, "2026-01-01", name_of=nm) == "")
+
+_lk = {_IDX[0].game_id: "https://t.me/c/123/45"}
+_t2 = P.daily_index_text(_IDX, "2026-09-17", links=_lk, name_of=nm)
+check("★★ 앵커가 선 경기에만 바로가기가 붙는다",
+      _t2.count("보기") == 1 and "t.me/c/123/45" in _t2, _t2[:200])
+check("  ↳ 아직 앵커가 없는 경기는 그대로 둔다 (빈 링크를 만들지 않는다)",
+      "<a href=\"\">" not in _t2)
+
+check("★★ 바로가기 주소가 그 채널의 그 글을 가리킨다",
+      T._message_link("-1009999999999", 42) == "https://t.me/c/9999999999/42",
+      T._message_link("-1009999999999", 42))
+
+# 큐에 하루 한 건만 서는가
+_qi = T.build_all_queues({"KBO": _IDX}, _NOWQ, "-100t")
+_idx = [i for i in _qi if i.content_type is ContentType.DAILY_INDEX]
+check("★★ 오늘의 경기는 하루 한 건이다", len(_idx) == 1, str(len(_idx)))
+check("  ↳ 리그가 없는 통합 항목이다 (리그별로 서면 15통이 나간다)",
+      _idx and _idx[0].league is None)
+check("  ↳ 자정 직후로 예약된다",
+      _idx and _idx[0].scheduled_utc.astimezone(KST).hour == P.DAILY_INDEX_HOUR)
+
+_saved_idx = T.DAILY_INDEX_ENABLED
+try:
+    T.DAILY_INDEX_ENABLED = False
+    check("★★ 스위치 하나로 안 나간다",
+          not [i for i in T.build_all_queues({"KBO": _IDX}, _NOWQ, "-100t")
+               if i.content_type is ContentType.DAILY_INDEX])
+finally:
+    T.DAILY_INDEX_ENABLED = _saved_idx
+
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

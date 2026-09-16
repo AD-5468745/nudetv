@@ -125,6 +125,11 @@ LOOKAHEAD_SECONDS = max(6, int(os.environ.get("TICK_LOOKAHEAD_MINUTES", "60"))) 
 # 세부 카드는 지금까지처럼 채널로 나간다. 번호는 비밀값이므로 코드에 안 적는다.
 DISCUSSION_CHAT_ID = os.environ.get("DISCUSSION_CHAT_ID", "").strip()
 
+# 오늘의 경기 — 자정 직후 한 통, 채널 맨 위에 고정. 끄면 지금까지와 같다.
+DAILY_INDEX_ENABLED = True
+# 고정된 글의 번호와 경기별 바로가기를 적어 두는 자리.
+DAILY_INDEX_STATE = ROOT / "daily_index.json"
+
 # **시계가 실제로 몇 분마다 도는가.** 설정한 값이 아니라 실측값을 적는다.
 # 깃허브에 5분(*/5)을 걸어두었지만 실측 간격은 약 100분이었다(17시간에 10회).
 # 이 값으로 아래 게이트가 "발송 창이 시계 간격보다 넓은가"를 매 실행 확인한다.
@@ -1822,6 +1827,26 @@ def build_all_queues(snapshots: dict[str, list], now: datetime,
             items += P.build_queue(games, now, channel, floor_hours=0)
         except Exception as e:                               # noqa: BLE001
             print(f"  [큐] {name} 생성 실패 {type(e).__name__}: {str(e)[:90]}")
+    # ── 오늘의 경기 (v1.39) — **전 리그 공통이라 여기서 한 건** ──────
+    #
+    # `build_queue`는 리그 하나씩 부르므로 리그가 없는 통합 항목을 만들 수 없다.
+    # 채널 맨 위에 고정될 글이고 하루 한 통이다.
+    if DAILY_INDEX_ENABLED:
+        try:
+            _pool = [g for gs in snapshots.values() if gs for g in gs]
+            _day = now.astimezone(KST).strftime("%Y-%m-%d")
+            if any(g.sports_day == _day for g in _pool):
+                _at = now.astimezone(KST).replace(
+                    hour=P.DAILY_INDEX_HOUR, minute=P.DAILY_INDEX_MINUTE,
+                    second=0, microsecond=0).astimezone(timezone.utc)
+                items.append(QueueItem(
+                    idem_key=idem_key(channel, ContentType.DAILY_INDEX, _day),
+                    content_type=ContentType.DAILY_INDEX, scope=_day,
+                    scheduled_utc=_at, league=None, sports_day=_day,
+                    render_at_utc=_at))
+        except Exception as e:                               # noqa: BLE001
+            print(f"  [큐] 오늘의 경기 생성 실패 {type(e).__name__}")
+
     items.sort(key=lambda i: i.scheduled_utc)
     return items
 
@@ -2020,6 +2045,89 @@ def facts_for(item: QueueItem, games: list) -> list:
         # 시작 알림 카드는 '그날 편성 전체'를 말한다(N경기 중 M경기 곧 시작).
         return [g for g in games if day_schedule_scope(g) == item.scope]
     return todays
+
+
+# ── 오늘의 경기 — 고정 글과 바로가기 (v1.39) ────────────────────
+#
+# **왜 상태 파일이 따로 있나.** 이 글은 하루 동안 여러 번 고쳐 쓴다(앵커가
+# 설 때마다 링크가 하나씩 는다). 그러려면 '그 글의 번호'와 '지금까지 채운
+# 링크'를 기억해야 하는데, 발송 대장은 '무엇을 보냈나'의 장부라 성격이 다르다.
+
+
+def _index_load() -> dict:
+    try:
+        return json.loads(DAILY_INDEX_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _index_save(d: dict) -> None:
+    try:
+        DAILY_INDEX_STATE.parent.mkdir(parents=True, exist_ok=True)
+        # 어제 것은 버린다 — 고정은 하루짜리다.
+        keep = sorted(d)[-3:]
+        DAILY_INDEX_STATE.write_text(
+            json.dumps({k: d[k] for k in keep}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _index_links(day: str) -> dict:
+    return dict((_index_load().get(day) or {}).get("links") or {})
+
+
+def _message_link(chat_id: str, message_id: int) -> str:
+    """그 글로 바로 가는 주소. 비공개 채널은 `t.me/c/<내부번호>/<글번호>`다.
+
+    **구독자에게만 열린다** — 채널에 고정될 글이므로 보는 사람은 전부
+    구독자다. 공개 아이디를 우리가 알 수 없으니 이 꼴이 유일하게 확실하다.
+    """
+    cid = str(chat_id or "").strip()
+    inner = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+    return f"https://t.me/c/{inner}/{int(message_id)}"
+
+
+def _index_after_send(item, message_ids, channel: str, transport) -> None:
+    """발송 뒤 뒷정리 — 오늘의 경기는 **고정**하고, 앵커는 **링크를 채운다.**
+
+    실패해도 아무 일도 일어나지 않는다. 고정이 안 되면 글이 위에 안 붙을 뿐,
+    링크가 안 채워지면 그 줄만 바로가기가 없을 뿐이다.
+    """
+    if not message_ids:
+        return
+    try:
+        import discussion as _DS
+        import pipeline as _P
+        state = _index_load()
+        day = item.sports_day or ""
+        rec = state.setdefault(day, {"message_id": None, "links": {}})
+
+        if item.content_type is ContentType.DAILY_INDEX:
+            rec["message_id"] = int(message_ids[0])
+            _DS.pin(transport, channel, message_ids[0])
+            _index_save(state)
+            return
+
+        if item.content_type is ContentType.ANCHOR and item.game_id:
+            rec["links"][item.game_id] = _message_link(channel, message_ids[0])
+            _index_save(state)
+            # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.
+            mid = rec.get("message_id")
+            if mid:
+                _pool = _INDEX_POOL.get(day) or []
+                import cards_v5 as _C5x
+                txt = _P.daily_index_text(
+                    _pool, day, links=rec["links"],
+                    name_of=lambda lg, t: _C5x._nm(lg, t))
+                if txt:
+                    _DS.edit_text(transport, channel, mid, txt)
+    except Exception:                                    # noqa: BLE001
+        return
+
+
+# 오늘의 경기를 다시 그릴 때 쓰는 그날 경기 묶음. 틱이 채운다.
+_INDEX_POOL: dict = {}
 
 
 # ── 토론방 도우미 (v1.39) ──────────────────────────────────────
@@ -2221,6 +2329,17 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # **경기 하나를 game_id로 집는다.** 리그·날짜만으로 고르면 같은 대진이
     # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
     # 한 번 당한 병이다(약점 127).
+    elif item.content_type is ContentType.DAILY_INDEX:
+        # ── **오늘의 경기 (v1.39)** — 전 리그 편성 한 통 ──
+        import cards_v5 as _C5i
+        _pool = all_games or games
+        _txt = P.daily_index_text(_pool, item.sports_day,
+                                  links=_index_links(item.sports_day),
+                                  name_of=lambda lg, t: _C5i._nm(lg, t))
+        if not _txt:
+            return None
+        return [], [_txt]
+
     elif item.content_type is ContentType.ANCHOR:
         # ── **경기 앵커 (v1.39)** — 채널에 나가는 그 경기의 유일한 한 장 ──
         _lg = getattr(item, "league", None)
@@ -2568,6 +2687,12 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 없으면 '만들 내용 없음'으로 조용히 빠진다. 드라이런이 기록 없이 그리면
     # 그 세 종류는 영원히 시험되지 않는다 — 실제로 그랬다.
     records = _collect_records(now, fact_notes)
+    # 앵커가 설 때마다 '오늘의 경기'를 다시 그린다 — 그때 쓸 그날 경기 묶음.
+    try:
+        _today_k = now.astimezone(KST).strftime("%Y-%m-%d")
+        _INDEX_POOL[_today_k] = [g for gs in snaps.values() if gs for g in gs]
+    except Exception:                                        # noqa: BLE001
+        pass
     team_stats_by_league = {
         name: _team_stats_for(name, fact_notes) for name in records
     }
@@ -2793,6 +2918,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             elif res.state is SendState.SENT:
                 sent += 1
                 print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
+                # v1.39 — 오늘의 경기는 **고정**하고, 앵커는 그 글에 **바로가기를
+                # 채운다**. 실패해도 발송에는 영향이 없다(뒷정리일 뿐이다).
+                _index_after_send(item, res.message_ids, channel, tr)
             elif res.state is SendState.NEEDS_HUMAN:
                 # **이미 격리된 것을 이번 틱의 실패로 다시 세지 않는다 (v1.11i).**
                 # 전에는 격리 1건이 매 틱 `failed += 1` → "발송 실패 1건" +
