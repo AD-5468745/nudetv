@@ -640,6 +640,13 @@ class Payload:
     # 스크롤 없이 알게 한다. 원본 message_id는 대장에 있다.
     reply_to_message_id: Optional[int] = None
 
+    # **보낼 곳을 이 한 건만 바꾼다 (v1.39).**
+    #
+    # 앵커+댓글 구조에서 세부 카드는 채널이 아니라 **토론 그룹**으로 간다.
+    # 발송기 전체의 목적지(`self.chat_id`)를 바꾸면 그 순간 모든 것이 옮겨가므로
+    # 건마다 정하게 한다. 비어 있으면 지금까지와 똑같이 채널로 간다.
+    chat_id_override: Optional[str] = None
+
     # **카드에 붙는 인라인 버튼 (v1.15d).** `[[{"text":..., "url":...}]]` 꼴.
     # 비어 있으면 아무것도 붙지 않는다 — 지금까지와 완전히 같다.
     buttons: list = field(default_factory=list)
@@ -1075,12 +1082,14 @@ class Sender:
         return self._finish(rec, SendState.SENT, ids, "")
 
     def _dispatch(self, p: Payload) -> list[int]:
+        # v1.39 — 이 건만 다른 곳으로 보낼 수 있다(토론 그룹). 비면 채널이다.
+        _to = p.chat_id_override or self.chat_id
         # 답장은 **첫 메시지에만** 단다. 앨범의 모든 장과 후속 텍스트까지 답장으로
         # 달면 채널이 인용 더미가 된다 — 정정 한 건이 원본 한 건을 가리키면 충분하다.
         reply = p.reply_params()
         if not p.photos:
             res = self.tr.call("sendMessage", {
-                "chat_id": self.chat_id, "text": p.text,
+                "chat_id": _to, "text": p.text,
                 "parse_mode": TELEGRAM_PARSE_MODE,
                 "disable_web_page_preview": True, **reply})
             return [res["message_id"]]
@@ -1102,7 +1111,7 @@ class Sender:
                 if method is SendMethod.PHOTO:
                     name, data, _, _ = chunk[0]
                     res = self.tr.call("sendPhoto",
-                                       {"chat_id": self.chat_id,
+                                       {"chat_id": _to,
                                         "parse_mode": TELEGRAM_PARSE_MODE,
                                         **({"caption": cap} if cap else {}),
                                         **(reply if not ids else {}),
@@ -1120,7 +1129,7 @@ class Sender:
                         media.append(m)
                         files[k] = (name, data)
                     res = self.tr.call("sendMediaGroup",
-                                       {"chat_id": self.chat_id, "media": media,
+                                       {"chat_id": _to, "media": media,
                                         **(reply if not ids else {})},
                                        files=files)
                     ids += [m["message_id"] for m in res]
@@ -1139,7 +1148,7 @@ class Sender:
             self.pacer.wait()
             try:
                 res = self.tr.call("sendMessage", {
-                    "chat_id": self.chat_id, "text": t,
+                    "chat_id": _to, "text": t,
                     "parse_mode": TELEGRAM_PARSE_MODE,
                     "disable_web_page_preview": True})
             except (TelegramError, AmbiguousSend) as e:
