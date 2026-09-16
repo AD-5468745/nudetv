@@ -367,9 +367,13 @@ check("★★ 앵커가 선 경기에만 바로가기가 붙는다",
 check("  ↳ 아직 앵커가 없는 경기는 그대로 둔다 (빈 링크를 만들지 않는다)",
       "<a href=\"\">" not in _t2)
 
-check("★★ 바로가기 주소가 그 채널의 그 글을 가리킨다",
+check("★★ 바로가기 주소가 그 채널의 그 글을 가리킨다 (비공개)",
       T._message_link("-1009999999999", 42) == "https://t.me/c/9999999999/42",
       T._message_link("-1009999999999", 42))
+# 공개 채널은 주소 꼴이 **다르다** — 비공개 꼴을 쓰면 아무 데도 안 열린다.
+check("★★ 공개 채널이면 공개 주소를 쓴다",
+      T._message_link("@somechannel", 42) == "https://t.me/somechannel/42",
+      T._message_link("@somechannel", 42))
 
 # 큐에 하루 한 건만 서는가
 _qi = T.build_all_queues({"KBO": _IDX}, _NOWQ, "-100t")

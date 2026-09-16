@@ -2078,12 +2078,19 @@ def _index_links(day: str) -> dict:
 
 
 def _message_link(chat_id: str, message_id: int) -> str:
-    """그 글로 바로 가는 주소. 비공개 채널은 `t.me/c/<내부번호>/<글번호>`다.
+    """그 글로 바로 가는 주소.
 
-    **구독자에게만 열린다** — 채널에 고정될 글이므로 보는 사람은 전부
-    구독자다. 공개 아이디를 우리가 알 수 없으니 이 꼴이 유일하게 확실하다.
+    채널이 **공개**면 `t.me/<아이디>/<글번호>`, **비공개**면
+    `t.me/c/<내부번호>/<글번호>`다. 두 꼴은 서로 통하지 않는다 —
+    비공개 주소를 공개 채널에 쓰면 아무 데도 안 열린다.
+
+    무엇으로 판별하나 — 비밀값에 `@아이디`가 들어 있으면 공개다.
+    텔레그램 API가 `@아이디`를 chat_id로 그대로 받아 주므로, 공개 채널은
+    숫자 번호를 알아낼 필요 자체가 없다.
     """
     cid = str(chat_id or "").strip()
+    if cid.startswith("@"):
+        return f"https://t.me/{cid[1:]}/{int(message_id)}"
     inner = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
     return f"https://t.me/c/{inner}/{int(message_id)}"
 
