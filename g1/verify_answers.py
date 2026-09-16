@@ -248,6 +248,104 @@ check("★ 지도가 무한정 자라지 않는다 (매 틱 읽는 파일이다)
 check("  ↳ 남기는 것은 **최근** 것이다", st3.thread_of(2499) == 2499)
 
 
+# ══════════════════════════════════════════════════════════════
+print("\n6. 앵커 큐와 댓글 라우팅")
+# ══════════════════════════════════════════════════════════════
+import pipeline as P                                             # noqa: E402
+import tick as T                                                 # noqa: E402
+from contract import ContentType, Game, GameMeta, TeamRef, idem_key  # noqa: E402
+
+
+def _real(a, h, *, day, hh, st=Status.SCHEDULED):
+    return Game(league=League.KBO, season="2026",
+                source_key=f"{day}{a}{h}", home=TeamRef(League.KBO, h),
+                away=TeamRef(League.KBO, a), status=st,
+                start_utc=datetime.strptime(day, "%Y-%m-%d").replace(
+                    hour=hh, tzinfo=KST).astimezone(timezone.utc),
+                home_tz="Asia/Seoul",
+                score=None, venue="잠실", meta=GameMeta())
+
+
+_NOWQ = datetime(2026, 9, 17, 3, 0, tzinfo=timezone.utc)      # KST 12:00
+_QG = [_real("SS", "OB", day="2026-09-17", hh=18),
+       _real("LG", "HT", day="2026-09-17", hh=18)]
+_q = P.build_queue(_QG, _NOWQ, "-100t", floor_hours=0, horizon_hours=48)
+_anchors = [i for i in _q if i.content_type is ContentType.ANCHOR]
+check("★★ 경기마다 앵커가 하나씩 선다", len(_anchors) == 2, str(len(_anchors)))
+check("  ↳ 경기 3시간 전에 예약된다",
+      all((g.start_utc - a.scheduled_utc).total_seconds() == P.ANCHOR_LEAD_SECONDS
+          for a, g in zip(sorted(_anchors, key=lambda x: x.scope), _QG)),
+      str([str(a.scheduled_utc) for a in _anchors]))
+check("★★ 경기마다 멱등키가 다르다 (하나가 나가면 나머지가 버려지면 안 된다)",
+      len({a.idem_key for a in _anchors}) == 2)
+
+_done = [_real("SS", "OB", day="2026-09-17", hh=18, st=Status.CANCELED)]
+check("★★ 취소된 경기에는 앵커를 만들지 않는다 (아무도 안 여는 댓글방)",
+      not [i for i in P.build_queue(_done, _NOWQ, "-100t", floor_hours=0)
+           if i.content_type is ContentType.ANCHOR])
+
+_late = datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc)     # KST 19:00 — 시작 뒤
+check("★★ 시작을 넘긴 경기에도 만들지 않는다 (문패는 경기 전에만 뜻이 있다)",
+      not [i for i in P.build_queue(_QG, _late, "-100t", floor_hours=0)
+           if i.content_type is ContentType.ANCHOR])
+
+_saved_en = P.ANCHOR_ENABLED
+try:
+    P.ANCHOR_ENABLED = False
+    check("★★ 스위치 하나로 옛 방식으로 돌아간다",
+          not [i for i in P.build_queue(_QG, _NOWQ, "-100t", floor_hours=0)
+               if i.content_type is ContentType.ANCHOR])
+finally:
+    P.ANCHOR_ENABLED = _saved_en
+
+
+# ── 라우팅: 앵커가 없으면 채널로 간다 ──
+class _Led:
+    def __init__(self, rec=None): self._rec = rec
+    def get(self, key): return self._rec
+
+
+class _Rec:
+    def __init__(self, ids): self.message_ids = ids
+
+
+class _It:
+    def __init__(self, ct, gid="g1"):
+        self.content_type = ct
+        self.league = League.KBO
+        self.sports_day = "2026-09-17"
+        self.game_id = gid
+
+
+_st = D.DiscussionState(pathlib.Path(tempfile.mkdtemp()) / "r.json")
+_saved_chat = T.DISCUSSION_CHAT_ID
+try:
+    T.DISCUSSION_CHAT_ID = "-100999"
+    check("★★ 앵커가 대장에 없으면 채널로 간다 (댓글 못 단다고 잃지 않는다)",
+          T._thread_for(_It(ContentType.ANALYSIS), _Led(None), _st, "-100t") is None)
+    _led = _Led(_Rec([983]))
+    check("  ↳ 앵커는 있는데 전달을 못 봤으면 그래도 채널로",
+          T._thread_for(_It(ContentType.ANALYSIS), _led, _st, "-100t") is None)
+    _st.remember(983, 41)
+    check("★★ 둘 다 있으면 그 경기 댓글로 간다",
+          T._thread_for(_It(ContentType.ANALYSIS), _led, _st, "-100t") == 41)
+    check("★★ 앵커 자신은 채널에 남는다 (자기 댓글에 자기를 달지 않는다)",
+          T._thread_for(_It(ContentType.ANCHOR), _led, _st, "-100t") is None)
+    check("  ↳ 순위표·정리판도 채널에 남는다",
+          T._thread_for(_It(ContentType.STANDINGS), _led, _st, "-100t") is None
+          and T._thread_for(_It(ContentType.LEAGUE_RESULT), _led, _st,
+                            "-100t") is None)
+    T.DISCUSSION_CHAT_ID = ""
+    check("★★ 토론방 번호가 없으면 통째로 잠든다",
+          T._thread_for(_It(ContentType.ANALYSIS), _led, _st, "-100t") is None)
+finally:
+    T.DISCUSSION_CHAT_ID = _saved_chat
+
+check("★ 댓글로 내려보낼 종류가 적혀 있다 (여기 없으면 채널로 간다)",
+      ContentType.GOAL_FLASH in T.THREADED_CONTENT_TYPES
+      and ContentType.ANCHOR not in T.THREADED_CONTENT_TYPES)
+
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

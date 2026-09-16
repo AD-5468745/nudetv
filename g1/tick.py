@@ -119,6 +119,12 @@ _RATELIMITED_BY_CACHE = "ratelimited — 캐시로 버팀(새 데이터를 못 �
 # 5분 시계로 옮기면 TICK_LOOKAHEAD_MINUTES=6 으로 줄이면 된다.
 LOOKAHEAD_SECONDS = max(6, int(os.environ.get("TICK_LOOKAHEAD_MINUTES", "60"))) * 60
 
+# ── 토론방 (v1.39) ─────────────────────────────────────────────
+#
+# 채널에 연결한 토론 그룹의 번호. **비어 있으면 이 기능이 통째로 잠든다** —
+# 세부 카드는 지금까지처럼 채널로 나간다. 번호는 비밀값이므로 코드에 안 적는다.
+DISCUSSION_CHAT_ID = os.environ.get("DISCUSSION_CHAT_ID", "").strip()
+
 # **시계가 실제로 몇 분마다 도는가.** 설정한 값이 아니라 실측값을 적는다.
 # 깃허브에 5분(*/5)을 걸어두었지만 실측 간격은 약 100분이었다(17시간에 10회).
 # 이 값으로 아래 게이트가 "발송 창이 시계 간격보다 넓은가"를 매 실행 확인한다.
@@ -2016,6 +2022,85 @@ def facts_for(item: QueueItem, games: list) -> list:
     return todays
 
 
+# ── 토론방 도우미 (v1.39) ──────────────────────────────────────
+
+# 앵커 댓글로 내려보낼 종류. **앵커 자신과 채널에 남길 것은 뺀다.**
+# 여기 없는 종류는 지금까지처럼 채널로 간다 — 표를 늘리는 것이 곧 이관이다.
+THREADED_CONTENT_TYPES = frozenset({
+    ContentType.ANALYSIS, ContentType.LINEUP, ContentType.KICKOFF,
+    ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
+})
+
+
+def _thread_for(item, ledger, disc, channel: str):
+    """이 항목을 달아야 할 **토론방 글 번호**. 채널로 보내야 하면 None.
+
+    고리는 셋이다 —
+      ① 이 경기의 **앵커**가 대장에 있는가 (= 채널에 나갔는가)
+      ② 그 앵커의 채널 글 번호는 무엇인가
+      ③ 그 번호가 토론방 어느 글로 전달됐는가
+
+    **하나라도 끊기면 None**이고, 그때는 지금까지처럼 채널로 간다.
+    댓글을 못 단다고 그 경기 정보를 잃지 않는다.
+    """
+    if disc is None or not DISCUSSION_CHAT_ID:
+        return None
+    if item.content_type not in THREADED_CONTENT_TYPES:
+        return None
+    if not item.game_id or item.league is None:
+        return None
+    try:
+        scope = f"{item.league.value}:{item.sports_day}:{item.game_id}"
+        rec = ledger.get(idem_key(channel, ContentType.ANCHOR, scope))
+    except Exception:                                    # noqa: BLE001
+        return None
+    if rec is None or not rec.message_ids:
+        return None
+    return disc.thread_of(rec.message_ids[0])
+
+
+def _answer_questions(transport, disc, asks, snaps, records) -> None:
+    """손님 질문에 답한다 (v1.39). **한 질문에 한 번만.**
+
+    답은 **우리 자료에서 꺼내 읽은 것**이다(`answers.py`). 못 찾으면
+    모른다고 답한다 — 침묵하지 않는다.
+    """
+    try:
+        import answers as _AN
+        import cards_v5 as _C5
+        from contract import TELEGRAM_PARSE_MODE as _PARSE_MODE
+    except Exception:                                    # noqa: BLE001
+        return
+    by_league = {}
+    for gs in (snaps or {}).values():
+        if gs:
+            by_league.setdefault(gs[0].league, []).extend(gs)
+    for a in asks[:ANSWER_MAX_PER_TICK]:
+        key = str(a.get("message_id"))
+        if not key or disc.answered.get(key):
+            continue
+        disc.answered[key] = True
+        try:
+            text = _AN.reply_for(
+                a.get("text", ""), games_by_league=by_league,
+                records=records or {}, now=_now(),
+                name_of=lambda lg, t: _C5._nm(lg, t))
+            transport.call("sendMessage", {
+                "chat_id": a.get("chat_id"), "text": text,
+                "parse_mode": _PARSE_MODE,
+                "disable_web_page_preview": True,
+                "reply_parameters": {
+                    "message_id": int(a["message_id"]),
+                    "allow_sending_without_reply": True}})
+        except Exception:                                # noqa: BLE001
+            # 답 하나를 못 보냈다고 틱을 죽이지 않는다.
+            continue
+
+
+# 한 틱에 답할 수 있는 질문 수. 도배가 와도 채널이 답장으로 뒤덮이지 않게.
+ANSWER_MAX_PER_TICK = 10
+
+
 def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                team_stats: dict | None = None,
                all_games: list | None = None) -> tuple[list, list[str]] | None:
@@ -2136,6 +2221,18 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # **경기 하나를 game_id로 집는다.** 리그·날짜만으로 고르면 같은 대진이
     # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
     # 한 번 당한 병이다(약점 127).
+    elif item.content_type is ContentType.ANCHOR:
+        # ── **경기 앵커 (v1.39)** — 채널에 나가는 그 경기의 유일한 한 장 ──
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _lg is None or _one is None:
+            return None
+        # 시작을 넘겼으면 만들지 않는다 — 문패는 경기 **전**에만 뜻이 있다.
+        if not is_upcoming(_one, _now()):
+            return None
+        return _try_v5("anchor", lambda R: R.anchor_card(
+            _one, _lg, rb=(records or {}).get(_lg.value), now=_now()))
+
     elif item.content_type in (ContentType.KICKOFF, ContentType.FINAL_FLASH,
                                ContentType.LINEUP, ContentType.GOAL_FLASH):
         _lg = getattr(item, "league", None)
@@ -2523,6 +2620,25 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     snd = Sender(tr, led, channel, alert_chat_id=alert_to,
                  worker_id=os.environ.get("WORKER_ID") or None)
 
+    # ── 토론방 (v1.39) ────────────────────────────────────────
+    #
+    # **비밀값이 없으면 통째로 잠든다.** 채널에 토론 그룹을 연결하고 그 번호를
+    # `DISCUSSION_CHAT_ID`에 넣기 전까지 지금까지와 똑같이 채널로만 나간다.
+    disc = None
+    if DISCUSSION_CHAT_ID:
+        try:
+            import discussion as _DS
+            disc = _DS.DiscussionState(ROOT / "discussion.json")
+            # 새 소식을 받아 **자동 전달 짝**을 적는다. 손님 질문도 여기서 온다.
+            _asks = _DS.poll(tr, disc)
+            if _asks:
+                _answer_questions(tr, disc, _asks, snaps, records)
+            disc.save()
+        except Exception as e:                           # noqa: BLE001
+            print(f"  ⚠️ 토론방 준비 실패 — 채널로 보냅니다: "
+                  f"{e.__class__.__name__}")
+            disc = None
+
     # **발송을 강행하면 안 되는 상태를 먼저 본다 (v1.11i).**
     # 둘 다 '중복 발송'으로 이어지는 상태다. 중복은 되돌릴 수 없고 미발송은 고칠 수 있다.
     hold: list[str] = []
@@ -2623,6 +2739,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             # 여기 조건을 박아 두면 늘릴 때 이 파일을 다시 찾아야 한다.
             if item.content_type.value in BUTTON_CONTENT_TYPES:
                 payload.buttons = brand_button()
+
+            # ── **토론방으로 보낼 것인가** (v1.39) ─────────────────
+            #
+            # 대표님 설계: 채널에는 앵커 한 장, 세부는 전부 그 글의 댓글.
+            # 앵커의 채널 글 번호 → 토론방 글 번호 지도가 있어야 댓글을 단다.
+            # **없으면 지금까지처럼 채널로 간다** — 자리가 바뀔 뿐, 잃지 않는다.
+            _thread = _thread_for(item, led, disc, channel)
+            if _thread is not None:
+                payload.chat_id_override = DISCUSSION_CHAT_ID
+                payload.reply_to_message_id = _thread
+                # 앨범에는 버튼을 못 단다. 댓글에는 버튼이 필요 없으므로 뗀다.
+                payload.buttons = []
 
             # ── 점수 외부 대조 (v1.11j — 대표님 승인) ────────────────
             # **한 소스만 믿는 구조가 09-01 사고의 뿌리다.** KBO 일정 페이지 하나를

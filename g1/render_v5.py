@@ -47,6 +47,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
 # 새 카드가 실서비스에서 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야
 # 켜 볼 수 있다. 종류별로 나눈 이유도 같다 — 하나가 잘못돼도 나머지는 산다.
 USE_V5 = {
+    "anchor": True,          # v1.39: 그 경기의 문패 — 채널에 나가는 유일한 장
     "result": True,          # 리그 결과 요약 — 하루를 닫는 한 장
     # 경기별 2종 (v1.14) — 애초에 v5로만 만든다. 옛 카드에 대응물이 없다.
     "kickoff": True,         # 그 경기 시작 10~1분 전

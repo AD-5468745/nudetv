@@ -418,6 +418,16 @@ def analysis_batches(day_games: list[Game]) -> list[list[Game]]:
     return [gs[i:i + n] for i in range(0, len(gs), n)]
 
 
+# ── 경기 앵커 (v1.39) ──────────────────────────────────────────
+#
+# **3시간 전인 이유.** 분석글에 쓰는 순위·기록이 그 시점이면 충분히 최신이고,
+# 라인업(약 1시간 전)보다 앞서야 댓글이 시간 순서대로 쌓인다.
+# 되돌리려면 `ANCHOR_ENABLED = False` 하나면 된다 — 그러면 지금까지처럼
+# 모든 카드가 채널로 나간다.
+ANCHOR_ENABLED = True
+ANCHOR_LEAD_SECONDS = 3 * 3600
+
+
 def build_queue(games: list[Game], now: datetime, channel: str,
                 floor_hours: int = 6, horizon_hours: int = 30) -> list[QueueItem]:
     """한 리그의 큐를 만든다. 틱의 자가치유·수집 잡의 add는 floor_hours=0으로 부른다.
@@ -631,6 +641,29 @@ def build_queue(games: list[Game], now: datetime, channel: str,
 
         for g in games:
             _scope = f"{league.value}:{g.sports_day}:{g.game_id}"
+
+            # ⓪ **경기 앵커 (v1.39)** — 경기 3시간 전, 경기마다 한 장.
+            #
+            # 대표님 설계(2026-09-17): 채널에는 이 한 장만 나가고 나머지는
+            # 전부 이 글의 댓글로 들어간다. 그래서 **앵커가 먼저 나가야**
+            # 뒤의 것들이 갈 곳이 생긴다 — 페이서 우선순위도 0이다.
+            #
+            # 취소·연기된 경기에는 앵커를 만들지 않는다. 열리지 않는 경기의
+            # 댓글방은 아무도 안 열고, 취소 사실은 그 경기의 종료 속보가 말한다.
+            if ANCHOR_ENABLED and not g.is_terminal:
+                _aat = g.start_utc - timedelta(seconds=ANCHOR_LEAD_SECONDS)
+                # 이미 지난 시각이면 **지금** 만든다 — 3시간 전을 놓쳤다고
+                # 그 경기의 댓글방을 통째로 잃을 이유가 없다. 다만 시작을
+                # 넘겼으면 만들지 않는다(그 뒤로는 앵커가 문패 구실을 못 한다).
+                _aat = max(_aat, now)
+                if _aat < g.start_utc and _aat <= hi and keep_in_queue(
+                        _aat, now, ContentType.ANCHOR):
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.ANCHOR, _scope),
+                        content_type=ContentType.ANCHOR, scope=_scope,
+                        scheduled_utc=_aat, league=league,
+                        sports_day=g.sports_day, game_id=g.game_id,
+                        render_at_utc=_aat))
 
             # ① 선발 라인업 (v1.17) — **예약 시각이 시계가 아니라 데이터다.**
             #

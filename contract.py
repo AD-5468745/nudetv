@@ -1026,6 +1026,18 @@ class ContentType(str, Enum):
     # 대신 문구는 **경기 시각으로만** 말한다("후반 12분") — "방금"이라고
     # 하지 않으므로 몇 분 늦게 나가도 거짓이 되지 않는다.
     GOAL_FLASH = "goal_flash"
+    # ── 경기 앵커 (v1.39, 2026-09-17 대표님 설계) ──────────────────
+    #
+    # 대표님: *"모든 경기당 한개 앵커 생성 후 경기분석글 먼저 앵커안에 발송,
+    # 이후 경기시작전 알림, 경기중 골득점, 경기취소 … 경기종료 후 결과"*
+    #
+    # **채널에 나가는 것은 이 한 장뿐이다.** 분석·라인업·시작·득점·취소·결과는
+    # 전부 이 글의 **댓글**로 들어간다. 그래야 채널이 경기 순서대로 읽히고
+    # 사람이 이야기할 자리가 남는다(실측: 하루 206건이 나가던 날이 있었다).
+    ANCHOR = "anchor"
+    # 그날 전 리그 편성을 **텍스트 한 통**으로. 자정 직후 올리고 고정한다.
+    # 앵커가 하나 생길 때마다 이 글을 고쳐 바로가기를 채운다.
+    DAILY_INDEX = "daily_index"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
     KOREAN_DAILY = "korean_daily"          # v1.9: 코리안리거 데일리
@@ -1043,6 +1055,10 @@ class ContentType(str, Enum):
 #
 # 규칙: 유예 > 생존 감시 임계(6~7분). v1.8의 START_ALERT 180초는 이 규칙을 위반했다.
 GRACE_SECONDS: dict[ContentType, int] = {
+    # v1.39 — 앵커는 경기 3시간 전이라 창이 넓어도 된다. 놓치면 그 경기의
+    # 댓글방이 통째로 없어지므로(세부가 갈 곳이 사라진다) **넉넉히** 준다.
+    ContentType.ANCHOR: 3600,
+    ContentType.DAILY_INDEX: 7200,
     ContentType.START_ALERT: 480,        # v1.9: 180 → 480 (감시 임계보다 크게)
     ContentType.POLL_CLOSE: 480,         # v1.9: 1800 → 480 (열린 투표를 오래 두면 안 된다)
     ContentType.INPLAY_BOARD: 600,
@@ -1213,6 +1229,13 @@ PACER_PRIORITY: dict[ContentType, int] = {
     ContentType.LINEUP: 1,
     ContentType.INPLAY_BOARD: 1,
     ContentType.CORRECTION: 2,
+    # ── v1.39 ──────────────────────────────────────────────────
+    # **앵커가 제일 급하다.** 앵커가 못 나가면 그 경기의 분석·라인업·시작·
+    # 득점·결과가 **갈 곳을 잃는다** — 한 장이 밀려서 그 경기 전체가 사라지는
+    # 자리다. 킥오프·득점 속보와 같은 0을 준다.
+    ContentType.ANCHOR: 0,
+    # 오늘의 경기는 자정 직후 한 통이고, 몇 분 늦어도 뜻이 안 변한다.
+    ContentType.DAILY_INDEX: 4,
     ContentType.POLL: 3,
     ContentType.ANALYSIS: 3,
     ContentType.MORNING: 4,
