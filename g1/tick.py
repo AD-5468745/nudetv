@@ -2189,8 +2189,14 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
                   "url": _DS2.comment_link(channel, cid, th_id)}]]
         if BRAND_URL:
             rows.append([{"text": BRAND_BUTTON_TEXT, "url": BRAND_URL}])
+        _url = rows[0][0]["url"]
         if _DS2.set_buttons(transport, channel, cid, rows):
             disc.buttoned[str(ch_id)] = True
+            # **주소를 로그에 남긴다.** 버튼이 어디로 가는지는 채널에서 눌러 봐야
+            # 아는데, 눌러 보기 전에 로그로 확인할 수 있어야 고치는 속도가 붙는다.
+            print(f"    🔗 앵커 {cid} 버튼 → {_url}")
+        else:
+            print(f"    ⚠️ 앵커 {cid} 버튼 실패 → {_url}")
 
 
 # ── 토론방 도우미 (v1.39) ──────────────────────────────────────
