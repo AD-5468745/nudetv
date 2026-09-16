@@ -2137,8 +2137,30 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
 _INDEX_POOL: dict = {}
 
 
-def _fill_thread_buttons(transport, disc, channel: str) -> None:
-    """전달 번호를 알게 된 앵커에 **그 경기 토론방으로 가는 버튼**을 채운다.
+def _anchor_message_ids(ledger) -> set:
+    """대장에서 **앵커로 나간 채널 글 번호**만 모은다 (v1.39).
+
+    ⚠️ **텔레그램은 채널 글을 전부 토론방으로 전달한다.** 앵커만이 아니다.
+    그래서 전달 지도(`disc.map`)에는 득점 속보·순위표까지 전부 들어 있다.
+    지도를 그대로 돌며 버튼을 달았더니 **모든 카드에 '토론방 보기'가 붙었다**
+    (2026-09-17 실채널 확인). 버튼은 **그 경기의 문패에만** 뜻이 있다.
+    """
+    out: set = set()
+    try:
+        # 대장 키는 `채널|종류|범위|...` 꼴이다 — 종류 칸으로 앵커만 고른다.
+        for key, rec in getattr(ledger, "_rows", {}).items():
+            parts = str(key).split("|")
+            if len(parts) < 2 or parts[1] != ContentType.ANCHOR.value:
+                continue
+            if rec.state is SendState.SENT and rec.message_ids:
+                out.add(int(rec.message_ids[0]))
+    except Exception:                                    # noqa: BLE001
+        return set()
+    return out
+
+
+def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
+    """전달 번호를 알게 된 **앵커에만** 토론방 버튼을 채운다.
 
     보낼 때는 못 단다 — 토론방 글 번호는 채널에 올라간 **뒤에** 텔레그램이
     만들기 때문이다. 그래서 알게 된 다음 틱에 버튼만 갈아 끼운다.
@@ -2153,14 +2175,21 @@ def _fill_thread_buttons(transport, disc, channel: str) -> None:
                               DISCUSSION_BUTTON_TEXT)
     except Exception:                                    # noqa: BLE001
         return
-    for ch_id, th_id in list(disc.map.items())[-60:]:
-        if disc.buttoned.get(str(ch_id)):
+    anchors = _anchor_message_ids(ledger)
+    if not anchors:
+        return
+    for ch_id, th_id in list(disc.map.items())[-200:]:
+        try:
+            cid = int(ch_id)
+        except (TypeError, ValueError):
+            continue
+        if cid not in anchors or disc.buttoned.get(str(ch_id)):
             continue
         rows = [[{"text": DISCUSSION_BUTTON_TEXT,
-                  "url": _DS2.thread_link(DISCUSSION_CHAT_ID, th_id)}]]
+                  "url": _DS2.comment_link(channel, cid, th_id)}]]
         if BRAND_URL:
             rows.append([{"text": BRAND_BUTTON_TEXT, "url": BRAND_URL}])
-        if _DS2.set_buttons(transport, channel, ch_id, rows):
+        if _DS2.set_buttons(transport, channel, cid, rows):
             disc.buttoned[str(ch_id)] = True
 
 
@@ -2793,7 +2822,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             if _asks:
                 _answer_questions(tr, disc, _asks, snaps, records)
             # 전달 번호를 새로 알게 된 앵커에 **토론방 버튼**을 채운다.
-            _fill_thread_buttons(tr, disc, channel)
+            _fill_thread_buttons(tr, disc, channel, led)
             disc.save()
         except Exception as e:                           # noqa: BLE001
             print(f"  ⚠️ 토론방 준비 실패 — 채널로 보냅니다: "

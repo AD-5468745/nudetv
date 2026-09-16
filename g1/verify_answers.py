@@ -398,6 +398,7 @@ finally:
 print("\n8. 앵커 버튼 — 토론방으로 가는 자리")
 # ══════════════════════════════════════════════════════════════
 from contract import BUTTON_CONTENT_TYPES, DISCUSSION_BUTTON_TEXT  # noqa: E402
+from sender import SendState                                       # noqa: E402
 
 check("★★ 앵커에 버튼이 붙는다 (채널에 나가는 유일한 장이다)",
       "anchor" in BUTTON_CONTENT_TYPES, str(sorted(BUTTON_CONTENT_TYPES)))
@@ -419,27 +420,43 @@ class _BtnTr:
 
 
 _bst = D.DiscussionState(pathlib.Path(tempfile.mkdtemp()) / "b.json")
-_bst.remember(983, 41)
+_bst.remember(983, 41)      # 앵커
+_bst.remember(984, 42)      # 득점 속보 — 텔레그램은 **모든 채널 글**을 전달한다
+
+
+class _LedA:
+    """대장 대역 — 983번만 앵커다."""
+    def __init__(self):
+        from contract import ContentType as _CT
+        class _R:
+            state = SendState.SENT
+            message_ids = [983]
+        self._rows = {f"ch|{_CT.ANCHOR.value}|KBO:2026-09-17:g1|s0|r0": _R()}
+
+
 _saved_dc = T.DISCUSSION_CHAT_ID
 try:
     T.DISCUSSION_CHAT_ID = "@somegroup"
     _btr = _BtnTr()
-    T._fill_thread_buttons(_btr, _bst, "-100t")
+    T._fill_thread_buttons(_btr, _bst, "@mych", _LedA())
     check("★★ 전달 번호를 알면 그 앵커에 버튼을 채운다", len(_btr.sets) == 1,
           str(len(_btr.sets)))
     _rows = _btr.sets[0]["reply_markup"]["inline_keyboard"] if _btr.sets else []
-    check("  ↳ 버튼이 **그 경기 토론방 글**을 가리킨다",
-          _rows and _rows[0][0]["url"] == "https://t.me/somegroup/41",
+    check("★★★ 버튼이 **그 채널 글의 댓글창**을 가리킨다 (그룹 입장이 아니라)",
+          _rows and _rows[0][0]["url"] == "https://t.me/mych/983?comment=41",
           str(_rows[:1]))
     check("  ↳ 문구가 '토론방'이다", _rows and "토론방" in _rows[0][0]["text"])
+    check("★★★ 앵커가 아닌 글에는 안 단다 (모든 카드에 붙었던 사고)",
+          len(_btr.sets) == 1
+          and int(_btr.sets[0]["message_id"]) == 983, str(_btr.sets))
     _btr2 = _BtnTr()
-    T._fill_thread_buttons(_btr2, _bst, "-100t")
+    T._fill_thread_buttons(_btr2, _bst, "@mych", _LedA())
     check("★★ 같은 앵커를 두 번 고치지 않는다 (텔레그램이 오류를 준다)",
           len(_btr2.sets) == 0, str(len(_btr2.sets)))
     T.DISCUSSION_CHAT_ID = ""
     _btr3 = _BtnTr()
     T._fill_thread_buttons(_btr3, D.DiscussionState(
-        pathlib.Path(tempfile.mkdtemp()) / "c.json"), "-100t")
+        pathlib.Path(tempfile.mkdtemp()) / "c.json"), "@mych", _LedA())
     check("★★ 토론방이 없으면 아무것도 안 한다", len(_btr3.sets) == 0)
 finally:
     T.DISCUSSION_CHAT_ID = _saved_dc

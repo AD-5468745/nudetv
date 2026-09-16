@@ -203,6 +203,25 @@ def thread_link(discussion_chat_id: str, thread_message_id: int) -> str:
     return f"https://t.me/c/{inner}/{int(thread_message_id)}"
 
 
+def comment_link(channel_chat_id: str, post_id: int,
+                 thread_message_id: int) -> str:
+    """그 **채널 글의 댓글창**으로 바로 가는 주소 (v1.39).
+
+    ⚠️ **토론 그룹 주소를 쓰면 안 된다.** `t.me/<그룹>/<번호>`는 그룹을 여는
+    주소라, 아직 그룹에 안 들어온 손님에게는 **그룹 입장 화면**이 뜬다
+    (2026-09-17 실채널 확인 — 대표님이 그 경기가 아니라 그룹으로 들어갔다).
+
+    채널 글에 `?comment=` 를 붙이면 텔레그램이 **그 글의 댓글창**을 연다.
+    앵커를 눌렀을 때와 똑같은 자리다.
+    """
+    cid = str(channel_chat_id or "").strip()
+    base = (f"https://t.me/{cid[1:]}/{int(post_id)}" if cid.startswith("@")
+            else f"https://t.me/c/"
+                 f"{cid[4:] if cid.startswith('-100') else cid.lstrip('-')}"
+                 f"/{int(post_id)}")
+    return f"{base}?comment={int(thread_message_id)}"
+
+
 def pin(transport, chat_id, message_id, *, notify: bool = False) -> bool:
     """맨 위에 고정. 실패하면 False."""
     try:
