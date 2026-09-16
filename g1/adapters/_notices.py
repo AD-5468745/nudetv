@@ -4,10 +4,10 @@
 있었다. 그런데 이름이 어댑터마다 달랐다 —
 `MlbAdapter.skipped_unknown` · `MlbAdapter.skipped_types` ·
 `KblAdapter.unresolved` · `KblAdapter.skipped_categories` ·
-`LckAdapter.skipped_placeholder` · `LckAdapter.cache_age_seconds` ·
+`KblAdapter.unresolved` ·
 `KboAdapter.unknown_notes`.
 읽는 곳이 검증 스크립트뿐이라 **운영(tick)은 한 번도 안 읽었다.**
-실제로 LCK가 Leaguepedia 레이트리밋에 걸려 48시간 묵은 스냅샷으로 카드를 렌더하는
+실제로 옛 e스포츠 리그가 팬 위키 레이트리밋에 걸려 48시간 묵은 스냅샷으로 카드를 렌더하는
 동안 어디에도 표시가 없었다. 이름이 제각각이면 읽는 쪽이 리그마다 새로 짜야 하고,
 새 리그를 붙일 때마다 또 잊는다. 그래서 **이름 하나로 통일한다.**
 
@@ -97,7 +97,7 @@ class NoticeMixin:
     # 실운영 알림 로그(대표님 제공)를 보니 매 틱 이런 줄이 올라오고 있었다:
     #   "KBO: 시리즈별 수집 정규시즌 238 · 와일드카드 0 · 플레이오프 0"
     #   "VLEAGUE_M: 선택한 시즌 023 (126경기)"
-    #   "LCK: 대진 미확정(TBD)이라 건너뜀 3건"
+    #   "옛 e스포츠 리그: 대진 미확정(TBD)이라 건너뜀 3건"
     # 셋 다 **정상 상태**다(9월엔 포스트시즌이 없고, 시즌 코드는 정보이며,
     # 플레이오프 대진 미정은 당연하다). 진짜 사고가 이 사이에 묻힌다.
     #

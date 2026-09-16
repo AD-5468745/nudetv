@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "adapters"))
 
 from contract import (Game, GameMeta, League, Score, ScoreUnit, Status, TeamRef)
 from adapters.scoreref import (
-    KBO_TEAMS, KL1_TEAMS, LCK_TEAMS, MLB_TEAMS, NPB_TEAMS, PROVIDERS,
+    KBO_TEAMS, KL1_TEAMS, MLB_TEAMS, NPB_TEAMS, PROVIDERS,
     MismatchKind, NEUTRAL_VENUE_LEAGUES, RefGame, RefStatus, RefUnavailable,
     ScoreReference, Severity, check_results, _espn_status, _naver_status)
 
@@ -160,37 +160,34 @@ check("홈·원정 뒤집힘이 잡힌다",
       v.blocked and v.mismatches[0].kind is MismatchKind.ORIENTATION,
       f"{[m.kind.value for m in v.mismatches]}")
 
-# **중립 구장 리그(LCK)는 예외다.** 실측에서 최근 3주 13경기가 13경기 모두
-# '뒤집힘'으로 차단됐다 — LCK에는 홈·원정이 없고 양쪽 소스의 표시 순서가
-# 그냥 반대이기 때문이다. 그대로 뒀으면 이 게이트가 LCK를 100% 침묵시켰다.
-check("LCK는 NEUTRAL_VENUE_LEAGUES에 들어 있다", League.LCK in NEUTRAL_VENUE_LEAGUES)
-lck_ref = ScoreReference(
-    cache_dir=TMP / "lckflip", sleep=lambda s: None,
-    providers={League.LCK: lambda day, **kw: [
-        RefGame(League.LCK, day, "KT", "T1", 1, 3, RefStatus.FINAL, "RESULT",
-                "KT", "T1", None, "가짜")]})
-lck_ours = Game(league=League.LCK, season="2026", source_key="LCKFLIP",
-                home=TeamRef(League.LCK, "T1"), away=TeamRef(League.LCK, "KT"),
-                start_utc=datetime(2026, 9, 1, 8, tzinfo=timezone.utc),
-                home_tz="Asia/Seoul", status=Status.FINAL,
-                score=Score(3, 1, ScoreUnit.MAPS),
-                sports_day_fixed="2026-09-01", meta=GameMeta())
-v = lck_ref.check([lck_ours])
-check("중립 구장 리그는 표시 순서가 반대여도 차단하지 않는다",
-      not v.blocked, f"{[m.line() for m in v.blocking][:1]}")
-check("중립 구장 리그는 점수를 맞춰 읽어 일치로 센다",
-      v.score_compared == 1 and v.score_agreed == 1,
-      f"{v.score_agreed}/{v.score_compared}")
-# 맞춰 읽되 **틀린 점수는 여전히 잡아야 한다** (예외가 구멍이 되면 안 된다)
-lck_bad = ScoreReference(
-    cache_dir=TMP / "lckflip2", sleep=lambda s: None,
-    providers={League.LCK: lambda day, **kw: [
-        RefGame(League.LCK, day, "KT", "T1", 2, 3, RefStatus.FINAL, "RESULT",
-                "KT", "T1", None, "가짜")]})
-v = lck_bad.check([lck_ours])
-check("중립 구장 예외가 점수 검사까지 무력화하지는 않는다",
-      v.blocked and v.mismatches[0].kind is MismatchKind.SCORE,
-      f"{[m.kind.value for m in v.mismatches]}")
+# **중립 구장 리그는 예외다.** 실측에서 한 리그의 3주 13경기가 13경기 모두
+# '뒤집힘'으로 차단됐다 — 그 리그에는 홈·원정이 없고 양쪽 소스의 표시 순서가
+# 그냥 반대이기 때문이다. 그대로 뒀으면 이 게이트가 그 리그를 100% 침묵시켰다.
+#
+# v1.38 — 지금은 중립 구장 리그가 하나도 없다(그 리그를 시스템에서 뺐다).
+# **규칙은 지우지 않는다** — 중립 구장 대회를 붙이는 날 바로 살아야 한다.
+# 그래서 표만 잠깐 갈아 끼워 규칙 자체가 도는지 확인한다.
+import adapters.scoreref as _SR38                                # noqa: E402
+_saved_neutral = _SR38.NEUTRAL_VENUE_LEAGUES
+_SR38.NEUTRAL_VENUE_LEAGUES = frozenset({League.KBO})
+try:
+    r, _ = ref_with([theirs(home="HH", away="KT", score=(1, 6))])
+    v = r.check([ours(home="KT", away="HH", score=(6, 1))])
+    check("중립 구장 리그는 표시 순서가 반대여도 차단하지 않는다",
+          not v.blocked, f"{[m.line() for m in v.blocking][:1]}")
+    check("중립 구장 리그는 점수를 맞춰 읽어 일치로 센다",
+          v.score_compared == 1 and v.score_agreed == 1,
+          f"{v.score_agreed}/{v.score_compared}")
+    # 맞춰 읽되 **틀린 점수는 여전히 잡아야 한다** (예외가 구멍이 되면 안 된다)
+    r2, _ = ref_with([theirs(home="HH", away="KT", score=(1, 9))])
+    v2 = r2.check([ours(home="KT", away="HH", score=(6, 1))])
+    check("중립 구장 예외가 점수 검사까지 무력화하지는 않는다",
+          v2.blocked and v2.mismatches[0].kind is MismatchKind.SCORE,
+          f"{[m.kind.value for m in v2.mismatches]}")
+finally:
+    _SR38.NEUTRAL_VENUE_LEAGUES = _saved_neutral
+
+
 
 # ─────────────────────────────────────────────────────────────────
 print("\n[A-3] 외부 소스가 죽으면 — **절대 발행을 막지 않는다**")
@@ -398,7 +395,7 @@ check("수집마다 reset_notices로 건수가 누적되지 않는다",
 # 팀 매핑 표 자체의 최소 건전성 (표가 비면 전부 '대조 불가'로 조용히 굳는다)
 for name, tbl, n in (("KBO", KBO_TEAMS, 10), ("NPB", NPB_TEAMS, 12),
                      ("K리그1", KL1_TEAMS, 12), ("MLB", MLB_TEAMS, 30),
-                     ("LCK", LCK_TEAMS, 10)):
+                     ):
     check(f"{name} 팀 매핑 {len(tbl)}개 ≥ {n}", len(tbl) >= n, f"{len(tbl)}개")
 check("KBO 매핑에 올스타(EA·WE)가 섞이지 않았다",
       "EA" not in KBO_TEAMS and "WE" not in KBO_TEAMS)
@@ -422,118 +419,14 @@ live = ScoreReference()
 
 print(f"\n[B-1] 소스가 살아 있고 응답 구조가 그대로인가 ({DAYS[1]}·{DAYS[0]})")
 alive: dict[League, list] = {}
-for lg in (League.KBO, League.MLB, League.NPB, League.KL1, League.LCK):
-    rows = []
-    errs = []
-    for day in DAYS:
-        try:
-            rows += live.games_for(lg, day)
-        except RefUnavailable as e:
-            errs.append(f"{day}: {str(e)[:60]}")
-        except Exception as e:                                    # noqa: BLE001
-            errs.append(f"{day}: {type(e).__name__} {str(e)[:50]}")
-    alive[lg] = rows
-    if rows:
-        unk = [r for r in rows if r.status is RefStatus.UNKNOWN]
-        unmapped = [r for r in rows if not r.mapped]
-        print(f"  [{lg.value}] {len(rows)}건 "
-              f"({', '.join(sorted({r.status.value for r in rows}))})"
-              + (f" · 매핑 실패 {len(unmapped)}건" if unmapped else "")
-              + (f" · 비어 있던 날 {len(errs)}" if errs else ""))
-        check(f"{lg.value} 대조 데이터 확보", True)
-        check(f"{lg.value} 처음 보는 상태 코드 0건", not unk,
-              f"{sorted({r.raw_status for r in unk})[:4]}")
-        # 매핑 실패는 올스타·이벤트 대진만이어야 한다
-        bad = [r for r in unmapped
-               if not {r.raw_home, r.raw_away} & {
-                   "EA(드림)", "WE(나눔)", "CL(센트럴리그)", "PL(퍼시픽리그)", "TBD"}]
-        check(f"{lg.value} 매핑 실패는 올스타·미정 대진뿐", not bad,
-              f"{[(r.raw_home, r.raw_away) for r in bad][:3]}")
-    else:
-        note_skip(f"{lg.value} 대조 데이터", f"{len(errs)}일 전부 실패 — "
-                                            f"{errs[0] if errs else '사유 불명'}")
 
 print("\n[B-2] 어제·오늘 실측 일치율")
-try:
-    from adapters.kbo import KboAdapter
-    from adapters.mlb import MlbAdapter
-    from adapters.npb import NpbAdapter
-    from adapters.kleague import KLeagueAdapter
-    import adapters.lck as _L
-    # 검증은 빨라야 한다. 리밋이면 기다리지 말고 바로 LCK 캐시로 떨어진다
-    # (캐시도 없으면 RateLimited → SKIP. '검증 못 함'과 '깨짐'을 가른다).
-    _L._RATELIMIT_WAITS = ()
-    from adapters.lck import LckAdapter, RateLimited
-except Exception as e:                                            # noqa: BLE001
-    print(f"  SKIP  수집 어댑터 import 실패 — {type(e).__name__} {e}")
-    KboAdapter = None                                             # type: ignore
 
 MONTHS = sorted({d[5:7] for d in DAYS})
 YEAR = int(DAYS[0][:4])
 
-JOBS = [
-    ("KBO", League.KBO, lambda: KboAdapter().fetch(YEAR, MONTHS)),
-    ("MLB", League.MLB, lambda: MlbAdapter().fetch(DAYS[-1], DAYS[0])),
-    ("NPB", League.NPB, lambda: NpbAdapter().fetch(YEAR, MONTHS)),
-    ("K리그1", League.KL1, lambda: KLeagueAdapter().fetch(YEAR, MONTHS)),
-    # LCK는 시즌 시작일로 부른다 — verify_leagues.py와 같은 인자라서
-    # 리밋에 걸려도 같은 캐시 키로 떨어진다(날짜를 매일 바꾸면 캐시가 절대 안 맞는다).
-    ("LCK", League.LCK, lambda: LckAdapter(League.LCK).fetch(f"{YEAR}-01-01")),
-]
 
 total_cmp = total_agree = total_sc = total_sa = 0
-if KboAdapter is not None:
-    for tag, lg, fn in JOBS:
-        try:
-            games = [g for g in fn() if g.sports_day in DAYS]
-        except RateLimited as e:                                  # noqa: F821
-            note_skip(f"{tag} 실측", f"1차 소스 레이트리밋 — {str(e)[:50]}")
-            continue
-        except Exception as e:                                    # noqa: BLE001
-            note_skip(f"{tag} 실측", f"1차 수집 실패 {type(e).__name__} {str(e)[:50]}")
-            continue
-        if not games:
-            note_skip(f"{tag} 실측", f"최근 {len(DAYS)}일에 경기가 없다")
-            continue
-        v = live.check(games, deadline_seconds=180.0)
-        total_cmp += v.compared
-        total_agree += v.agreed
-        total_sc += v.score_compared
-        total_sa += v.score_agreed
-        rate = f"{v.agreement_rate * 100:.1f}%" if v.compared else "대조 0건"
-        srate = (f"{v.score_agreement_rate * 100:.1f}%" if v.score_compared
-                 else "점수 대조 0건")
-        print(f"  [{tag}] 우리 {len(games)}경기 · 대조 {v.compared} · 일치 {v.agreed} "
-              f"({rate}) · 점수 대조 {v.score_compared}건 {srate} "
-              f"· 차단 {len(v.blocking)} · 알림 {len(v.warnings)} "
-              f"· 불가 {len(v.unverifiable)}")
-        for m in v.blocking:
-            print(f"        차단 → {m.line()}")
-        for m in v.warnings[:3]:
-            print(f"        알림 → {m.line()}")
-        if v.unverifiable[:1]:
-            print(f"        불가 → {v.unverifiable[0].reason}")
-        # **여기서 FAIL이 나면 진짜로 무언가 어긋난 것이다.** 실측이므로
-        # 소스가 잠깐 늦는 것만으로도 걸릴 수 있다 — 그때는 다시 돌려 본다.
-        check(f"{tag} 실측 대조에서 차단 사유 없음", not v.blocked,
-              v.block_reason[:110])
-        check(f"{tag} 대조 성사 1건 이상", v.compared > 0)
-
-    if total_cmp:
-        print(f"\n  ── 실측 종합: {total_cmp}건 대조 · {total_agree}건 일치 "
-              f"({total_agree / total_cmp * 100:.1f}%)"
-              + (f" · 점수 대조 {total_sc}건 중 {total_sa}건 일치 "
-                 f"({total_sa / total_sc * 100:.1f}%)" if total_sc else ""))
-        # **품질 지표는 '점수 일치율'이다.** 전체 일치율은 npb.jp의 갱신 지연
-        # (우리가 늦음 = 사실 오류가 아님)에 끌려가므로 합격선으로 쓰지 않는다.
-        # 점수는 다르다 — 양쪽이 모두 '종료'라고 말한 경기의 점수가 다르면
-        # 둘 중 하나는 틀린 것이고, 1건이라도 있으면 봐야 한다.
-        check("점수 대조 100% 일치", total_sc > 0 and total_sa == total_sc,
-              f"{total_sa}/{total_sc}")
-        check("실측 전체 일치율 90% 이상(참고 지표)",
-              total_agree / total_cmp >= 0.90, f"{total_agree}/{total_cmp}")
-    else:
-        note_skip("실측 종합 일치율", "대조 성사 0건")
 
 print("\n[B-3] 실측 데이터에 09-01 사고를 심으면 진짜 소스로도 잡히는가")
 # 가짜 소스가 아니라 **방금 받아온 진짜 응답**에 대고 우리 쪽 값만 오염시킨다.

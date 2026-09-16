@@ -1065,9 +1065,9 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
         from adapters import logos as _LG
         _season = (game.sports_day or "")[:4]
         la = _LG.team_logo(league, game.away, season=_season,
-                           day=game.sports_day) or ""
+                           day=game.sports_day, name=na) or ""
         lh = _LG.team_logo(league, game.home, season=_season,
-                           day=game.sports_day) or ""
+                           day=game.sports_day, name=nh) or ""
     except Exception:                                    # noqa: BLE001
         la = lh = ""
 
@@ -1272,7 +1272,7 @@ def _date_label(game, now: datetime | None) -> str:
 def _foot(games: list, league: League) -> str:
     """꼬리말 — **출처를 주장하지 않는다.** 경기장은 사실이고, 그것으로 충분하다.
 
-    (약점 107: 'LCK 공식 결과'라고 적었는데 실제로는 팬 위키였다.)
+    (약점 107: '옛 e스포츠 리그 공식 결과'라고 적었는데 실제로는 팬 위키였다.)
     """
     if len(games) == 1:
         v = venue_name(games[0].venue) if games[0].venue else ""

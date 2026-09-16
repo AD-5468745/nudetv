@@ -409,7 +409,7 @@ try:
         ("흐름-축구", League.EPL, _t),
         # **가장 긴 이름으로도 그려 본다.** 지금 이름이 짧아 우연히 무사한 것과
         # 검사가 지켜 주는 것은 다르다(약점 62). 전 리그 최장 팀명을 실측으로 뽑았다 —
-        # '디플러스 기아'(LCK) · '한국도로공사'·'페퍼저축은행'(V리그) ·
+        # '디플러스 기아'(옛 e스포츠 리그) · '한국도로공사'·'페퍼저축은행'(V리그) ·
         # '세인트루이스'·'샌프란시스코'(MLB).
         ("흐름-최장이름", League.VLEAGUE_W, C5.body_periods(
             labels=["1세트", "2세트", "3세트", "4세트", "5세트"],
@@ -1211,7 +1211,7 @@ check("★★ 로고 스위치 하나로 전부 되돌아간다",
       _LG38.team_logo(KBO, _Ref("OB")) is None or _LG38.LOGOS_ENABLED,
       "스위치가 듣지 않습니다")
 check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그림 방지)",
-      _LG38.emblem_url("LCK", "T1") is None)
+      _LG38.emblem_url("옛 e스포츠 리그", "T1") is None)
 
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

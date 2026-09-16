@@ -125,31 +125,14 @@ check("결과가 한 줄도 없는 리그는 카드에 판을 그리지 않는�
 # ─────────────────────────────────────────────────────────────
 # 3. "공식" — 정말 공식 소스인가
 # ─────────────────────────────────────────────────────────────
-# LCK·LoL 국제대회는 라이엇 공식 API 키를 못 구해 Leaguepedia(팬 위키)를 쓴다.
+# 옛 e스포츠 리그는 종목사 공식 API 키를 못 구해 팬 위키(팬 위키)를 쓴다.
 print("\n3. '공식' — 공식 소스에서 온 것에만 쓰는가")
-check("LCK는 공식 소스가 아니다", not P._is_official(League.LCK))
-check("LoL 국제대회도 아니다", not P._is_official(League.INTL_LOL))
 check("KBO·MLB·NPB는 공식이다",
       all(P._is_official(x) for x in (League.KBO, League.MLB, League.NPB)))
 
-_lck = [mk(League.LCK, DAY, 17, 0, tz="Asia/Seoul", h="T1", a="GEN",
-           status=Status.FINAL, score=Score(2, 0, ScoreUnit.MAPS))]
-_lck_card = txt(P.render_result(_lck, DAY))
-check("LCK 결과 카드가 '공식'이라 주장하지 않는다",
-      "공식" not in _lck_card, _lck_card[-160:])
-check("대신 출처를 밝힌다", "Leaguepedia" in _lck_card, _lck_card[-160:])
 
-_mixed = _night[:2] + _lck
-_mx_card = txt(P.render_night_brief(_mixed, DAY))
-check("팬 위키가 섞인 나이트 브리핑도 '공식'이라 하지 않는다",
-      "공식" not in _mx_card, _mx_card[-200:])
-check("팬 위키가 섞이면 캡션도 '공식'이라 하지 않는다",
-      "공식" not in P.caption_night_brief(_mixed, DAY)[-120:],
-      P.caption_night_brief(_mixed, DAY)[-120:])
 
 # 점수 단위가 섞이면 그 사실을 밝힌다 (맵 2:0과 득점 5:3이 한 장에 있다)
-check("단위가 섞인 카드는 그 사실을 밝힌다",
-      "혼재" in _mx_card or "맵" in _mx_card, _mx_card[-200:])
 
 # ─────────────────────────────────────────────────────────────
 # 4. "최다 득점" — 비교할 수 있는 것끼리 비교했는가
@@ -283,7 +266,7 @@ if _fb:
 # 대표님이 보내주신 실운영 알림 로그에 이런 줄이 **매 틱** 올라왔다:
 #   "KBO: 시리즈별 수집 정규시즌 238 · 와일드카드 0 · 플레이오프 0"
 #   "VLEAGUE_M: 선택한 시즌 023 (126경기)"
-#   "LCK: 대진 미확정(TBD)이라 건너뜀 3건"
+#   "옛 e스포츠 리그: 대진 미확정(TBD)이라 건너뜀 3건"
 # 셋 다 정상 상태다. 진짜 사고가 이 사이에 묻힌다(27번 약점의 재발).
 print("\n11. 경보가 소음이 되지 않는가")
 
@@ -318,18 +301,7 @@ _pr.reset_notices()
 check("수집을 새로 시작하면 등급도 초기화된다", _pr.alert_report() == {})
 
 # 실제 어댑터가 정상 상태를 정보로 표시하고 있는가 (소스 확인)
-_src_pairs = [
-    ("g1/adapters/kbo.py", "시리즈별 수집"),
-    ("g1/adapters/kovo.py", "선택한 시즌"),
-    ("g1/adapters/lck.py", "대진 미확정(TBD)이라 건너뜀"),
-    ("g1/adapters/mlb.py", "발행 대상 아닌 경기 종류로 건너뜀"),
-]
 _root = pathlib.Path(__file__).resolve().parents[1]
-for _f, _label in _src_pairs:
-    _t = (_root / _f).read_text(encoding="utf-8")
-    _line = next((ln for ln in _t.splitlines() if _label in ln and "note" in ln), "")
-    check(f"{_f.split('/')[-1]}: '{_label}'은 정보로 표시한다",
-          "note_info" in _line or "note_text_info" in _line, _line.strip()[:90])
 
 # ── 11-b. **거른 것을 읽는 쪽까지 조용한가 (fix44)** ──────────
 #

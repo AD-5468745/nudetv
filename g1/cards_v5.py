@@ -43,8 +43,8 @@ CARD_W = 1080
 
 LEAGUE_LABEL = {
     League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
-    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1", League.LCK: "LCK",
-    League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
+    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1",
+    League.MLB: "MLB", League.NPB: "NPB",
     League.EPL: "프리미어리그", League.LALIGA: "라리가", League.SERIEA: "세리에A",
     League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "챔피언스리그",
     League.UEL: "유로파리그", League.MLS: "MLS",
@@ -1641,7 +1641,7 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
     기록 기준시각처럼 **신뢰의 근거가 되는 것**은 펼쳐야 보이면 뜻이 없다.
 
     ⚠️ **여기에 출처 이름을 넣지 않는다.** 이 프로젝트는 "꼬리말은 출처를
-    주장하지 않는다"로 이미 결론을 냈고(약점 107: 'LCK 공식 결과'라 적었는데
+    주장하지 않는다"로 이미 결론을 냈고(약점 107: '옛 e스포츠 리그 공식 결과'라 적었는데
     실제로는 팬 위키였다), 약관상 표기 의무가 있는 소스는 `credit_line`이
     카드 꼬리말에 따로 붙인다. 그 둘을 섞으면 한쪽이 반드시 낡는다.
     """

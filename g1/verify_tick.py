@@ -98,14 +98,6 @@ check("시작 시각 보존", all(a.start_utc == b.start_utc for a, b in zip(bac
 check("되읽은 것도 계약 통과", all(g.validate() is None for g in back))
 
 # 다전제(BO5)는 e스포츠 카드에 필요하다
-lck = Game(league=League.LCK, season="2026", source_key="L1",
-           home=TeamRef(League.LCK, "T1"), away=TeamRef(League.LCK, "GEN"),
-           start_utc=NOW, home_tz="Asia/Seoul", status=Status.FINAL,
-           score=Score(3, 1, ScoreUnit.MAPS), venue=None,
-           meta=GameMeta(best_of=5, season_category="LCK 2026"))
-lck.validate()
-T._save_games("T2", [lck])
-check("BO(다전제) 보존", T._load_games("T2")[0].meta.best_of == 5)
 
 # ── 2. 깨진 상태 파일 ─────────────────────────────────────────
 print("\n2. 깨진 상태 — 어느 쪽으로 넘어지는가")
@@ -416,23 +408,28 @@ check("실패 시각이 기록된다 (다음 시도를 늦추는 근거)",
       bool(log.get("BAD", {}).get("failed_at")))
 
 # ── 7-1. 일시적 실패는 빨간불을 올리지 않는다 ──────────────────
-# 첫 배포에서 실제로 이 덫에 걸렸다: Leaguepedia 레이트리밋 하나로 시계 전체가
+# 첫 배포에서 실제로 이 덫에 걸렸다: 팬 위키 레이트리밋 하나로 시계 전체가
 # 실패 처리되고, 실패한 실행은 캐시를 저장하지 않아 다음 실행도 캐시 없이 출발했다.
 print("\n7-1. 일시적 실패 — 다음 틱에 풀릴 것을 사고로 올리지 않는가")
-from adapters.lck import RateLimited                          # noqa: E402
+
+# v1.38 — 전에는 옛 e스포츠 리그 어댑터의 `RateLimited`를 빌려 썼다. 그 리그를 시스템에서
+# 빼면서 **규칙이 아니라 표본이 사라진 것**이라, 표본만 여기서 만든다.
+# 분류 기준은 예외 **이름**이다(`tick._SOFT_ERRORS`) — 리그와 무관하다.
+class RateLimited(Exception):
+    pass
 
 
 def _jobs_ratelimited():
-    def limited():
-        raise RateLimited("Leaguepedia: ratelimited")
-    return {"GOOD": (League.KBO, lambda: [mkgame(League.KBO, "LG", "OB", hh=18)]),
-            "LCK": (League.LCK, limited)}
+    def _boom():
+        raise RateLimited("ratelimited")
+    return {"SOFT": (League.NPB, _boom),
+            "GOOD": (League.KBO, lambda: [mkgame(League.KBO, "LG", "OB")])}
 
 
 T._jobs = _jobs_ratelimited
 counts, errors, soft = T.collect(NOW, force=True)
 check("레이트리밋은 '기다리면 풀릴 것'으로 분류된다",
-      any("LCK" in s for s in soft), str(soft))
+      any("SOFT" in s for s in soft), str(soft))
 check("레이트리밋은 사람이 볼 실패에 안 들어간다", not errors, str(errors))
 check("그래도 조용히 넘기지는 않는다 (로그에 남는다)", len(soft) == 1)
 check("다른 리그는 정상 수집된다", counts.get("GOOD") == 1)
@@ -441,7 +438,7 @@ check("다른 리그는 정상 수집된다", counts.get("GOOD") == 1)
 counts2, errors2, soft2 = T.collect(NOW + timedelta(minutes=5))
 check("막힌 소스는 15분 안에 다시 두드리지 않는다", not soft2 and not errors2,
       f"soft={soft2} errors={errors2}")
-# v1.11k: **레이트리밋은 백오프가 다르다.** 실측에서 LCK가 104시간(4.3일)
+# v1.11k: **레이트리밋은 백오프가 다르다.** 실측에서 한 소스가 104시간(4.3일)
 # 동안 리밋에서 못 벗어났고, 원인은 15분마다 계속 두드린 것이었다.
 # 시간당 쿼터를 쓰는 상대에게 그건 회복할 틈을 주지 않는다.
 # 지켜야 할 것은 "15분"이라는 숫자가 아니라 **막힌 상대를 쉬게 둔다**이다.
@@ -449,7 +446,7 @@ counts3, errors3, soft3 = T.collect(NOW + timedelta(minutes=16))
 check("레이트리밋은 16분 뒤에도 다시 두드리지 않는다", not soft3 and not errors3,
       f"soft={soft3} errors={errors3}")
 counts4, errors4, soft4 = T.collect(NOW + timedelta(hours=7))
-check("레이트리밋도 충분히 쉬면 다시 시도한다", any("LCK" in s for s in soft4), str(soft4))
+check("레이트리밋도 충분히 쉬면 다시 시도한다", any("SOFT" in s for s in soft4), str(soft4))
 check("레이트리밋 백오프가 일반 실패보다 길다",
       T.RETRY_AFTER_RATELIMIT_SECONDS > T.RETRY_AFTER_FAIL_SECONDS,
       f"{T.RETRY_AFTER_RATELIMIT_SECONDS} vs {T.RETRY_AFTER_FAIL_SECONDS}")
@@ -508,7 +505,7 @@ check("수집이 멈추면 잡는다 (스냅샷이 남아 있어도)",
 
 # 한 번도 성공 못 함
 #
-# ⚠️ **표본을 LCK에서 NPB로 바꿨다 (v1.23).** LCK는 `DISABLED_LEAGUES`가 되어
+# ⚠️ **표본을 옛 e스포츠 리그에서 NPB로 바꿨다 (v1.23).** 옛 e스포츠 리그는 `DISABLED_LEAGUES`가 되어
 # 이제 참고(soft)로 내려간다 — 그건 의도한 동작이고, **검사의 표본이 낡은 것**이다
 # (약점 157: 동작을 바꾸면 그 동작을 세던 검사도 같이 낡는다).
 # 지키려는 성질은 그대로다: **발행하는 리그가 시즌 중에 못 들어오면 빨간불.**
@@ -517,16 +514,24 @@ check("한 번도 수집 못 한 리그를 잡는다",
       any("성공 기록 없음" in x for x in r.lines()), str(r.lines()))
 check("시즌 중 리그가 못 들어오면 빨간불 (NPB는 9월이 시즌)", not r.ok, str(r.lines()))
 # ★ 그리고 그 반대쪽도 못 박는다 — 발행하지 않는 리그는 빨간불이 아니다.
-_rd = CV.run({"LCK": []},
-             {"LCK": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
-check("★★ 발행 제외 리그(LCK)의 수집 실패는 빨간불이 아니다 (고칠 것이 없는 경보)",
+# v1.38 — 지금은 뺀 리그가 하나도 없다. **규칙은 지우지 않고** 표만 갈아 끼워
+# 확인한다 — 나중에 리그를 다시 빼면 그날 바로 걸려야 한다.
+import contract as _C38                                        # noqa: E402
+_saved_dis = _C38.DISABLED_LEAGUES
+_C38.DISABLED_LEAGUES = frozenset({League.MLS})
+CV.DISABLED_LEAGUES = _C38.DISABLED_LEAGUES
+_rd = CV.run({"MLS": []},
+             {"MLS": {"at": None, "count": 0, "error": "ratelimited"}}, _CNOW)
+check("★★ 발행 제외 리그의 수집 실패는 빨간불이 아니다 (고칠 것이 없는 경보)",
       _rd.ok and any("발행 제외 리그" in x for x in _rd.lines()), str(_rd.lines()))
 check("  ↳ 그래도 기록은 남는다 (나중에 그 리그를 다시 켤 때 필요하다)",
       len(_rd.lines()) == 1, str(_rd.lines()))
 check("  ↳ 알림에는 개수만 실린다 (본문은 health.json에)",
-      not any("LCK" in x for x in _rd.alert_lines())
+      not any("MLS" in x for x in _rd.alert_lines())
       and any("참고 1건" in x for x in _rd.alert_lines()),
       str(_rd.alert_lines()))
+_C38.DISABLED_LEAGUES = _saved_dis
+CV.DISABLED_LEAGUES = _saved_dis
 
 # 비시즌 리그의 수집 실패 — 알리되 빨간불은 아니다.
 # 이걸 구분 못 하면 8월마다 농구가 울고, 그 소음에 진짜 사고가 묻힌다.
@@ -1120,9 +1125,10 @@ check("경기가 3건 이하면 판정하지 않는다",
       _no_raise(lambda: assert_home_away(_flipped[:3])))
 
 # 표에 없는 리그·구장은 통과 (모르는 것으로 막지 않는다)
-_lck = [mkgame(League.LCK, "T1", "GEN", day="2026-08-29", hh=17 + i) for i in range(5)]
-check("홈구장 표가 없는 리그는 통과 (LCK)",
-      _no_raise(lambda: assert_home_away(_lck)))
+_nov = [mkgame(League.UEL, "AAA", "BBB", day="2026-08-29")]
+_nov[0].venue = "어딘가"
+check("홈구장 표가 없는 리그는 통과 (모르는 것으로 막지 않는다)",
+      _no_raise(lambda: assert_home_away(_nov)))
 
 check("주요 리그에 홈구장 표가 있다 (KBO·NPB·MLB·K리그·V리그)",
       {League.KBO, League.NPB, League.MLB, League.KL1,
@@ -1573,9 +1579,6 @@ check("unknown_team_codes가 목록을 돌려준다",
 _eu = mkgame(League.EPL, "AAA", "BBB", day="2026-08-29", hh=20)
 check("표가 아예 없는 리그는 통과 (유럽 축구)",
       _no_raise(lambda: assert_team_names_cover([_eu])))
-check("표가 있는 리그의 모르는 코드는 차단 (국제 LoL)",
-      _raises(GateError, lambda: assert_team_names_cover(
-          [mkgame(League.INTL_LOL, "AAA", "BBB", day="2026-08-29", hh=20)])))
 
 # ── 17. 긴 팀명이 카드에서 접히지 않는가 ──────────────────────
 # 국내 표기로 바꾸자 '세인트루이스'(6자)·'샌프란시스코'(7자)가 결과 카드에서
@@ -1613,8 +1616,8 @@ check("가장 긴 이름으로 실제 렌더해도 통과",
 # ── 캐시로 버틴 것을 '갓 수집'으로 읽지 않는가 (fix46) ─────────
 #
 # 대표님 채널에 온 알림이 출발점이다:
-#   LCK: 캐시로 버팀(묵은 데이터) 2.4시간 전 스냅샷
-#   INTL_LOL: 캐시로 버팀(묵은 데이터) 1.1시간 전 스냅샷
+#   옛 e스포츠 리그: 캐시로 버팀(묵은 데이터) 2.4시간 전 스냅샷
+#   옛 국제대회: 캐시로 버팀(묵은 데이터) 1.1시간 전 스냅샷
 # 리밋에 걸려 캐시를 돌려준 어댑터도 fn()은 정상으로 끝난다. 그래서
 # ① fetch.json의 at이 '지금'으로 찍혀 24시간 발송 보류가 영원히 안 걸리고
 # ② 성공으로 찍히니 레이트리밋 백오프가 안 걸려 30분마다 다시 두드렸다.
@@ -1625,7 +1628,7 @@ _NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 
 
 def _age(rec, now=_NOW):
-    return T.snapshot_age_seconds("LCK", {"LCK": rec}, now)
+    return T.snapshot_age_seconds("옛 e스포츠 리그", {"옛 e스포츠 리그": rec}, now)
 
 
 check("갓 수집한 스냅샷은 나이가 0에 가깝다",
@@ -1666,7 +1669,7 @@ print("\nstate/health.json — 상태를 볼 수 있는가 (원문은 새지 않
 _HNOW = datetime(2026, 9, 4, 14, 30, tzinfo=timezone.utc)
 _hflog = {
     # 캐시로 버티는 상황을 시험한다. **살아 있는 리그 이름을 쓴다** — 전에는
-    # LCK였는데 2026-09-07에 발행에서 빠지면서 `_jobs()`에 없어져 KeyError가 났다.
+    # 옛 e스포츠 리그였는데 2026-09-07에 발행에서 빠지면서 `_jobs()`에 없어져 KeyError가 났다.
     "NPB": {"at": T._iso(_HNOW), "count": 53, "cache_age": 3.5 * 3600,
             "error": T._RATELIMITED_BY_CACHE, "failed_at": T._iso(_HNOW)},
     "KBO": {"at": T._iso(_HNOW), "count": 348, "error": None},
@@ -1679,7 +1682,7 @@ class _Cov:
     ok = True
 
 
-# **살아 있는 리그로 시험한다.** 전에는 LCK를 썼는데 2026-09-07에 발행에서
+# **살아 있는 리그로 시험한다.** 전에는 옛 e스포츠 리그를 썼는데 2026-09-07에 발행에서
 # 빠지면서 `_jobs()`에 없어져 KeyError가 났다 — 검사가 옳게 잡았다.
 # 시험 대상은 "캐시로 버티는 상황"이지 특정 리그가 아니다.
 _no_raise(lambda: T._write_health(_HNOW, _hflog, ["NPB: 캐시로 버팀 3.5시간"],
@@ -1732,7 +1735,7 @@ check("★ 오류 원문이 새지 않는다 (분류만 남긴다)",
 check("알림 본문도 안 남는다 (줄 수만)",
       "캐시로 버팀" not in _htxt and isinstance(_h["alert_lines"], int), _htxt[:120])
 check("관측이 본 작업을 죽이지 않는다 (기록이 깨져도)",
-      _no_raise(lambda: T._write_health(_HNOW, {"LCK": {"cache_age": "몰라"}},
+      _no_raise(lambda: T._write_health(_HNOW, {"옛 e스포츠 리그": {"cache_age": "몰라"}},
                                         [], [], _Cov())))
 
 

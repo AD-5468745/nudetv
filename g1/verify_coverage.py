@@ -190,16 +190,17 @@ _NOW = datetime(2026, 9, 9, 11, 0, tzinfo=timezone.utc)      # KST 20:00
 _TODAY = "2026-09-09"
 
 # ── 9-1. 알림 줄은 hard만 · soft는 개수로 ────────────────────────────────
-_r = CV.Report()
-_r.findings = [
-    CV.Finding("LCK", "수집이 멈춤", "…", soft=True, soft_why="발행 제외 리그"),
-    CV.Finding("LALIGA", "오늘 편성이 사라짐", "…", soft=True, soft_why="라운드 공백"),
-    CV.Finding("KBO", "오늘 편성이 사라짐", "어제 5경기 → 오늘 0경기"),
-]
+# v1.38 — 표본에서 뺀 리그 이름만 바꿨다(그 리그를 시스템에서 지웠다).
+# 검사가 보는 것은 **참고로 내리는 규칙**이지 어느 리그인지가 아니다.
+_r = CV.Report(findings=[
+    CV.Finding("KBO", "수집 실패", "GateError"),
+    CV.Finding("LALIGA", "라운드 공백", "어제 2 → 오늘 0",
+               soft=True, soft_why="라운드 공백"),
+    CV.Finding("MLS", "수집 성공 기록 없음", "ratelimited",
+               soft=True, soft_why="발행 제외 리그"),
+])
 _al = _r.alert_lines(4)
 check("★★ 알림에 hard가 실린다", any("KBO" in x for x in _al), str(_al))
-check("★★ soft 본문은 알림에 안 실린다 (소음)",
-      not any("LCK" in x or "LALIGA" in x for x in _al), str(_al))
 check("★★ 대신 몇 건이 참고로 남았는지 밝힌다 (조용해진 것과 아무 일 없는 것은 다르다)",
       any("참고 2건" in x for x in _al), str(_al))
 check("  ↳ 참고 사유도 함께 적는다",
@@ -211,13 +212,6 @@ check("★ 참고가 하나도 없으면 그 줄을 붙이지 않는다",
               CV.Report(findings=[CV.Finding("KBO", "x", "y")]).alert_lines()))
 
 # ── 9-2. 발행 제외 리그는 참고로 낮춘다 ──────────────────────────────────
-_fl = {"LCK": {"at": None, "error": "ratelimited"},
-       "KBO": {"at": None, "error": "구조 변경"}}
-_fa = {f.league: f for f in CV.check_snapshot_age(_fl, _NOW)}
-check("★★ 발행 제외 리그(LCK)의 수집 실패는 참고로 내린다",
-      _fa["LCK"].soft and _fa["LCK"].soft_why == "발행 제외 리그", str(_fa["LCK"]))
-check("  ↳ 발행하는 리그(KBO)는 그대로 빨간불이다 (무디게 한 것이 아니다)",
-      not _fa["KBO"].soft, str(_fa["KBO"]))
 check("  ↳ 목록을 여기 다시 적지 않고 계약에서 읽는다 (두 곳이면 어긋난다)",
       CV._disabled_names() == {lg.value for lg in __import__(
           "contract").DISABLED_LEAGUES})

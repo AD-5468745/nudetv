@@ -65,11 +65,8 @@ from adapters.kbl import KblAdapter
 from adapters.kovo import KovoAdapter
 from adapters.kleague import KLeagueAdapter
 from adapters.npb import NpbAdapter
-import adapters.lck as _L
-from adapters.lck import LckAdapter, RateLimited, LCK_TEAM_COUNT
 # 검증은 빨라야 한다. 운영의 긴 재시도(최대 6분)를 그대로 쓰면 점검이 20분이 된다.
 # 리밋이면 캐시로 떨어지고, 캐시도 없으면 SKIP으로 가른다.
-_L._RATELIMIT_WAITS = (20,)
 
 # ── ★ 소스 장애와 **우리 환경 문제**를 가른다 (v1.32, 2026-09-11) ──────────
 #
@@ -150,41 +147,10 @@ if os.environ.get(TOKEN_ENV):
 else:
     skip += 6
     print(f"    SKIP  유럽 6개 대회 — {TOKEN_ENV} 미설정 (대표님 발급 대기)")
-# LCK·국제는 Leaguepedia 시간당 쿼터에 걸릴 수 있다.
+# 옛 e스포츠 리그·국제는 팬 위키 시간당 쿼터에 걸릴 수 있다.
 # 리밋은 '검증 못 함'이지 '깨짐'이 아니므로 SKIP으로 가른다 — 둘을 섞으면
 # 진짜 결함이 리밋 소음에 묻힌다.
 from contract import DISABLED_LEAGUES, league_enabled                  # noqa: E402
-for tag, lg in (("LCK", League.LCK), ("LoL 국제", League.INTL_LOL)):
-    # **발행에서 뺀 리그는 검증도 하지 않는다** (2026-09-07 대표님: "롤은 빼자").
-    # 안 쓰는 소스를 계속 검증하면 그쪽 리밋·묵은 캐시가 빨간불을 켜서
-    # 진짜 결함을 덮는다 — 실제로 "LCK 묵은 '예정' 0건"이 그렇게 실패했다.
-    if not league_enabled(lg):
-        skip += 1
-        print(f"    SKIP  {tag} — 발행 대상에서 제외됨(DISABLED_LEAGUES)")
-        continue
-    a = LckAdapter(lg)
-    try:
-        gs = a.fetch("2026-01-01")
-    except RateLimited:
-        skip += 1
-        print(f"    SKIP  {tag} — Leaguepedia 시간당 쿼터 (캐시도 없음)")
-        continue
-    except (GateError, UnknownStatus) as e:
-        fail += 1
-        print(f"    FAIL  {tag} {type(e).__name__}: {str(e)[:80]}")
-        continue
-    codes = {g.home.team_code for g in gs} | {g.away.team_code for g in gs}
-    age = f" · 캐시 {a.cache_age_seconds/3600:.1f}시간" if a.cache_age_seconds else ""
-    print(f"  [{tag}] {len(gs)}경기 · 자리표시자 {a.skipped_placeholder}건 제외{age}")
-    rep(f"{tag} 경기 1건 이상", len(gs) > 0)
-    if gs:
-        rep(f"{tag} validate·id유일",
-            all(g.validate() is None for g in gs) and len({g.game_id for g in gs}) == len(gs))
-        rep(f"{tag} 묵은 '예정' 0건", not stale_unresolved(gs))
-        if lg is League.LCK:
-            # 팀이 10개를 넘으면 네이밍 스폰서 개명을 놓친 것이다 (한 팀이 두 팀으로 갈림)
-            rep(f"{tag} 팀 {len(codes)}개 == {LCK_TEAM_COUNT}", len(codes) == LCK_TEAM_COUNT,
-                f"별칭 누락 의심: {sorted(codes)}")
 
 if _net_down:
     # 리그 7 + 기록 2 = 9. **절반을 넘으면 우리 쪽**으로 본다.

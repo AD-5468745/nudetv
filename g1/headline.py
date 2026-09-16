@@ -52,7 +52,7 @@ class Headline:
 # 상위 10%가 되는 지점을 쓴다(2026-09-04 측정, `state/games` 종료 경기).
 #   KBO n=100 중앙3 → 90%는 9점 · NPB n=162 중앙3 → 6점
 #   MLB n=33 중앙4 → 7점 · K리그1 n=35 중앙1 → 3점
-#   LCK n=48 — 맵 스코어라 최대가 3이다. 2-0/3-0 완봉만 '완승'이라 부른다.
+#   옛 e스포츠 리그 n=48 — 맵 스코어라 최대가 3이다. 2-0/3-0 완봉만 '완승'이라 부른다.
 # **KBL·V리그는 표본 0건(비시즌)이라 임계를 정할 수 없다 — 규칙을 끈다.**
 # 개막 후 같은 방법으로 측정해서 넣는다. 지어낸 숫자를 넣으면 첫날부터 거짓말이 된다.
 BLOWOUT_MARGIN: dict[League, Optional[int]] = {
@@ -76,8 +76,6 @@ BLOWOUT_MARGIN: dict[League, Optional[int]] = {
     League.EPL: 4, League.LALIGA: 4, League.SERIEA: 4,
     League.BUNDESLIGA: 4, League.LIGUE1: 4,
     League.UCL: 4, League.UEL: 4, League.MLS: 4,
-    League.LCK: 2,          # 맵 스코어: 2-0 또는 3-0
-    League.INTL_LOL: 2,
     League.KBL: None,       # 표본 없음 — 규칙 꺼짐
     League.VLEAGUE_M: None,
     League.VLEAGUE_W: None,

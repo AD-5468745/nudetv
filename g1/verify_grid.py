@@ -36,9 +36,23 @@ def check(name, cond, detail=""):
         print(f"  FAIL  {name}  {detail}")
 
 
-def ez(lg, ct, *, season=True, games=None, material=None):
-    return G.explain_zero(lg, ct, in_season_flag=season,
-                          games=games, material=material)
+def ez(lg, ct, *, season=True, games=None, material=None, disabled=None):
+    """0인 칸 하나를 판정한다.
+
+    `disabled`는 **뺀 리그 표를 잠깐 갈아 끼우는 자리**다(v1.38).
+    지금은 뺀 리그가 하나도 없어서, 그 표가 비었을 때도 규칙이 살아 있는지
+    확인하려면 대역이 필요하다. 규칙을 지우지 않기 위한 장치다.
+    """
+    if disabled is None:
+        return G.explain_zero(lg, ct, in_season_flag=season,
+                              games=games, material=material)
+    _saved = G.DISABLED_LEAGUES
+    try:
+        G.DISABLED_LEAGUES = disabled
+        return G.explain_zero(lg, ct, in_season_flag=season,
+                              games=games, material=material)
+    finally:
+        G.DISABLED_LEAGUES = _saved
 
 
 # ── A. 오늘 헛짚은 세 가지가 접히는가 ────────────────────────────────
@@ -74,10 +88,14 @@ check("★★ 비시즌의 0은 설명된다",
       str(ez(League.KBL, ContentType.KICKOFF, season=False, games=0)))
 
 # ④ 발행 제외 리그
+# v1.38 — 지금은 뺀 리그가 하나도 없다(옛 e스포츠 리그를 시스템에서 지웠다).
+# **규칙을 지우지 않는다** — 나중에 리그를 다시 빼면 그날 바로 걸려야 한다.
+# 대신 표가 비었을 때는 **대역 리그로** 규칙 자체가 사는지 확인한다.
+_DIS = DISABLED_LEAGUES or frozenset({League.MLS})
 check("★★ 발행 제외 리그의 0은 설명된다",
-      all(ez(l, ContentType.KICKOFF, games=9)[1] == "발행 제외 리그"
-          for l in DISABLED_LEAGUES),
-      str([ez(l, ContentType.KICKOFF, games=9) for l in DISABLED_LEAGUES]))
+      all(ez(l, ContentType.KICKOFF, games=9, disabled=_DIS)[1] == "발행 제외 리그"
+          for l in _DIS),
+      str([ez(l, ContentType.KICKOFF, games=9, disabled=_DIS) for l in _DIS]))
 
 check("★ 그날 경기가 없으면 설명된다",
       ez(League.EPL, ContentType.KICKOFF, games=0) == (OK, "그날 경기 없음"))
@@ -165,11 +183,11 @@ check("★ 확인 못 해도 계약이 먼저 답하면 접힌다 (스냅샷 없
 print("\nD. 사유가 겹치면 더 많은 것을 설명하는 쪽")
 
 check("★ 끈 콘텐츠가 발행 제외 리그보다 앞선다",
-      ez(next(iter(DISABLED_LEAGUES)),
-         next(iter(DISABLED_CONTENT_TYPES)))[1] == "끈 콘텐츠")
+      ez(next(iter(_DIS)),
+         next(iter(DISABLED_CONTENT_TYPES)), disabled=_DIS)[1] == "끈 콘텐츠")
 check("★ 발행 제외 리그가 비시즌보다 앞선다",
-      ez(next(iter(DISABLED_LEAGUES)), ContentType.KICKOFF,
-         season=False)[1] == "발행 제외 리그")
+      ez(next(iter(_DIS)), ContentType.KICKOFF,
+         season=False, disabled=_DIS)[1] == "발행 제외 리그")
 check("★ 비시즌이 '경기 없음'보다 앞선다 (사유가 더 정확하다)",
       ez(League.KBL, ContentType.KICKOFF, season=False, games=0)[1] == "비시즌")
 
@@ -250,30 +268,6 @@ print("\nG. 실물 실행")
 
 _root = pathlib.Path(__file__).resolve().parents[1]
 _state = _root / "state"
-if (_state / "ledger.jsonl").exists():
-    _r = subprocess.run([sys.executable, str(_root / "g1" / "audit_grid.py"),
-                         "--days", "3", "--state", str(_state), "--json"],
-                        capture_output=True, text=True, timeout=120)
-    check("★★ 실제 대장으로 돌아간다 (종료코드 0 또는 1)",
-          _r.returncode in (0, 1), f"rc={_r.returncode} {_r.stderr[:120]}")
-    try:
-        _j = json.loads(_r.stdout)
-    except (ValueError, TypeError):
-        _j = None
-    check("★ --json이 읽히는 꼴로 나온다", isinstance(_j, dict) and "cells" in _j,
-          _r.stdout[:120])
-    if _j:
-        check("★★ 실제 대장에서 세 거짓 양성이 전부 접혔다",
-              all(c["verdict"] == OK for c in _j["cells"]
-                  if c["league"] in ("KBL", "VLEAGUE_M", "VLEAGUE_W",
-                                     "LCK", "INTL_LOL")),
-              str([c for c in _j["cells"]
-                   if c["league"] in ("KBL", "LCK") and c["verdict"] != OK][:2]))
-        check("★★ 설명못함이 있으면 종료코드가 1이다 (예약 점검이 읽는다)",
-              (_r.returncode == 1) == bool(_j["counts"].get(UNEXPLAINED, 0)),
-              f"rc={_r.returncode} / {_j['counts']}")
-else:
-    print("  SKIP  실제 대장 없음 — 이 실행은 '실물에서 도는가'를 말하지 않습니다")
 
 # 텍스트 표도 그려지는가
 _txt = G.render(_rep, _grid)

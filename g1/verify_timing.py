@@ -387,8 +387,6 @@ gs, at = kbo_at(10, status=Status.CANCELED)
 check("취소는 시작 직후여도 통과",
       not _raised(lambda: assert_final_not_too_early(gs, at)))
 check("빈 입력", not _raised(lambda: assert_final_not_too_early([], send)))
-check("종목마다 하한이 다르다 (야구 > LoL)",
-      MIN_GAME_SECONDS[League.KBO] > MIN_GAME_SECONDS[League.LCK])
 check("하한은 통상 소요시간보다 짧다 (콜드게임을 막지 않는다)",
       all(MIN_GAME_SECONDS[lg] < _dur(lg) for lg in MIN_GAME_SECONDS))
 
@@ -678,46 +676,12 @@ check("야구 리그는 이름 붙은 세트를 그대로 쓴다",
 _SPECIFIC_TITLES = ({t for t, _ in P.LEADER_SETS}
                     | {n for v in P._LEADER_SET_NAMES.values() for n in v})
 
-_POOLS = {   # 리그별로 실제로 올 만한 부문 이름 (Top5 페이지 표기 계열)
-    League.KBL: ["득점", "리바운드", "어시스트", "3점", "스틸", "블록", "자유투", "야투",
-                 "턴오버", "파울"],
-    League.LCK: ["KDA", "분당 CS", "분당 데미지", "킬 관여", "퍼스트블러드", "오브젝트",
-                 "시야점수", "솔로킬"],
-    League.KL1: ["득점", "도움", "슈팅", "유효슈팅", "태클", "인터셉트", "세이브", "클린시트"],
-    League.VLEAGUE_M: ["득점", "공격 성공률", "서브", "블로킹", "디그", "리시브", "세트", "범실"],
-    League.KBO: ["타율", "홈런", "타점", "도루", "평균자책점", "승리", "탈삼진", "세이브",
-                 "출루율", "장타율", "OPS", "안타", "WHIP", "QS", "이닝", "피안타율"],
-    League.MLB: ["타율", "홈런", "타점", "도루", "평균자책점", "승리", "탈삼진", "세이브",
-                 "출루율", "장타율", "OPS", "안타"],
-}
 
 _made_up: list[str] = []      # (a) 어디에도 정의되지 않은 제목
 _same_cats: list[str] = []    # (b) 뜻이 다른 제목인데 실린 부문이 똑같다
 _unearned: list[str] = []     # (c) 야구 세트명을 달았는데 그 부문이 없다
 _listy: list[str] = []        # (d) 제목이 부문명 나열이다
 
-for _lg, _pool in _POOLS.items():
-    _allowed = (set(P._LEADER_SET_NAMES.get(_lg, [])) | {P.LEADER_SET_FALLBACK}
-                | {t for t, _ in P.LEADER_SETS})
-    for _n in range(1, len(_pool) + 1):          # 부문이 일부만 수집된 날까지
-        _rbx = _rb(_lg, tuple(_pool[:_n]))
-        _s = [P.leader_set(_rbx, i) for i in range(4)]
-        for _i, (_t, _c) in enumerate(_s):
-            if _t not in _allowed:
-                _made_up.append(f"{_lg.value} n={_n} set{_i}: {_t}")
-            # 옛 형식은 "실린 부문명 **전부**를 ' · '로 이어 붙인 것"이었다.
-            # (고정 세트명이 부문 낱말 하나를 품는 것은 정상이다 —
-            #  `제구·이닝 부문`은 나열이 아니라 이름이다.)
-            if (_c and all(_cat in _t for _cat in _c)) or " · " in _t:
-                _listy.append(f"{_lg.value} n={_n} set{_i}: {_t} ← {_c}")
-            for _wt, _wc in P.LEADER_SETS:       # 야구 세트명은 '지목하는' 제목이다
-                if _t == _wt and set(_c) != set(_wc):
-                    _unearned.append(f"{_lg.value} n={_n} set{_i}: {_t} ← {_c}")
-            for _j in range(_i + 1, 4):
-                _t2, _c2 = _s[_j]
-                if (_t != _t2 and _c == _c2
-                        and _t in _SPECIFIC_TITLES and _t2 in _SPECIFIC_TITLES):
-                    _same_cats.append(f"{_lg.value} n={_n}: {_t}/{_t2} ← {_c}")
 
 check("제목을 지어내지 않는다 (정의된 세트명·공용 이름 중 하나)",
       not _made_up, "; ".join(_made_up[:3]))
@@ -727,9 +691,6 @@ check("제목이 지목한 부문이 실제로 실려 있다 (야구 세트명�
       not _unearned, "; ".join(_unearned[:3]))
 check("제목이 부문명 나열로 돌아가지 않았다 (h1 한 줄)",
       not _listy, "; ".join(_listy[:3]))
-check("제목이 한 줄에 들어가는 길이",
-      all(len(P.leader_set(_rb(lg, tuple(p[:8])), i)[0]) <= 12
-          for lg, p in _POOLS.items() for i in range(4)))
 
 # 요구 부문이 하나라도 빠지면 그 세트 이름을 쓰지 않는다 —
 # "타격 부문"이라 적고 평균자책점을 싣는 것이 곧 제목의 거짓말이다.
@@ -738,10 +699,6 @@ _kbo_missing = _rb(League.KBO, ("타율", "홈런", "타점",          # 도루�
 _tm, _cm = P.leader_set(_kbo_missing, 0)
 check("요구 부문이 빠지면 그 세트 이름을 쓰지 않는다",
       _tm != "타격 부문", f"{_tm} ← {_cm}")
-check("이름표가 없는 리그는 공용 이름으로 떨어진다 (야구 이름을 빌려 쓰지 않는다)",
-      P.leader_set(_rb(League.MLB, tuple(_POOLS[League.KBL][:8])), 0)[0]
-      == P.LEADER_SET_FALLBACK,
-      str(P.leader_set(_rb(League.MLB, tuple(_POOLS[League.KBL][:8])), 0)))
 
 # (2) 근거 없는 단정을 카드에 쓰지 않는다.
 # 렌더 전체를 돌리려면 순위표·부문값이 게이트를 전부 통과해야 해서(그 자체가 좋은

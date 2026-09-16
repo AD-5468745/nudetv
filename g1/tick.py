@@ -100,7 +100,7 @@ LOST_ALERT_REPEAT_SECONDS = 3600
 # 15분이면 5분 시계에서 세 틱에 한 번 — 회복은 충분히 빠르고 소스에는 예의가 된다.
 RETRY_AFTER_FAIL_SECONDS = 15 * 60
 # **레이트리밋은 다른 실패와 백오프가 달라야 한다 (v1.11k).**
-# 실측: LCK·국제대회가 Leaguepedia 레이트리밋에 걸린 채 **104시간(4.3일)** 동안
+# 실측: 옛 e스포츠 리그가 팬 위키 레이트리밋에 걸린 채 **104시간(4.3일)** 동안
 # 회복되지 못했고, 그 때문에 커버리지가 계속 빨간불이라 워크플로가
 # 04:58부터 모든 실행을 실패로 끝냈다 — 진짜 새 사고가 그 소음에 묻힌다.
 #
@@ -131,7 +131,7 @@ SLOW_FETCH_SECONDS = 60
 
 # ── 묵은 스냅샷으로 '오늘 경기' 카드를 내지 않는다 (v1.11i) ──────
 #
-# 실측 사고: LCK가 Leaguepedia 레이트리밋에 걸려 **48시간 묵은 캐시**로 카드를
+# 실측 사고: 옛 e스포츠 리그가 팬 위키 레이트리밋에 걸려 **48시간 묵은 캐시**로 카드를
 # 렌더했는데 로그·카드·알림 어디에도 표시가 없었다. 며칠 묵은 데이터로
 # "오늘 경기"를 안내하는 것은 늦는 것이 아니라 **사실 오류**다.
 #
@@ -275,7 +275,7 @@ def _collect_records(now: datetime, notes: list) -> dict:
         # **실패한 소스를 5분마다 다시 때리지 않는다 (Codex 검수 2026-09-04).**
         # 위 제동은 '성공 기록' 기준이라, 한 번도 성공 못한 소스에는 안 걸린다.
         # NPB는 한 수집이 18페이지라 그대로 두면 하루 288번 × 18페이지를 두드려
-        # 차단을 부른다(첫 실행에서 Leaguepedia가 정확히 이렇게 막혔다).
+        # 차단을 부른다(첫 실행에서 팬 위키가 정확히 이렇게 막혔다).
         # 경기 수집이 쓰는 것과 같은 백오프를 건다.
         failed_at = rec.get("failed_at")
         if failed_at:
@@ -549,8 +549,8 @@ def fetch_months(today: datetime) -> tuple[int, list[str]]:
 #
 # **왜 여기 있나 (v1.11i).** 어댑터들은 건너뛴 것·못 푼 것·캐시로 버틴 것을
 # 전부 자기 속성에 적어두는데(`MlbAdapter.skipped_unknown`,
-# `KblAdapter.unresolved`, `LckAdapter.cache_age_seconds`, `KboAdapter.unknown_notes` …)
-# **읽는 곳이 검증 스크립트뿐이었다.** 그래서 LCK가 48시간 묵은 스냅샷으로
+# `KblAdapter.unresolved`, `KboAdapter.unknown_notes` …)
+# **읽는 곳이 검증 스크립트뿐이었다.** 그래서 옛 e스포츠 리그가 48시간 묵은 스냅샷으로
 # 카드를 렌더해도 운영에는 아무 표시가 없었다.
 #
 # 어댑터 담당자가 이 값들을 **공통 속성 하나**로 통일하는 중이라,
@@ -962,31 +962,9 @@ def _jobs() -> dict[str, tuple[League, callable]]:
     # 수집이 돌고, 실패 기록이 쌓이고, 커버리지가 빨간불을 켠다.
     jobs = {n: v for n, v in jobs.items() if league_enabled(v[0])}
 
-    # LCK·국제는 Leaguepedia 쿼터가 빡빡하다.
+    # 옛 e스포츠 리그·국제는 팬 위키 쿼터가 빡빡하다.
     # (2026-09-07 대표님 지시로 발행에서 뺐다 — `DISABLED_LEAGUES`.
     #  아래 등록 자체를 건너뛰므로 수집도 안 한다.)
-    # **운영의 긴 재시도(최대 6분)를 시계에서 그대로 쓰면 틱 하나가 그것만으로 끝난다.**
-    # 시계는 자주 깨어나는 것이 안전장치이므로, 여기서는 한 번만 더 시도하고
-    # 안 되면 캐시로 버틴다(캐시도 없으면 그 리그만 이번 틱을 건너뛴다).
-    try:
-        if not league_enabled(League.LCK):
-            raise _SkipLeague
-        import adapters.lck as _lck
-        from adapters.lck import LckAdapter
-        _lck._RATELIMIT_WAITS = (15,)
-        # since를 '30일 전'처럼 매일 움직이는 값으로 두면 **캐시 키가 매일 바뀌어**
-        # 캐시가 한 번도 안 맞는다. 리밋에 걸린 날 버티라고 만든 캐시가 무용지물이 된다.
-        # 월초로 내려 고정하면 한 달에 한 번만 바뀐다.
-        _s = (today.replace(day=1) - timedelta(days=32)).replace(day=1)
-        since = _s.strftime("%Y-%m-%d")
-        jobs["LCK"] = (League.LCK, lambda: _use(
-            "LCK", LckAdapter(League.LCK), lambda a: a.fetch(since)))
-        jobs["INTL_LOL"] = (League.INTL_LOL, lambda: _use(
-            "INTL_LOL", LckAdapter(League.INTL_LOL), lambda a: a.fetch(since)))
-    except _SkipLeague:
-        pass                                                 # 발행에서 뺀 리그
-    except Exception:                                        # noqa: BLE001
-        pass
 
     # ── 유럽 축구 7개 (v1.15) ─────────────────────────────────
     #
@@ -1735,7 +1713,7 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
         # **실패한 소스를 5분마다 다시 때리지 않는다.**
         # 성공 기록이 없으면 위의 30분 제동이 걸리지 않아, 한 번 막힌 소스를
         # 하루 288번 두드리게 된다. 호출 한도에 걸린 상대에게 그건 차단을 부른다
-        # (첫 실행에서 Leaguepedia가 정확히 이렇게 막혔다).
+        # (첫 실행에서 팬 위키가 정확히 이렇게 막혔다).
         failed_at = rec.get("failed_at")
         if not force and failed_at:
             since_fail = (now - datetime.fromisoformat(failed_at)).total_seconds()
@@ -1755,7 +1733,7 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 기계가 볼 수 있는 근거는 경기장뿐이다: 홈구장이 홈팀과 어긋나면 뒤집힌 것.
             assert_home_away(games)
             # 표에 없는 팀 코드가 오면 카드에 코드가 그대로 찍힌다.
-            # 팀이 바뀌는 일은 드물지 않다(페퍼저축은행 -> SOOP, LCK 네이밍 스폰서).
+            # 팀이 바뀌는 일은 드물지 않다(페퍼저축은행 -> SOOP, 옛 e스포츠 리그 네이밍 스폰서).
             assert_team_names_cover(games)
             # **'종료'라는데 아직 끝났을 리 없는 경기**를 되돌린다.
             # KBO 일정 페이지가 진행 중 경기에도 점수를 채우는 바람에
@@ -1790,7 +1768,7 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             #     (fix44와 같은 부류 — 그때만 계산되는 값에 안전장치를 걸면 안 된다).
             #  ② 성공으로 찍히니 레이트리밋 백오프(6시간)가 안 걸리고 30분마다
             #     다시 두드렸다. **계속 두드리면 쿼터가 회복되지 않는다**(약점 26).
-            #     실제로 LCK가 2.4시간째, 국제 LoL이 1.1시간째 캐시로 버티고 있었다.
+            #     실제로 옛 e스포츠 리그가 2.4시간째, 옛 국제대회이 1.1시간째 캐시로 버티고 있었다.
             _cage = _adapter_health(name)[1]
             if _cage > 0:
                 log[name]["cache_age"] = round(_cage, 1)

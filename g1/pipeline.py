@@ -426,7 +426,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     KBO 하나만 있던 시절엔 `채널|morning|2026-08-29`로 충분했다. 그런데 리그가 9개가 되자
     아홉 리그의 모닝 브리핑이 **전부 같은 키**가 되어, 하나가 나가면 나머지 여덟은
     '이미 보냄'으로 버려졌다. 결과 카드도 똑같았다.
-    켰다면 KBO만 나가고 MLB·NPB·K리그·LCK는 영영 안 나갔을 것이다.
+    켰다면 KBO만 나가고 MLB·NPB·K리그·옛 e스포츠 리그는 영영 안 나갔을 것이다.
     시계를 만들어 리그별로 큐를 돌려보고서야 드러났다 — 검증 215건이 못 잡은 이유는
     큐를 한 리그로만 시험했기 때문이다.
     """
@@ -984,7 +984,6 @@ _LEAGUE_ICON = {
     League.SERIEA: _ICON_FOOT, League.BUNDESLIGA: _ICON_FOOT,
     League.LIGUE1: _ICON_FOOT, League.UCL: _ICON_FOOT,
     League.UEL: _ICON_FOOT, League.MLS: _ICON_FOOT,
-    League.LCK: _ICON_GAME, League.INTL_LOL: _ICON_GAME,
 }
 
 # 야외 종목만 우천취소가 있다. 실내·e스포츠 카드에 '취소 경기' 문구를 쓰면
@@ -1034,8 +1033,8 @@ CARD_ROWS_MAX = 8
 # 정식 명칭은 '남자부'·'국제대회'다. 카드 폭은 실렌더로 확인했고 남는다.
 LEAGUE_LABEL = {
     League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
-    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1", League.LCK: "LCK",
-    League.INTL_LOL: "LoL 국제대회", League.MLB: "MLB", League.NPB: "NPB",
+    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1",
+    League.MLB: "MLB", League.NPB: "NPB",
     League.EPL: "EPL", League.LALIGA: "라리가", League.SERIEA: "세리에A",
     League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "UCL",
     # UCL은 국내에서 그대로 쓰는 약자지만 **UEL은 아니다.** 약자로 맞추면
@@ -1067,10 +1066,10 @@ _POSTSEASON_TAG: dict[str, str] = {
 
 
 # **영문 대회 단계도 알아본다 (v1.11j).**
-# e스포츠·국제대회의 `season_category`는 영문 대회명이라("LCK 2026 Season
+# e스포츠·국제대회의 `season_category`는 영문 대회명이라("옛 e스포츠 리그 2026 Season
 # Playoffs", "MSI 2026") 위 표에 하나도 안 맞고 `season_tag()`가 늘 빈 문자열을 냈다.
-# 결과: LCK 플레이오프 10경기와 MSI 20경기가 **정규시즌과 똑같은 카드**로 나갔고,
-# MSI 결승 "한화생명 3:2 BLG"조차 "LoL 국제대회 1경기 종료"로만 나갔다(실측 E1·E5).
+# 결과: 옛 e스포츠 리그 플레이오프 10경기와 MSI 20경기가 **정규시즌과 똑같은 카드**로 나갔고,
+# MSI 결승 "한화생명 3:2 BLG"조차 "옛 국제대회 1경기 종료"로만 나갔다(실측 E1·E5).
 # 낱말 단위로 훑되 **긴 것부터** 본다("Semifinal"이 "Final"에 먼저 걸리면 안 된다).
 _EN_STAGE_TAG: tuple[tuple[str, str], ...] = (
     ("GRAND FINAL", "결승"), ("THIRD PLACE", "3-4위전"),
@@ -1093,11 +1092,11 @@ def _en_stage(raw: str) -> str:
 
 
 # 단계가 `season_category`가 아니라 `source_key`에 들어 있는 리그.
-# 실측: INTL_LOL은 전 경기가 `season_category="MSI 2026"` 하나뿐이고, 단계는
+# 실측: 옛 국제대회은 전 경기가 `season_category="MSI 2026"` 하나뿐이고, 단계는
 # `source_key`("…_Play-In Day 1_1", "…_Bracket Round 4_1", "…_Finals_1")에 있다.
 # 이 예외는 **e스포츠에만** 연다 — 다른 리그의 source_key는 숫자 ID라
 # 낱말을 훑으면 엉뚱한 것이 걸린다(MLB "823539", NPB "scores-2026-0801-g-db-15").
-_STAGE_IN_SOURCE_KEY = frozenset({League.LCK, League.INTL_LOL})
+_STAGE_IN_SOURCE_KEY = frozenset()
 
 
 def _stage_of(g: Game) -> str:
@@ -1662,10 +1661,10 @@ def render_result(games: list[Game], day: str,
     # "취소 경기는 편성 확정 시 안내"가 야외 리그 결과 카드에 무조건 박혀 있었다.
     # 재편성을 안내하는 콘텐츠도 큐도 발송 경로도 없다 —
     # "예측 투표는 경기 3시간 전"과 같은 계열의 거짓말이다.
-    # 대신 점수의 **단위**를 밝힌다: LCK 0:3이 맵 스코어라는 표시가 없었다.
-    # **'공식'은 공식 소스에서 온 것에만 (v1.11p).** LCK·LoL 국제대회는
-    # 라이엇 공식 API 키를 못 구해 Leaguepedia(팬 위키)를 쓴다 — 공식이 아니다.
-    tk = f"{lgname} " + ("공식 결과" if _is_official(lg) else "경기 결과(Leaguepedia)")
+    # 대신 점수의 **단위**를 밝힌다: 옛 e스포츠 리그 0:3이 맵 스코어라는 표시가 없었다.
+    # **'공식'은 공식 소스에서 온 것에만 (v1.11p).** 옛 e스포츠 리그는
+    # 종목사 공식 API 키를 못 구해 팬 위키(팬 위키)를 쓴다 — 공식이 아니다.
+    tk = f"{lgname} " + ("공식 결과" if _is_official(lg) else "경기 결과(팬 위키)")
     _unit_ko = SCORE_UNIT_FOOTNOTE.get(SCORE_UNIT_BY_LEAGUE.get(lg))
     if _unit_ko:
         tk += f" · {_unit_ko}"
@@ -1778,7 +1777,6 @@ LEAGUE_EMOJI = {
     # **검사 목록에 넣지 않아서** 게이트도 통과시켰다. 검사에 없는 표는
     # 없는 것과 같다 — 그래서 아래 게이트에 이 표를 넣었다.
     League.UEL: "⚽", League.MLS: "⚽",
-    League.LCK: "🎮", League.INTL_LOL: "🎮",
 }
 
 
@@ -1966,7 +1964,7 @@ EXTRA_CSS = """
 .res.lv .n1,.res.lv .n2,.res.lv .s1,.res.lv .s2{color:var(--ink);}
 /* 아직 시작 안 한 경기 — 점수 자리는 비우고 회색으로 낮춘다.
    **가운데 콜론(`.s1::after`)도 지운다.** 안 지우면 "— : —"가 되어 점수처럼 읽힌다
-   (실렌더에서 LCK 예정 경기가 그렇게 나왔다). 취소 행이 `.cx`에서 콜론을 빼는 것과 같다. */
+   (실렌더에서 옛 e스포츠 리그 예정 경기가 그렇게 나왔다). 취소 행이 `.cx`에서 콜론을 빼는 것과 같다. */
 .res.wt .n1,.res.wt .n2,.res.wt .s1,.res.wt .s2{color:var(--lose);}
 .res.wt .s1::after{content:none;}
 .res.wt .s1{padding-right:0;} .res.wt .s2{padding-left:0;}
@@ -2256,8 +2254,6 @@ _LEADER_SET_NAMES: dict[League, list[str]] = {
     League.VLEAGUE_M: ["공격 부문", "수비 부문"],
     League.VLEAGUE_W: ["공격 부문", "수비 부문"],
     League.KL1: ["공격 부문", "수비 부문"],
-    League.LCK: ["개인 지표", "교전 지표"],
-    League.INTL_LOL: ["개인 지표", "교전 지표"],
 }
 LEADER_SET_FALLBACK = "주요 부문"
 
@@ -2813,12 +2809,11 @@ def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
 # 우리에겐 그것을 만들 근거가 없다. 대신 **그날 숫자에서 바로 나오는 사실**
 # (최다 득점 경기 등)만 적는다. 근거가 없으면 패널 자체를 빼는 편이 낫다.
 
-# 리그를 카드에 싣는 순서. **국내 리그 먼저** — 원안 시안도 KBO → LCK → MLB였다.
+# 리그를 카드에 싣는 순서. **국내 리그 먼저** — 원안 시안도 KBO → 옛 e스포츠 리그 → MLB였다.
 # 시간순으로 두면 MLB(한국시각 오전)가 늘 맨 위에 오는데, 한국 채널의 '오늘의 결과'에서
 # 맨 윗자리는 시청자가 오늘 저녁에 본 경기의 자리다.
 NIGHT_LEAGUE_ORDER: tuple[League, ...] = (
     League.KBO, League.KBL, League.VLEAGUE_M, League.VLEAGUE_W, League.KL1,
-    League.LCK, League.INTL_LOL,
     League.MLB, League.NPB,
     League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
     League.LIGUE1, League.UCL,
@@ -2885,7 +2880,7 @@ def _night_allocate(groups: list[tuple[League, list[Game]]],
 
 
 # ── 출처가 '공식'인 리그인가 (v1.11p) ────────────────────────
-# LCK·LoL 국제대회는 라이엇 공식 API 키를 구하지 못해 Leaguepedia(팬 위키)를 쓴다.
+# 옛 e스포츠 리그는 종목사 공식 API 키를 구하지 못해 팬 위키(팬 위키)를 쓴다.
 # 팬 위키를 '공식'이라 부르면 카드가 출처를 속이는 것이다.
 # 나머지 리그는 각 연맹의 공식 API·공식 페이지에서 온다.
 #
@@ -2893,7 +2888,7 @@ def _night_allocate(groups: list[tuple[League, list[Game]]],
 # 오늘 하루에만 이 목록이 두 번 움직였다: 네이버로 갈아타며 넣었고,
 # football-data로 되돌리며 뺐고, 다시 네이버로 확정되며 넣었다.
 # **소스가 바뀔 때마다 이 목록이 같이 움직여야 한다**는 것이 요점이다 —
-# 약점 107: 'LCK 공식 결과'라고 적었는데 실제로는 팬 위키였다.
+# 약점 107: '옛 e스포츠 리그 공식 결과'라고 적었는데 실제로는 팬 위키였다.
 # 소스만 갈아끼우고 이 목록을 잊으면 카드가 출처를 속인다.
 #
 # ⚠️ 2차 소스(football-data)로 전환된 날에는 그 여섯이 **공식이 된다.**
@@ -2901,7 +2896,6 @@ def _night_allocate(groups: list[tuple[League, list[Game]]],
 # 실제보다 겸손하게 나갈 뿐 거짓말은 아니므로 그대로 둔다.
 # (거꾸로였다면, 즉 비공식인데 '공식'이라 적히는 쪽이었다면 못 둔다.)
 UNOFFICIAL_SOURCE_LEAGUES: frozenset = frozenset({
-    League.LCK, League.INTL_LOL,
     League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
     League.LIGUE1, League.UCL, League.UEL, League.MLS,
 })
@@ -2927,12 +2921,10 @@ def _is_official(league: League) -> bool:
 
 # 비공식 소스마다 **무엇을 봤는지**를 적는다.
 # 이 표가 없던 동안 `source_note`는 비공식이면 무조건 "커뮤니티 기록
-# (Leaguepedia)"이라고 답했다 — 그래서 유럽 축구를 비공식으로 옮기자마자
-# 챔피언스리그 출처가 **Leaguepedia(롤 팬 위키)**로 나왔다.
+# (팬 위키)"이라고 답했다 — 그래서 유럽 축구를 비공식으로 옮기자마자
+# 챔피언스리그 출처가 **팬 위키(롤 팬 위키)**로 나왔다.
 # 출처를 밝히려고 만든 함수가 출처를 틀리게 말한 것이다.
 _SOURCE_LABEL: dict = {
-    League.LCK: "커뮤니티 기록(Leaguepedia)",
-    League.INTL_LOL: "커뮤니티 기록(Leaguepedia)",
 }
 _SOURCE_LABEL.update({lg: "비공식 집계" for lg in (
     League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
@@ -3207,7 +3199,7 @@ def render_night_brief(games: list[Game], day: str) -> str:
     _lgtxt = (f"{len(_drawn)}개 리그" if len(_drawn) == len(groups)
               else f"{len(groups)}개 리그 중 {len(_drawn)}개")
     # **'공식'은 공식 소스에서 온 것에만 쓴다 (v1.11p).**
-    # LCK·LoL 국제대회는 라이엇 공식 API 키를 못 구해 Leaguepedia(팬 위키)를 쓴다.
+    # 옛 e스포츠 리그는 종목사 공식 API 키를 못 구해 팬 위키(팬 위키)를 쓴다.
     # 한 장에 섞이는 카드라 하나라도 섞이면 '공식'이라 말할 수 없다.
     _off = "공식 결과" if all(_is_official(lg) for lg in _drawn) else "경기 결과"
     # **여러 단위가 한 장에 섞이는 유일한 카드다 (v1.11p).**
@@ -3271,7 +3263,7 @@ def caption_night_brief(games: list[Game], day: str, *, as_parts: bool = False):
     head = (f"🌙 <b>나이트 브리핑 · {d.month}월 {d.day}일 전 리그 결과 "
             f"{_lead}"
             + (f" ({sub})" if sub else "") + "</b>\n")
-    # 출처는 리그마다 다르다 — LCK 계열은 팬 위키다(v1.11p).
+    # 출처는 리그마다 다르다 — 옛 e스포츠 리그 계열은 팬 위키다(v1.11p).
     _all_off = all(_is_official(lg) for lg, _ in _night_groups(listed)) if listed else True
     tail = f"한국시각 {d.month}.{d.day} 기준 · " + ("공식 결과" if _all_off else "경기 결과")
     # 뺀 경기를 숨기지는 않는다 — 수만 밝힌다.

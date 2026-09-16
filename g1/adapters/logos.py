@@ -119,10 +119,24 @@ def _football_map(league_value: str, day: str) -> dict:
     return out
 
 
+def _norm(x: str) -> str:
+    """대조용 이름 — 공백·가운뎃점을 지운다."""
+    return "".join(str(x or "").split()).replace("·", "")
+
+
 def emblem_url(league_value: str, team_key: str, *, season: str = "",
-               day: str = "") -> str | None:
-    """그 팀의 엠블럼 주소. 모르면 None."""
-    if not LOGOS_ENABLED or not team_key:
+               day: str = "", name: str = "") -> str | None:
+    """그 팀의 엠블럼 주소. 모르면 None.
+
+    **코드가 안 맞을 때 이름으로도 찾는다.** 우리 코드와 소스 코드가 같은
+    리그(KBO)가 있는가 하면, 전혀 다른 리그(K리그: 우리 `K35` ↔ 소스 내부
+    번호)도 있다. 코드만 대조하면 그런 리그는 **전부 로고가 빠진 채** 나가는데
+    오류도 안 나고 회색 원판으로 조용히 대체된다 — 실제로 K리그가 그랬다.
+
+    마지막 수단으로 **품은 이름**까지 본다(소스 `김천 상무` ⊃ 우리 `김천`).
+    한 이름이 여럿에 걸리면 **쓰지 않는다** — 엉뚱한 팀 로고보다 없는 편이 낫다.
+    """
+    if not LOGOS_ENABLED or not (team_key or name):
         return None
     ck = (league_value, season, day)
     if ck not in _url_cache:
@@ -132,7 +146,19 @@ def emblem_url(league_value: str, team_key: str, *, season: str = "",
             _url_cache[ck] = _football_map(league_value, day)
         else:
             _url_cache[ck] = {}
-    return _url_cache[ck].get(str(team_key))
+    table = _url_cache[ck]
+    hit = table.get(str(team_key)) or table.get(str(name))
+    if hit:
+        return hit
+    want = _norm(name) or _norm(team_key)
+    if not want:
+        return None
+    exact = {v for k, v in table.items() if _norm(k) == want}
+    if len(exact) == 1:
+        return exact.pop()
+    part = {v for k, v in table.items()
+            if want and (want in _norm(k) or _norm(k) in want)}
+    return part.pop() if len(part) == 1 else None
 
 
 def data_uri(url: str | None) -> str | None:
@@ -167,10 +193,15 @@ def data_uri(url: str | None) -> str | None:
     return uri
 
 
-def team_logo(league, team, *, season: str = "", day: str = "") -> str | None:
-    """`Game.home`/`Game.away` 를 그대로 받아 data URI를 돌려준다. 없으면 None."""
+def team_logo(league, team, *, season: str = "", day: str = "",
+              name: str = "") -> str | None:
+    """`Game.home`/`Game.away` 를 그대로 받아 data URI를 돌려준다. 없으면 None.
+
+    `name`은 **카드에 찍히는 그 이름**이다. 코드가 소스와 다른 리그에서
+    이것이 유일한 열쇠가 된다.
+    """
     if league is None:
         return None
     code = getattr(team, "team_code", team)
     return data_uri(emblem_url(getattr(league, "value", str(league)), code,
-                               season=season, day=day))
+                               season=season, day=day, name=name))

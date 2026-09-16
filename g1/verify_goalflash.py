@@ -185,7 +185,7 @@ check("축구 리그가 전부 켜져 있다 (9개)", len(_soccer) == 9, str(sor
 check("★★★ 야구·농구·배구는 하나도 안 켜진다",
       not (_soccer & {"KBO", "MLB", "NPB", "KBL", "VLEAGUE_M", "VLEAGUE_W"}),
       str(sorted(_soccer)))
-check("  ↳ 끈 리그(LCK·국제 LoL)도 안 켜진다",
+check("  ↳ 끈 리그(옛 e스포츠 리그)도 안 켜진다",
       not (_soccer & {lg.value for lg in C.DISABLED_LEAGUES}))
 check("  ↳ 표를 손으로 적지 않았다 — 점수 단위가 골인 리그에서 뽑는다",
       _soccer == {lg.value for lg, u in C.SCORE_UNIT_BY_LEAGUE.items()

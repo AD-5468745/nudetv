@@ -47,11 +47,11 @@
            **정확히 같다.** 팀 코드도 우리 코드에서 앞의 'K'만 뗀 형태다(04=제주=K04).
            ESPN은 soccer/kor.1이 **0건**을 돌려준다(2026-08-01~09-02 전 구간) —
            "필드가 있으니 괜찮다"의 반대 사례라 쓰지 않는다.
-· LCK      네이버 e스포츠 `esports-api.game.naver.com/service/v1/schedule/month`
+· 옛 e스포츠 리그      네이버 e스포츠 `esports-api.game.naver.com/service/v1/schedule/month`
            2026-01~09 **189건**. `nameEngAcronym`이 우리 코드와 거의 같다
            (T1·GEN·DK·KT·HLE·NS·BFX·DNS·BRO 그대로, KIWOOM DRX만 KRX↔DRX).
-           **단 보조 수단이다** — 아래 `LCK 한계` 주석 참조.
-           ⚠️ **LCK에는 홈·원정이 없다.** 실측에서 최근 3주 13경기가 13경기 전부
+           **단 보조 수단이다** — 아래 `옛 e스포츠 리그 한계` 주석 참조.
+           ⚠️ **옛 e스포츠 리그에는 홈·원정이 없다.** 실측에서 최근 3주 13경기가 13경기 전부
            '홈·원정 뒤집힘'으로 잡혔다 — 양쪽 소스의 표시 순서가 반대일 뿐이다.
            `NEUTRAL_VENUE_LEAGUES` 주석 참조.
 · 그 외     KBL·V리그·유럽 축구는 대조 소스를 두지 않았다. `PROVIDERS`에 없는 리그는
@@ -108,7 +108,7 @@ from _notices import NoticeMixin
 
 from contract import Game, GateError, League, Status
 
-# 네이버가 돌려주는 시각 문자열에는 tz가 없다. KBO·NPB·K리그1·LCK 전부
+# 네이버가 돌려주는 시각 문자열에는 tz가 없다. KBO·NPB·K리그1·옛 e스포츠 리그 전부
 # UTC+9(KST·JST 동일)라서 한 값으로 읽는다. 이 값은 **더블헤더 순서를 세우는 데만**
 # 쓴다 — 대조 판정은 시각이 아니라 팀·점수·상태로 한다.
 _KST = ZoneInfo("Asia/Seoul")
@@ -185,16 +185,16 @@ class MismatchKind(str, Enum):
 # **홈·원정이 실제로 존재하는 리그에서만 뒤집힘을 따진다.**
 #
 # 처음에는 전 리그에 똑같이 걸었다. 실측에서 바로 걸렸다 —
-# LCK 최근 3주 13경기가 **13경기 전부** '뒤집힘'으로 차단됐다.
-# 원인은 우리 오류가 아니라 **LCK에 홈·원정이 없다는 것**이다. 전 경기가
-# 같은 장소(롤파크)에서 열리고, Leaguepedia의 Team1/Team2와 네이버의
+# 옛 e스포츠 리그 최근 3주 13경기가 **13경기 전부** '뒤집힘'으로 차단됐다.
+# 원인은 우리 오류가 아니라 **옛 e스포츠 리그에 홈·원정이 없다는 것**이다. 전 경기가
+# 같은 장소(롤파크)에서 열리고, 팬 위키의 Team1/Team2와 네이버의
 # home/away는 둘 다 그냥 표시 순서라 서로 반대로 적힌다.
-# 그대로 뒀으면 이 안전장치가 **LCK 결과 카드를 100% 막았을 것이다** —
+# 그대로 뒀으면 이 안전장치가 **옛 e스포츠 리그 결과 카드를 100% 막았을 것이다** —
 # 사고를 막으려고 만든 것이 리그를 침묵시키는, 정확히 피하려던 실패다.
 #
 # 중립 구장 리그는 뒤집힘을 오류로 보지 않고 **외부 점수를 우리 방향에 맞춰 뒤집어**
 # 점수만 비교한다(승패 판정은 방향과 무관하게 살아 있다).
-NEUTRAL_VENUE_LEAGUES = frozenset({League.LCK, League.INTL_LOL})
+NEUTRAL_VENUE_LEAGUES = frozenset()
 
 
 SEVERITY: dict[MismatchKind, Severity] = {
@@ -348,16 +348,10 @@ MLB_TEAMS = {
     "CWS": "CWS", "OAK": "ATH", "WAS": "WSH",
 }
 
-# LCK — 네이버 e스포츠 `nameEngAcronym` → 우리 코드.
+# 옛 e스포츠 리그 — 네이버 e스포츠 `nameEngAcronym` → 우리 코드.
 # 2026시즌 189건에서 관측된 13개 중 10개. 나머지는 일부러 뺀다:
 #   'TBD'                        — 대진 미정 자리표시자
 #   'CJ rolster'·'Samsung Telecom' — leagueId=lck_2026_event(이벤트 매치)
-LCK_TEAMS = {
-    "T1": "T1", "GEN": "GEN", "DK": "DK", "KT": "KT", "HLE": "HLE",
-    "NS": "NS", "BFX": "BFX", "DNS": "DNS", "BRO": "BRO",
-    "KRX": "DRX",   # KIWOOM DRX — 네이밍 스폰서가 붙은 이름. 우리는 DRX 한 코드로 모은다
-    "DRX": "DRX",
-}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -543,7 +537,7 @@ def _espn_time(s) -> Optional[datetime]:
         return None
 
 
-# ── LCK 한계 ────────────────────────────────────────────────────────
+# ── 옛 e스포츠 리그 한계 ────────────────────────────────────────────────────────
 #
 # 네이버 e스포츠는 **월 단위로만** 준다(`schedule/month`). 하루치 요청이 없어
 # 한 달을 받아 그날만 고른다 — 응답이 크지만(2026-09 8건, 8월 40건) 결과 카드를
@@ -551,51 +545,18 @@ def _espn_time(s) -> Optional[datetime]:
 #
 # **관측하지 못한 것**: 2026-01~09 전 구간에서 `matchStatus`는
 # `RESULT` 183 · `BEFORE` 6뿐이었다. **'진행 중' 코드를 한 번도 못 봤다.**
-# 그래서 LCK는 "외부가 종료라고 말할 때의 점수 대조"까지만 신뢰한다.
+# 그래서 옛 e스포츠 리그는 "외부가 종료라고 말할 때의 점수 대조"까지만 신뢰한다.
 # 처음 보는 코드는 UNKNOWN(=대조 불가)으로 두고 운영에 올린다 —
 # 다만 차단 규칙이 `우리 종료 vs 외부가 종료 아님`이라, 그 코드가
 # BEFORE로 오든 처음 보는 값으로 오든 **UNKNOWN만 아니면 걸린다.**
-# UNKNOWN으로 새는 경우가 있을 수 있다는 것이 LCK의 남은 한계다.
-_LCK_STATUS = {
+# UNKNOWN으로 새는 경우가 있을 수 있다는 것이 옛 e스포츠 리그의 남은 한계다.
+_LEGACY_STATUS = {
     "RESULT": RefStatus.FINAL,
     "BEFORE": RefStatus.SCHEDULED,
     "READY": RefStatus.SCHEDULED,
     "STARTED": RefStatus.LIVE,     # 다른 네이버 API의 도메인. e스포츠에서는 미관측.
     "CANCEL": RefStatus.OTHER,
 }
-
-
-def _fetch_naver_lck(league: League, day: str, **kw) -> list[RefGame]:
-    url = ("https://esports-api.game.naver.com/service/v1/schedule/month"
-           f"?month={day[:7]}&topLeagueId=lck")
-    data = _get_json(url, label=f"네이버 e스포츠 LCK {day[:7]}", **kw)
-    if "content" not in data:
-        raise RefUnavailable(f"네이버 LCK {day[:7]}: 응답에 content 없음 "
-                             f"(키: {sorted(data)[:5]})")
-    out: list[RefGame] = []
-    for row in data.get("content") or []:
-        start = _epoch_ms_to_utc(row.get("startDate"))
-        if start is None:
-            continue
-        # LCK의 하루 = KST 캘린더 날짜 (lck.py의 sports_day와 같은 기준)
-        kst_day = start.astimezone(_KST).strftime("%Y-%m-%d")
-        if kst_day != day:
-            continue
-        code = str(row.get("matchStatus") or "").strip().upper()
-        st = _LCK_STATUS.get(code, RefStatus.UNKNOWN)
-        ht, at = row.get("homeTeam") or {}, row.get("awayTeam") or {}
-        ha = str(ht.get("nameEngAcronym") or "")
-        aa = str(at.get("nameEngAcronym") or "")
-        out.append(RefGame(
-            league=league, sports_day=kst_day,
-            home_code=LCK_TEAMS.get(ha), away_code=LCK_TEAMS.get(aa),
-            home_score=_naver_int(row.get("homeScore")),
-            away_score=_naver_int(row.get("awayScore")),
-            status=st, raw_status=code,
-            raw_home=ha or str(ht.get("nameEng") or "?"),
-            raw_away=aa or str(at.get("nameEng") or "?"),
-            start_utc=start, source="네이버e스포츠"))
-    return out
 
 
 def _epoch_ms_to_utc(v) -> Optional[datetime]:
@@ -614,7 +575,6 @@ PROVIDERS: dict[League, Callable[..., list[RefGame]]] = {
     League.KL1: lambda day, **kw: _fetch_naver(
         League.KL1, day, "kfootball", "kleague", KL1_TEAMS, **kw),
     League.MLB: lambda day, **kw: _fetch_espn_mlb(League.MLB, day, **kw),
-    League.LCK: lambda day, **kw: _fetch_naver_lck(League.LCK, day, **kw),
 }
 
 SOURCE_NAME: dict[League, str] = {
@@ -622,7 +582,6 @@ SOURCE_NAME: dict[League, str] = {
     League.NPB: "네이버 스포츠(npb)",
     League.KL1: "네이버 스포츠(kleague)",
     League.MLB: "ESPN(mlb)",
-    League.LCK: "네이버 e스포츠(lck)",
 }
 
 
@@ -710,7 +669,7 @@ class ScoreReference(NoticeMixin):
 
     `NoticeMixin`을 쓴다 — 대조하지 못한 것·매핑 못 한 팀·죽은 소스가
     조용히 사라지면 이 안전장치는 '항상 통과'로 굳는다.
-    (LCK가 48시간 묵은 캐시로 렌더하던 그 사고의 재발 경로다.)
+    (옛 e스포츠 리그가 48시간 묵은 캐시로 렌더하던 그 사고의 재발 경로다.)
     """
 
     def __init__(self, *, cache_dir: Optional[pathlib.Path] = None,
@@ -952,7 +911,7 @@ class ScoreReference(NoticeMixin):
 
         # 홈·원정 뒤집힘 — 점수보다 먼저 본다. 뒤집힌 채로 점수를 비교하면
         # '점수 불일치'로 보고돼 원인이 가려진다.
-        # 중립 구장 리그(LCK 등)는 방향이 표시 순서일 뿐이므로 맞춰서 읽는다.
+        # 중립 구장 리그(옛 e스포츠 리그 등)는 방향이 표시 순서일 뿐이므로 맞춰서 읽는다.
         their_home, their_away = r.home_score, r.away_score
         if r.home_code != g.home.team_code:
             if g.league not in NEUTRAL_VENUE_LEAGUES:

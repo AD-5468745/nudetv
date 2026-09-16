@@ -34,8 +34,8 @@ BOX  = Border(left=thin, right=thin, top=thin, bottom=thin)
 
 LEAGUE_KO = {
  "KBO":"KBO 리그(야구)", "KBL":"KBL(농구)", "VLEAGUE_M":"V리그 남자부",
- "VLEAGUE_W":"V리그 여자부", "KL1":"K리그1(축구)", "LCK":"LCK(롤)",
- "INTL_LOL":"롤 국제대회(MSI·월즈)", "MLB":"MLB(미국야구)", "NPB":"NPB(일본야구)",
+ "VLEAGUE_W":"V리그 여자부", "KL1":"K리그1(축구)", "옛 e스포츠 리그":"옛 e스포츠 리그(롤)",
+ "옛 국제대회":"롤 국제대회(MSI·월즈)", "MLB":"MLB(미국야구)", "NPB":"NPB(일본야구)",
  "EPL":"프리미어리그", "LALIGA":"라리가", "SERIEA":"세리에A",
  "BUNDESLIGA":"분데스리가", "LIGUE1":"리그1", "UCL":"챔피언스리그",
  "UEL":"유로파리그", "MLS":"MLS(미국축구)"}
@@ -50,8 +50,8 @@ assert not _missing, (
     f"LEAGUE_KO에 빠진 리그가 있습니다: {_missing} — "
     "계약에 리그를 추가하면 이 표도 같은 커밋에서 채웁니다")
 
-LEAGUE_SEASON = {"KBO":"2026","MLB":"2026","NPB":"2026","KL1":"2026","LCK":"2026",
- "INTL_LOL":"2026","MLS":"2026"}
+LEAGUE_SEASON = {"KBO":"2026","MLB":"2026","NPB":"2026","KL1":"2026","옛 e스포츠 리그":"2026",
+ "옛 국제대회":"2026","MLS":"2026"}
 # 지금 실제로 수집·발행하는 리그 = 계약이 정한다. 손으로 적지 않는다
 # (예전에는 {"KBO"} 하나가 박혀 있어 시트가 "KBO만 준비됨"이라고 계속 말했다).
 IMPLEMENTED = {lg.value for lg in C.League} - {lg.value for lg in C.DISABLED_LEAGUES}

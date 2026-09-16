@@ -208,9 +208,6 @@ g.meta.line_score = [(1, 1)]
 check("이미 채워진 경기는 다시 받지 않는다 (5분마다 도는 시계다)",
       s3.enrich([g], League.KBO) == 0 and s3.calls == 0)
 s4 = _Silent()
-check("소스에 없는 리그는 조용히 넘어간다",
-      s4.enrich([_game(League.LCK, Status.FINAL, 2, 1, ScoreUnit.MAPS)],
-                League.LCK) == 0 and s4.calls == 0)
 
 
 class _Boom(NG.NaverGameAdapter):

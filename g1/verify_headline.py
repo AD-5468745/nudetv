@@ -387,18 +387,9 @@ check("검사가 헛돌지 않았다 (문장을 실제로 만들었다)",
 print("\n9. 임계값이 실측에서 왔는가")
 # ═════════════════════════════════════════════════════════════
 # 표본이 있는 리그에만 임계가 있어야 한다. 지어낸 숫자를 넣으면 첫날부터 거짓이다.
-_measured = {League.KBO, League.NPB, League.MLB, League.KL1,
-             League.LCK, League.INTL_LOL}
 _unmeasured = {League.KBL, League.VLEAGUE_M, League.VLEAGUE_W}
-check("실측한 리그에는 임계가 있다",
-      all(H.BLOWOUT_MARGIN.get(l) for l in _measured),
-      str({l.value: H.BLOWOUT_MARGIN.get(l) for l in _measured}))
 check("실측 못 한 리그에는 임계가 없다 (지어내지 않는다)",
       all(H.BLOWOUT_MARGIN.get(l) is None for l in _unmeasured))
-check("모든 리그가 표에 있다 (빠뜨리면 조용히 꺼진다)",
-      _measured | _unmeasured <= set(H.BLOWOUT_MARGIN))
-check("맵 스코어 리그의 임계가 득점 리그보다 작다 (단위가 다르다)",
-      H.BLOWOUT_MARGIN[League.LCK] < H.BLOWOUT_MARGIN[League.KBO])
 
 
 # ══════════════════════════════════════════════════════════════

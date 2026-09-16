@@ -39,8 +39,6 @@ class League(str, Enum):
     VLEAGUE_M = "VLEAGUE_M"
     VLEAGUE_W = "VLEAGUE_W"
     KL1 = "KL1"                      # 보류: 미래 일정 소스 없음
-    LCK = "LCK"                      # 보류: 라이엇 공식 API 미검증
-    INTL_LOL = "INTL_LOL"
     MLB = "MLB"
     NPB = "NPB"
     EPL = "EPL"
@@ -72,7 +70,6 @@ SCORE_UNIT_BY_LEAGUE: dict[League, ScoreUnit] = {
     League.KBO: ScoreUnit.RUNS, League.MLB: ScoreUnit.RUNS, League.NPB: ScoreUnit.RUNS,
     League.KBL: ScoreUnit.POINTS,
     League.VLEAGUE_M: ScoreUnit.SETS, League.VLEAGUE_W: ScoreUnit.SETS,
-    League.LCK: ScoreUnit.MAPS, League.INTL_LOL: ScoreUnit.MAPS,
     League.KL1: ScoreUnit.GOALS, League.EPL: ScoreUnit.GOALS,
     League.LALIGA: ScoreUnit.GOALS, League.SERIEA: ScoreUnit.GOALS,
     League.BUNDESLIGA: ScoreUnit.GOALS, League.LIGUE1: ScoreUnit.GOALS,
@@ -94,7 +91,6 @@ SEASON_SPAN_YEAR = re.compile(r"^\d{4}-\d{2}$")
 SEASON_FORMAT_BY_LEAGUE: dict[League, re.Pattern] = {
     League.KBO: SEASON_SINGLE_YEAR, League.MLB: SEASON_SINGLE_YEAR,
     League.NPB: SEASON_SINGLE_YEAR, League.KL1: SEASON_SINGLE_YEAR,
-    League.LCK: SEASON_SINGLE_YEAR, League.INTL_LOL: SEASON_SINGLE_YEAR,
     League.KBL: SEASON_SPAN_YEAR, League.VLEAGUE_M: SEASON_SPAN_YEAR,
     League.VLEAGUE_W: SEASON_SPAN_YEAR, League.EPL: SEASON_SPAN_YEAR,
     League.LALIGA: SEASON_SPAN_YEAR, League.SERIEA: SEASON_SPAN_YEAR,
@@ -131,8 +127,6 @@ CARD_THEME_BY_LEAGUE: dict[League, str] = {
     # 해외·e스포츠
     League.MLB: CARD_THEME_DARK,
     League.NPB: CARD_THEME_DARK,
-    League.LCK: CARD_THEME_DARK,
-    League.INTL_LOL: CARD_THEME_DARK,
     # 국내 전통 스포츠
     League.KBO: CARD_THEME_PAPER,
     League.KL1: CARD_THEME_PAPER,
@@ -167,7 +161,7 @@ def card_theme(league: Optional[League]) -> str:
 
 assert set(CARD_THEME_BY_LEAGUE) >= {
     League.KBO, League.MLB, League.NPB, League.KBL, League.KL1,
-    League.VLEAGUE_M, League.VLEAGUE_W, League.LCK, League.INTL_LOL}, (
+    League.VLEAGUE_M, League.VLEAGUE_W}, (
     "지금 발행하는 리그 중 카드 테마가 빠진 것이 있습니다")
 
 
@@ -234,7 +228,7 @@ def stale_grace_for(league: "League") -> int:
 # 감시의 목적은 "리그가 조용히 사라진 것"을 잡는 것인데, 비시즌의 0건까지 경보로 올리면
 # 8월마다 농구·배구가 경보를 띄우고 그 소음에 진짜 사고가 묻힌다.
 # 반대로 이 표가 없으면 "시즌 중인데 0건"을 정상으로 넘긴다 —
-# NPB 취소 0건, Leaguepedia 0건이 그렇게 지나갈 뻔했다.
+# NPB 취소 0건, 위키 소스 0건이 그렇게 지나갈 뻔했다.
 #
 # 플레이오프·시범경기를 넉넉히 포함한다. 좁게 잡으면 진짜 경기를 비시즌으로 오해한다.
 SEASON_MONTHS: dict[League, frozenset[int]] = {
@@ -245,11 +239,9 @@ SEASON_MONTHS: dict[League, frozenset[int]] = {
     League.KBL:       frozenset({10, 11, 12, 1, 2, 3, 4, 5}),
     League.VLEAGUE_M: frozenset({10, 11, 12, 1, 2, 3, 4}),
     League.VLEAGUE_W: frozenset({10, 11, 12, 1, 2, 3, 4}),
-    League.LCK:       frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}),
-    # 국제 LoL은 리그가 아니라 **두 대회**다(MSI 4~7월 · 롤드컵 9~11월).
-    # LCK와 같은 달로 넓게 잡아두면 8월·12월에 "시즌 중인데 경기 0건"이 매일 울고,
+    # 옛 국제대회은 리그가 아니라 **두 대회**다(MSI 4~7월 · 롤드컵 9~11월).
+    # 옛 e스포츠 리그와 같은 달로 넓게 잡아두면 8월·12월에 "시즌 중인데 경기 0건"이 매일 울고,
     # 그 소음에 진짜 사고가 묻힌다. 대회가 실제로 열리는 달만 시즌으로 본다.
-    League.INTL_LOL:  frozenset({4, 5, 6, 7, 9, 10, 11}),
     League.EPL:       frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.LALIGA:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.SERIEA:    frozenset({8, 9, 10, 11, 12, 1, 2, 3, 4, 5}),
@@ -261,7 +253,7 @@ SEASON_MONTHS: dict[League, frozenset[int]] = {
     #   유로파리그   7월 0 · 8월 0 · 9월 18 … 5월 5 · 6월 0
     # 어제 여기에 12달을 다 적어 두었던 것은 **짐작이었다.** 그대로 두면
     # 6~8월 석 달 내내 "시즌 중인데 경기가 0건"이 매일 울고, 그 소음에
-    # 진짜 사고가 묻힌다(바로 위 국제 LoL에서 이미 겪은 것과 같은 실수다).
+    # 진짜 사고가 묻힌다(바로 위 옛 국제대회에서 이미 겪은 것과 같은 실수다).
     League.UCL:       frozenset({9, 10, 11, 12, 1, 2, 3, 4, 5}),
     League.UEL:       frozenset({9, 10, 11, 12, 1, 2, 3, 4, 5}),
     # MLS는 **북반구 여름 리그**다(2~11월). 유럽과 정반대라 같은 값을 쓰면
@@ -394,14 +386,8 @@ STATUS_MAP: dict[League, dict[str, Status]] = {
         "1e": Status.LIVE, "2e": Status.LIVE, "3e": Status.LIVE, "4e": Status.LIVE,
         "": Status.SCHEDULED,
     },
-    # LCK — 라이엇 공식 API. 연기·취소 전용 상태값 없음(일정 이동으로 처리)
-    League.LCK: {
-        "unstarted": Status.SCHEDULED,
-        "inprogress": Status.LIVE,
-        "completed": Status.FINAL,
-    },
+    # 옛 e스포츠 리그 — 종목사 공식 API. 연기·취소 전용 상태값 없음(일정 이동으로 처리)
 }
-STATUS_MAP[League.INTL_LOL] = STATUS_MAP[League.LCK]
 
 # K리그 `1S12`(전반 12분) 처럼 접두 + 숫자인 진행중 코드
 KL_LIVE_PREFIXES = ("1s", "2s", "3s", "4s")
@@ -428,7 +414,7 @@ KBO_RELAY_DONE = "리뷰"
 KBO_RELAY_PREVIEW = "프리뷰"
 
 # ★ 연기·취소를 상태값으로 감지할 수 없는 리그 — 스냅샷 diff가 유일한 수단
-DIFF_ONLY_CANCELLATION = frozenset({League.KL1, League.LCK, League.INTL_LOL})
+DIFF_ONLY_CANCELLATION = frozenset({League.KL1})
 
 # KBL 시즌 카테고리 화이트리스트 (실측 확정)
 # 🔴 블랙리스트("D로 시작하면 제외")였다면 PO·CP·AS·EA가 정규시즌과 섞여 발송됐다
@@ -465,8 +451,6 @@ COVERAGE_TOLERANCE = 0               # 한 건이라도 어긋나면 DM
 
 # 1차 실패 시 자동 전환할 2차 소스. 없는 리그는 명시적으로 None — 있는 척하지 않는다.
 SOURCE_FALLBACK: dict[League, Optional[str]] = {
-    League.LCK:        "leaguepedia_cargoquery",   # + 라이엇 키 재추출 루틴
-    League.INTL_LOL:   "leaguepedia_cargoquery",
     League.KBO:        "playwright_html",          # ASMX 실패 시 기존 HTML 경로
     League.KL1:        "recent_match_result",      # 결과 전용(일정 없음)
     League.MLB: None, League.NPB: None, League.KBL: None,
@@ -480,7 +464,7 @@ SOURCE_FALLBACK: dict[League, Optional[str]] = {
 NORMAL_SILENCE_HOURS: dict[League, int] = {
     League.KBO: 30, League.MLB: 30, League.NPB: 30,
     League.KBL: 48, League.VLEAGUE_M: 72, League.VLEAGUE_W: 72,
-    League.KL1: 96, League.LCK: 96, League.INTL_LOL: 96,
+    League.KL1: 96,
     League.EPL: 96, League.LALIGA: 96, League.SERIEA: 96,
     League.BUNDESLIGA: 96,
     League.LIGUE1: 96,
@@ -1501,7 +1485,7 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 렌더는 "한 경기라도 끝났으면" 카드를 만들므로, 앞창을 열어 두면 5경기 중
     # 1경기만 끝난 시점에 카드가 나가고 **나머지 4경기는 영영 빠진다**(멱등키가
     # 재발송을 막는다). 실제로 앞창을 90분으로 넓히자마자 드라이런에서
-    # 마감 1시간 전 LCK 결과 카드가 처리 대상에 들어왔다.
+    # 마감 1시간 전 결과 카드가 처리 대상에 들어왔다.
     # 유예가 6시간이라 창은 그것만으로 충분하다 — 앞창은 필요 없다.
     ContentType.LEAGUE_RESULT: 0,
     # **★ 순위표만은 앞창이 0이면 안 된다 (v1.11n — 실제로 한 장도 못 나갔다).**
@@ -2788,8 +2772,6 @@ LEAGUE_COLORS: dict[League, tuple[str, str]] = {
     League.KL1:        ("#00695a", "#c9f0e4"),
     League.VLEAGUE_M:  ("#00657a", "#cceef5"),
     League.VLEAGUE_W:  ("#a02a80", "#fcd9f0"),
-    League.LCK:        ("#5b34c4", "#e2dbfc"),
-    League.INTL_LOL:   ("#5b34c4", "#e2dbfc"),
     League.EPL:        ("#5c2fb8", "#e7dcfa"),
     League.LALIGA:     ("#b02246", "#ffd8e2"),
     League.SERIEA:     ("#14549e", "#d4e6fc"),
@@ -2862,8 +2844,6 @@ LEAGUE_ACCENT_DARK: dict = {
     League.UCL:        "#A78BFA",   # 255° 보라
     League.EPL:        "#D08BFF",   # 276° 자보라
     League.NPB:        "#FF7BC8",   # 325° 분홍
-    League.LCK:        "#8B7BFF",   # 발행에서 뺐지만 표는 남긴다(되돌리기 한 줄)
-    League.INTL_LOL:   "#8B7BFF",
 }
 
 # 밝은 카드(paper 테마)는 새 팔레트가 필요 없다 — `LEAGUE_COLORS`의 잉크색이
@@ -3050,15 +3030,15 @@ BURST_AUTO_RELEASE_S = 1800
 BURST_CANARY_OBSERVE_S = 300     # v1.9: 해제 시 전량 재개 금지 — 1건만 내보내고 관찰
 BURST_MAX_AUTO_RELEASES = 3      # v1.9: 3회 이상이면 수동 해제 전용
 
-# ── 발행에서 뺀 리그 (2026-09-07 대표님 지시: "롤은 빼자") ──────────
+# ── 발행에서 뺀 리그 ────────────────────────────────────────────
 #
 # **수집기·팀표·색은 그대로 남긴다.** 지우지 않는 이유:
 #   ① 되돌리기가 이 한 줄이어야 한다 — 코드를 지우면 되살릴 때 다시 만든다.
 #   ② 이미 쌓인 스냅샷·대장이 이 리그를 참조한다. 표에서 빼면 카드가 코드를 찍는다.
 # 대신 **수집·큐·감시에서 통째로 빠진다** — 켜 두고 안 쓰면 레이트리밋 경고가
-# 매일 올라와 진짜 고장을 덮는다(약점 112·113). 실제로 LCK는 22.5시간째
+# 매일 올라와 진짜 고장을 덮는다(약점 112·113). 실제로 한 리그는 22.5시간째
 # 캐시로 버티며 커버리지 빨간불을 켜고 있었다.
-DISABLED_LEAGUES: frozenset = frozenset({League.LCK, League.INTL_LOL})
+DISABLED_LEAGUES: frozenset = frozenset()
 
 
 def league_enabled(league: "League") -> bool:
@@ -3079,7 +3059,7 @@ def league_enabled(league: "League") -> bool:
 # **400은 어디서 왔나 (실측 기반 계산, 2026-09-07).**
 # 지금 켜진 9개 리그의 하루 최대 경기 수:
 #   MLB 18(더블헤더 포함) · NPB 6 · KBO 5 · K리그1 6 · KBL 3 ·
-#   V리그 남 2 · V리그 여 2 · LCK 3 · LoL 국제 3  = 48경기
+#   V리그 남 2 · V리그 여 2  = 42경기
 # 경기별 2장(킥오프·속보) = 96 + 리그 카드(9리그 × 모닝·시간표·요약 = 27)
 #   + 순위표 2 + 부문 1 + 분석 2 + 나이트 1 = **약 129장/일**
 # 유럽 6개 대회를 켜면 주말에 최대 56경기가 더해져 약 250장이 된다.
@@ -3343,8 +3323,6 @@ GAME_DURATION_SECONDS: dict[League, int] = {
     League.KBL: int(2.5 * 3600),        # 농구 — 연장 포함
     League.VLEAGUE_M: int(2.5 * 3600),  # 배구 — 5세트 풀
     League.VLEAGUE_W: int(2.5 * 3600),
-    League.LCK: int(4.0 * 3600),        # LoL — BO3/BO5 한 매치
-    League.INTL_LOL: int(4.0 * 3600),
 }
 DEFAULT_GAME_DURATION_SECONDS = int(4.0 * 3600)   # 모르는 리그는 넉넉한 쪽
 
@@ -3383,7 +3361,6 @@ MIN_GAME_SECONDS: dict[League, int] = {
     League.LIGUE1: 5400, League.UCL: 5400, League.UEL: 5400,
     League.MLS: 5400,
     League.KBL: 4500, League.VLEAGUE_M: 3000, League.VLEAGUE_W: 3000,
-    League.LCK: 1800, League.INTL_LOL: 1800,                       # LoL 1세트 30분
 }
 DEFAULT_MIN_GAME_SECONDS = 1800
 
@@ -3434,7 +3411,7 @@ def demote_impossible_finals(games: "list[Game]",
     한 경기 때문에 리그 전체가 침묵하는 것은 원래 막으려던 사고보다 나쁘다.
     여기서는 **그 경기만** 진행 중으로 되돌리고, 사람에게는 경고로 알린다.
 
-    이 한 함수가 KBO·NPB·V리그·LCK를 동시에 덮는다. 어느 소스가
+    이 한 함수가 KBO·NPB·V리그를 동시에 덮는다. 어느 소스가
     "점수가 있으니 끝났다"고 잘못 말해도 카드에는 결과로 실리지 않는다.
     (돌려주는 목록은 원본을 바꾸지 않은 새 리스트다.)
     """
@@ -3873,27 +3850,16 @@ TEAM_NAMES: dict[League, dict[str, str]] = {
         "LAD": "LA다저스", "SD": "샌디에이고", "SF": "샌프란시스코", "ARI": "애리조나",
         "COL": "콜로라도",
     },
-    # LCK — 표시명은 **중계에서 쓰는 공식 약어**다.
+    # 옛 e스포츠 리그 — 표시명은 **중계에서 쓰는 공식 약어**다.
     # 소스 원문('Hanwha Life Esports')을 그대로 쓰면 카드에서 세 줄로 접혀 행이 깨진다
     # (2026-08-28 육안 점검에서 확인). 다른 리그가 '한화'·'두산' 두 글자인 것과 같은 이유로
-    # 짧은 표기를 쓴다. 지어낸 이름이 아니라 LCK 중계 자막의 표준 약어다.
+    # 짧은 표기를 쓴다. 지어낸 이름이 아니라 옛 e스포츠 리그 중계 자막의 표준 약어다.
     # 'Kiwoom DRX'와 'DRX', 'HANJIN BRION'과 'BRION'은 네이밍 스폰서가 붙기 전후의
-    # 같은 팀이라 한 코드로 모은다(어댑터의 LCK_TEAMS 참조).
-    League.LCK: {
-        "T1": "T1", "GEN": "젠지", "DK": "디플러스 기아", "KT": "KT",
-        "HLE": "한화생명", "NS": "농심", "BFX": "BNK", "DNS": "DN",
-        "DRX": "DRX", "BRO": "브리온",
-    },
-    # LoL 국제대회(MSI·Worlds)는 참가팀이 해마다 바뀐다. 고정 표를 둘 수 없어
+    # 같은 팀이라 한 코드로 모은다(어댑터의 옛 리그 팀표 참조).
+    # 옛 국제대회(MSI·Worlds)는 참가팀이 해마다 바뀐다. 고정 표를 둘 수 없어
     # 2026 MSI에서 실제로 관측된 팀만 적어둔다. 미등록 코드는 team_name()이
     # 코드를 그대로 보여주므로 카드가 죽지는 않는다.
     # 여기도 카드 폭에 맞는 짧은 표기를 쓴다.
-    League.INTL_LOL: {
-        "T1": "T1", "HANWHALIFEES": "한화생명", "G2ESPORTS": "G2",
-        "TEAMLIQUID": "TL", "BILIBILIGAMI": "BLG", "TOPESPORTS": "TES",
-        "KARMINECORP": "KC", "FURIA": "FURIA", "DEEPCROSSGAM": "DCG",
-        "TEAMSECRETWH": "TSW", "LYON2024AMER": "Lyon",
-    },
 }
 
 # 카드 한 행에 들어가는 팀 이름의 길이 상한.
@@ -3998,7 +3964,7 @@ def unknown_team_codes(games: "list[Game]") -> "list[tuple[League, str]]":
     for g in games:
         tbl = TEAM_NAMES.get(g.league)
         if not tbl:
-            continue                       # 표가 아예 없는 리그(국제 LoL 등)는 판정하지 않는다
+            continue                       # 표가 아예 없는 리그(옛 국제대회 등)는 판정하지 않는다
         for ref in (g.home, g.away):
             if ref.team_code not in tbl:
                 out.add((g.league, ref.team_code))
@@ -4058,7 +4024,7 @@ def assert_team_names_cover(games: "list[Game]") -> None:
     **왜 게이트가 필요한가.** 표에 없는 코드는 `team_name()`이 코드를 그대로
     돌려주므로 카드에 'K27'이나 'SOOP' 같은 것이 찍힌다. 오류도 경고도 없이,
     시청자만 이상한 이름을 본다. 팀이 바뀌는 일은 드물지 않다 —
-    페퍼저축은행은 2026년 SOOP에 인수됐고, LCK는 네이밍 스폰서가 붙으면
+    페퍼저축은행은 2026년 SOOP에 인수됐고, 일부 구단은 네이밍 스폰서가 붙으면
     시즌 중에도 이름이 바뀐다.
 
     수집 단계에서 막으면 그 리그만 이번 틱을 건너뛰고, 다음 틱에 다시 시도한다.
@@ -4410,7 +4376,6 @@ REGULAR_SEASON_GAMES: dict[League, Optional[int]] = {
     League.KL1: 38, League.EPL: 38, League.LALIGA: 38, League.SERIEA: 38,
     League.BUNDESLIGA: 34, League.LIGUE1: 34,
     League.UCL: None, League.UEL: None, League.MLS: None,
-    League.LCK: None, League.INTL_LOL: None,
 }
 
 # 리그별 팀 수 — 순위표 완전성 검사용. 한 팀이라도 빠지면 게이트가 막는다.
@@ -4420,7 +4385,6 @@ LEAGUE_TEAM_COUNT: dict[League, Optional[int]] = {
     League.KL1: 12, League.EPL: 20, League.LALIGA: 20, League.SERIEA: 20,
     League.BUNDESLIGA: 18, League.LIGUE1: 18,
     League.UCL: None, League.UEL: None, League.MLS: None,
-    League.LCK: None, League.INTL_LOL: None,
 }
 
 
