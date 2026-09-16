@@ -210,6 +210,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ALERT_CHAT_ID: ${{ secrets.ALERT_CHAT_ID }}
+          # v1.39 — 채널에 연결한 **토론 그룹**. 비어 있으면 세부 카드가
+          # 지금까지처럼 채널로 나간다(기능이 통째로 잠든다).
+          DISCUSSION_CHAT_ID: ${{ secrets.DISCUSSION_CHAT_ID }}
           FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
           NUDETV_STATE: ${{ github.workspace }}/state
           WORKER_ID: gha-${{ github.run_id }}
