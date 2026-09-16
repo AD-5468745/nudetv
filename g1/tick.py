@@ -80,6 +80,21 @@ LEDGER_MARK = ROOT / "ledger_mark.json"
 # 일정은 자주 안 바뀌므로 30분이면 충분하다. 단 경기 중에는 결과가 바뀌므로 짧게 본다.
 FETCH_EVERY_SECONDS = 30 * 60
 FETCH_EVERY_LIVE_SECONDS = 10 * 60      # 그 리그에 오늘 경기가 있으면
+# ── **지금 공을 차고 있는 리그는 매 틱 본다** (v1.39) ──────────────
+#
+# 대표님 지적(2026-09-17): *"골득점, 경기종료 반영되서 메세지 발송하는
+# 타이밍도 너무 늦고"*.
+#
+# 원인은 발송이 아니라 **수집**이었다. '오늘 경기가 있다'만 보고 10분 제동을
+# 걸어, 골이 들어가도 최대 10분 뒤에야 우리가 그 사실을 본다. 거기에 시계
+# 주기(5분)가 더해져 **최악 15분**이 된다 — 그 사이 구독자는 다른 데서 본다.
+#
+# '오늘 경기가 있다'와 '지금 하고 있다'는 다르다. 후자일 때만 매 틱 긁는다:
+# 하루 대부분은 경기가 없거나 끝나 있으므로 소스 부담은 거의 안 는다.
+FETCH_EVERY_PLAYING_SECONDS = 0         # 지금 진행 중이면 제동 없음
+# 시작 직전·직후도 '진행 중'으로 친다 — 킥오프 순간과 종료 직후가 가장 급하다.
+PLAYING_MARGIN_BEFORE_S = 15 * 60
+PLAYING_MARGIN_AFTER_S = 4 * 3600
 # 기록(순위·부문)은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
 # NPB는 한 수집이 18페이지·22.9초라 제동이 없으면 하루 288회를 긁는다.
 RECORD_FETCH_EVERY_SECONDS = 30 * 60
@@ -1715,7 +1730,21 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
         last = rec.get("at")
         prev = _load_games(name)
         has_today = any(g.sports_day == today for g in prev)
-        every = FETCH_EVERY_LIVE_SECONDS if has_today else FETCH_EVERY_SECONDS
+        # **지금 하고 있는 경기가 있는가** — 있으면 제동을 푼다(v1.39).
+        playing = False
+        for g in prev:
+            if g.is_terminal:
+                continue
+            try:
+                lead = (g.start_utc - now).total_seconds()
+            except Exception:                            # noqa: BLE001
+                continue
+            if -PLAYING_MARGIN_AFTER_S <= lead <= PLAYING_MARGIN_BEFORE_S:
+                playing = True
+                break
+        every = (FETCH_EVERY_PLAYING_SECONDS if playing
+                 else FETCH_EVERY_LIVE_SECONDS if has_today
+                 else FETCH_EVERY_SECONDS)
         if not force and last:
             age = (now - datetime.fromisoformat(last)).total_seconds()
             if age < every:

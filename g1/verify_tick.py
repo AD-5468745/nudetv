@@ -2807,6 +2807,22 @@ check("★★ (변이) 이름표만 보면 바뀐 이름표는 못 찾는다 —
       == C.game_identity({"sports_day": _ID_DAY, "home": "HAN", "away": "HIR"}),
       "두 대조가 같은 답을 내면 이 검사는 아무것도 안 지킨다")
 
+# ══════════════════════════════════════════════════════════════
+print("\n수집 제동 — 지금 하고 있는 경기는 매 틱 본다 (v1.39)")
+# ══════════════════════════════════════════════════════════════
+# 대표님 지적: 골·종료가 너무 늦게 나간다. 원인은 발송이 아니라 **수집**이었다.
+check("★★ 진행 중이면 제동이 없다", T.FETCH_EVERY_PLAYING_SECONDS == 0)
+check("  ↳ 오늘 경기만 있으면 10분", T.FETCH_EVERY_LIVE_SECONDS == 600)
+check("  ↳ 경기가 없으면 30분 (소스 부담을 지키는 자리)",
+      T.FETCH_EVERY_SECONDS == 1800)
+check("★★ 시작 직전도 진행 중으로 친다 (킥오프 순간이 가장 급하다)",
+      T.PLAYING_MARGIN_BEFORE_S >= 10 * 60)
+check("★★ 종료 직후도 진행 중으로 친다 (결과를 늦게 보면 소용없다)",
+      T.PLAYING_MARGIN_AFTER_S >= 3 * 3600)
+check("★★ 세 단계가 서로 다르다 (같으면 나눈 뜻이 없다)",
+      len({T.FETCH_EVERY_PLAYING_SECONDS, T.FETCH_EVERY_LIVE_SECONDS,
+           T.FETCH_EVERY_SECONDS}) == 3)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
