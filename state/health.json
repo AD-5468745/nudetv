@@ -1,15 +1,15 @@
 {
- "at": "2026-09-16T04:28:04.217225+00:00",
+ "at": "2026-09-16T04:33:50.928016+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-16T04:22:00.434072+00:00",
+   "at": "2026-09-16T04:33:50.928016+00:00",
    "count": 238,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "MLB": {
    "at": "2026-09-16T04:28:04.217225+00:00",
    "count": 94,
-   "stale_hours": 0.0,
+   "stale_hours": 0.1,
    "finals_utc": [
     "01:01",
     "01:13",
@@ -30,67 +30,67 @@
   "KBL": {
    "at": "2026-09-16T04:09:20.215000+00:00",
    "count": 0,
-   "stale_hours": 0.3
+   "stale_hours": 0.4
   },
   "VLEAGUE_M": {
    "at": "2026-09-16T04:09:20.215000+00:00",
    "count": 135,
-   "stale_hours": 0.3
+   "stale_hours": 0.4
   },
   "VLEAGUE_W": {
    "at": "2026-09-16T04:09:20.215000+00:00",
    "count": 135,
-   "stale_hours": 0.3
+   "stale_hours": 0.4
   },
   "KL1": {
    "at": "2026-09-16T04:09:20.215000+00:00",
    "count": 60,
-   "stale_hours": 0.3
+   "stale_hours": 0.4
   },
   "NPB": {
    "at": "2026-09-16T04:28:04.217225+00:00",
    "count": 289,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "EPL": {
    "at": "2026-09-16T04:22:00.434072+00:00",
    "count": 15,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LALIGA": {
    "at": "2026-09-16T04:28:04.217225+00:00",
    "count": 26,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "SERIEA": {
    "at": "2026-09-16T04:22:00.434072+00:00",
    "count": 18,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "BUNDESLIGA": {
    "at": "2026-09-16T04:15:38.550045+00:00",
    "count": 12,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LIGUE1": {
    "at": "2026-09-16T04:15:38.550045+00:00",
    "count": 17,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UCL": {
    "at": "2026-09-16T04:22:00.434072+00:00",
    "count": 54,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UEL": {
    "at": "2026-09-16T04:09:20.215000+00:00",
    "count": 54,
-   "stale_hours": 0.3
+   "stale_hours": 0.4
   },
   "MLS": {
    "at": "2026-09-16T04:15:38.550045+00:00",
    "count": 4,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   }
  },
  "korean_players": {
@@ -100,12 +100,12 @@
  },
  "alert_lines": 0,
  "lost_lines": 0,
- "status_lines": 12,
+ "status_lines": 10,
  "lost_kinds": [],
  "stale_blocked": [],
  "coverage_ok": false,
  "coverage_findings": [
-  "[INTL_LOL] (발행 제외 리그 — 참고) 수집이 멈춤 — 마지막 성공 215.4시간 전 · ratelimited — 캐시로 버팀(새 데이터를 못 받음)",
+  "[INTL_LOL] (발행 제외 리그 — 참고) 수집이 멈춤 — 마지막 성공 215.5시간 전 · ratelimited — 캐시로 버팀(새 데이터를 못 받음)",
   "[LCK] (발행 제외 리그 — 참고) 수집 성공 기록 없음 — 마지막 오류: Leaguepedia: ratelimited — You've exceeded your rate limit. Please wait some tim",
   "[EPL] (라운드 공백 — 참고) 오늘 편성이 사라짐 — 어제 1경기 → 오늘 0경기 · 앞으로 10경기 편성됨",
   "[KL1] (라운드 공백 — 참고) 오늘 편성이 사라짐 — 평소 이 요일 1.2경기 → 오늘 0경기 · 앞으로 7경기 편성됨",
