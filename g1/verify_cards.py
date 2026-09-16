@@ -1090,5 +1090,73 @@ check("★★ (변이) 원문을 그대로 쓰면 한자가 카드에 남는다 
 check("  ↳ 검출기는 태그·CSS를 세지 않는다 (독자가 보는 텍스트만 본다)",
       _fs('<style>font-family:"Noto Sans CJK KR"</style><b>LG 5:3 두산</b>') == [])
 
+# ══════════════════════════════════════════════════════════════
+# 9. 구단색 점 · 해시태그 (v1.36 — 2026-09-17)
+# ══════════════════════════════════════════════════════════════
+print("\n9. 구단색 점과 해시태그")
+import contract as _CTv36                                       # noqa: E402
+
+# ── 배경색이 두 곳에 적혀 있다. 어긋나면 대비 계산이 **거짓말**이 된다 ──
+check("★★ 테마 배경색 표가 카드와 일치한다 (어긋나면 대비 검사가 거짓말)",
+      all(_CTv36.THEME_BG.get(k) == v["bg"] for k, v in C5.THEMES.items()),
+      f"{_CTv36.THEME_BG} vs {{k: v['bg'] for k, v in C5.THEMES.items()}}")
+
+try:
+    _CTv36.assert_team_colors(); _tc_ok = True
+except Exception as _e:                                         # noqa: BLE001
+    _tc_ok = False
+check("구단색이 두 테마 모두에서 대비 4.5를 넘는다", _tc_ok)
+
+# ── 점이 실제로 카드에 찍히는가 — **표만 있고 안 쓰면 없는 것과 같다** ──
+_dot_html = C5.body_scoreboard(GAMES[:1], KBO)
+check("★ 결과 행에 구단색 점이 찍힌다", 'class="td' in _dot_html, _dot_html[:90])
+check("★ 순위표에도 찍힌다", 'class="td' in C5.body_standings(STAND, KBO))
+check("★ 예고 목록에도 찍힌다", 'class="td' in C5.body_schedule(GAMES[:1], KBO))
+
+# ── 색을 모르는 리그는 **조용히 아무 색이나 쓰지 않는다** ──
+check("★★ 표에 없는 리그는 점이 없다 (엉뚱한 색을 뒤집어쓰지 않는다)",
+      C5.team_dot(League.MLB, _Ref("BOS")) == "",
+      C5.team_dot(League.MLB, _Ref("BOS")))
+check("  ↳ 표에 없는 팀 코드도 마찬가지", C5.team_dot(KBO, _Ref("ZZZ")) == "")
+
+# ── 점을 넣어도 **게이트가 눈이 멀지 않아야 한다** (이 판에서 실제로 났던 일) ──
+# audit ③잘림·⑤작은글자는 `children.length === 0`인 잎 노드만 본다.
+# 팀 이름이 잎에서 벗어나면 그 칸은 검사에서 통째로 빠진다.
+import re as _re36                                              # noqa: E402
+for _nm36, _h36 in (("결과 행", _dot_html),
+                    ("순위표", C5.body_standings(STAND, KBO)),
+                    ("예고 목록", C5.body_schedule(GAMES[:1], KBO))):
+    _leafless = _re36.search(r'<(span|div)[^>]*>\s*<i class="td[^"]*"[^>]*></i>\s*[^<\s]',
+                             _h36)
+    check(f"★★ {_nm36}: 팀 이름이 잎 노드 안에 남는다 (게이트가 그 칸을 본다)",
+          _leafless is None, (_leafless.group(0)[:60] if _leafless else ""))
+
+# ── 해시태그 ──
+_tg = C5.hashtags(kind="result", league=KBO, teams=["삼성", "두산"])
+check("해시태그가 리그·종류·팀 순서로 나온다",
+      _tg == ["#KBO", "#경기결과", "#삼성", "#두산"], str(_tg))
+check("★ 태그에 공백·특수문자가 없다 (텔레그램이 태그로 안 읽는다)",
+      all(_re36.fullmatch(r"#[0-9A-Za-z가-힣]+", t) for t in
+          C5.hashtags(kind="morning", league=League.VLEAGUE_M)),
+      str(C5.hashtags(kind="morning", league=League.VLEAGUE_M)))
+check("★ 숫자로 시작하는 태그는 버린다 (텔레그램이 태그로 안 읽는다)",
+      C5._tag("1군") == "" and C5._tag("KBO") == "#KBO")
+check("리그를 모르는 카드는 종류 태그만 단다",
+      C5.hashtags(kind="night", league=None) == ["#나이트브리핑"])
+
+_cp = C5.caption(kind="result", league=KBO, head=_head, date_label="9.4", tags=_tg)
+check("★ 태그는 **첫 파트 끝**에만 붙는다", _cp[0].rstrip().endswith("#두산"), _cp[0][-40:])
+check("  ↳ 캡션 상한을 넘지 않는다", len(_cp[0]) <= C5.CAPTION_MAX)
+
+# **넘치면 자르지 않고 버린다** — 잘린 태그는 없는 태그보다 나쁘다.
+_big = C5.caption(kind="leaders", league=KBO, head=_head, date_label="9.4",
+                  extra_lines=[f"아주 긴 줄 {i} " + "가" * 60 for i in range(3)],
+                  extra_title="그 밖의 부문 1위", tags=["#" + "가" * 1200])
+check("★★ 태그가 안 들어가면 **자르지 않고 버린다** (가짜 태그를 만들지 않는다)",
+      all("#" + "가" * 1200 not in x for x in _big)
+      and all(len(x) <= C5.FOLLOW_MAX for x in _big))
+check("  ↳ 태그 줄만 떼어내는 자가 있다 (검사가 태그를 본문으로 세지 않게)",
+      C5.strip_tag_line("머리줄\n둘째 줄\n\n#KBO #경기결과") == "머리줄\n둘째 줄")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

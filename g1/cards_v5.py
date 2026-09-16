@@ -26,13 +26,14 @@
 from __future__ import annotations
 
 import html as _html
+import re
 from datetime import datetime
 from typing import Optional
 
 from contract import (fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
                       Status, StreakKind, TEAM_NAMES, card_theme, league_accent,
                       venue_name, cancel_reason_text, is_readable_ko,
-                      goal_clock, goal_sort_key)
+                      goal_clock, goal_sort_key, team_accent)
 
 from headline import Headline
 
@@ -343,6 +344,24 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .hi{{display:inline-flex;width:22px;height:22px;margin-left:11px;
   vertical-align:-2px;color:{th['faint']};opacity:.85}}
 .hi>svg{{width:100%;height:100%}}
+/* ── 구단색 점 (v1.36, 2026-09-17) ────────────────────────────
+   대표님: *"시각적으로 보기 좋은 채널컨텐츠를 완성"*.
+   팀을 가리키는 시각 신호가 글자밖에 없어 결과판과 순위표가 같은 표로
+   읽혔다. 점은 **팀명에 붙어 다니는 보조 신호**다 — 색만으로 팀을
+   구분시키지 않는다(KBO에만 빨강 계열이 셋이다).
+   고정 상자를 잎 노드로 두면 접힘 게이트가 높이를 접힘으로 읽으므로
+   (약점 153) 홈 배지와 같은 방식으로 inline-flex + 고정 크기를 쓴다. */
+.td{{display:inline-flex;width:16px;height:16px;border-radius:50%;
+  flex:none;vertical-align:1px}}
+/* 큰 이름(48px)이 쓰는 판. 같은 16px를 쓰면 점이 **먼지처럼** 보인다. */
+.td.big{{width:24px;height:24px;vertical-align:3px}}
+.td.big.l{{margin-right:16px}}
+.td.big.r{{margin-left:16px}}
+.td.l{{margin-right:11px}}
+.td.r{{margin-left:11px}}
+/* 진 팀·취소된 경기에서도 색을 빼지 않고 낮춘다 — 점은 승패가 아니라
+   '어느 팀인가'를 말한다(홈 배지와 같은 규칙). */
+.dim .td{{opacity:.45}}
 .sc{{font-size:44px;font-weight:800;letter-spacing:-.03em;text-align:center;
   color:{th['ink']}}}
 .sc i{{font-style:normal;color:{th['faint']};padding:0 12px;font-weight:500}}
@@ -560,6 +579,24 @@ HOME_BADGE_TEXT = "홈"
 HOME_BADGE_STYLE = "dot"
 
 
+def team_dot(league: Optional[League], team, *, side: str = "l",
+             big: bool = False) -> str:
+    """팀명에 붙는 구단색 점. 색을 모르는 팀은 **빈 문자열**(점이 없다).
+
+    `side`는 점이 이름의 어느 쪽에 붙느냐다 — 결과판은 점수를 사이에 두고
+    양쪽이 마주 보므로 원정은 오른쪽(`r`), 홈은 왼쪽(`l`)에 붙는다.
+
+    색은 `contract.team_accent()`가 카드 테마에 맞춰 계산한다. 여기서
+    테마를 다시 판정하지 않는다 — 두 곳에서 정하면 반드시 어긋난다(약점 104).
+    """
+    code = getattr(team, "team_code", team)
+    color = team_accent(league, code, card_theme(league))
+    if not color:
+        return ""
+    _sz = " big" if big else ""
+    return f'<i class="td{_sz} {side}" style="background:{color}"></i>'
+
+
 def home_badge() -> str:
     """홈팀 뒤에 붙는 표시. **모양을 한 곳에서만 만든다.**
 
@@ -622,8 +659,10 @@ def body_schedule(games: list, league: League, *, with_venue: bool = True,
         out.append(
             f'<div class="li" style="grid-template-columns:{cols}">{lead}'
             f'<span class="t1">{esc(times[i] if times else _kst(g.start_utc))}</span>'
-            f'<span class="{cls}"><b class="tn">{esc(_nm(league, g.away))} '
-            f'{vs_mark()} {esc(_nm(league, g.home))}{mark}</b>'
+            f'<span class="{cls}">{team_dot(league, g.away, side="l")}'
+            f'<b class="tn">{esc(_nm(league, g.away))} '
+            f'{vs_mark()} </b>{team_dot(league, g.home, side="l")}'
+            f'<b class="tn">{esc(_nm(league, g.home))}{mark}</b>'
             f'{home_badge()}</span>{tail}</div>')
     return "".join(out)
 
@@ -675,13 +714,16 @@ def body_scoreboard(games: list, league: League, *,
                     else ("70px 1fr 280px 1fr" if numbered else "110px 1fr 280px 1fr"))
         out.append(_score_row(away_name=_nm(league, g.away),
                               home_name=_nm(league, g.home),
-                              mid=mid, lc=lc, rc=rc, cols=cols, lead=lead))
+                              mid=mid, lc=lc, rc=rc, cols=cols, lead=lead,
+                              away_dot=team_dot(league, g.away, side="r"),
+                              home_dot=team_dot(league, g.home, side="l")))
     return "".join(out)
 
 
 def _score_row(*, away_name: str, home_name: str, mid: str,
                lc: str = "t2", rc: str = "t2",
-               cols: str = "1fr 300px 1fr", lead: str = "") -> str:
+               cols: str = "1fr 300px 1fr", lead: str = "",
+               away_dot: str = "", home_dot: str = "") -> str:
     """`원정 — 가운데 — 홈` 한 줄. **결과판과 득점 속보가 같은 줄을 쓴다.**
 
     v1.35에서 떼어냈다. 득점 속보 카드(`body_goal`)가 같은 줄을 그리는데,
@@ -689,15 +731,17 @@ def _score_row(*, away_name: str, home_name: str, mid: str,
     난다(약점 45: 두 곳에서 각자 만들면 반드시 어긋난다).
     """
     return (f'<div class="li" style="grid-template-columns:{cols}">{lead}'
-            f'<span class="{lc}" style="text-align:right">{esc(away_name)}</span>'
-            f'{mid}<span class="{rc}">'
+            f'<span class="{lc}" style="text-align:right">'
+            f'<b class="tn">{esc(away_name)}</b>{away_dot}</span>'
+            f'{mid}<span class="{rc}">{home_dot}'
             f'<b class="tn">{"@ " if HOME_BADGE_STYLE == "at" else ""}'
             f'{esc(home_name)}</b>{home_badge()}</span></div>')
 
 
 def body_goal(*, away_name: str, home_name: str,
               away_score: int, home_score: int, events: list,
-              league: "League | None" = None) -> str:
+              league: "League | None" = None,
+              away_dot: str = "", home_dot: str = "") -> str:
     """경기 중 득점 속보 본문 (v1.35) — **지금 점수 + 그때까지의 골.**
 
     `events`는 `body_timeline`과 같은 꼴이되 **이 골까지만** 담는다. 뒤에
@@ -710,7 +754,8 @@ def body_goal(*, away_name: str, home_name: str,
     mid = f'<span class="sc">{a} <i>:</i> {h}</span>'
     row = _score_row(away_name=away_name, home_name=home_name, mid=mid,
                      lc=("t2" if a > h else "t2 dim"),
-                     rc=("t2" if h > a else "t2 dim"))
+                     rc=("t2" if h > a else "t2 dim"),
+                     away_dot=away_dot, home_dot=home_dot)
     return row + body_timeline(away_name=away_name, home_name=home_name,
                                events=events, league=league,
                                show_header=False)
@@ -779,7 +824,9 @@ def _standings_rows(rows: list, league: League, cols: str,
         out.append(
             f'<div class="li" style="grid-template-columns:{cols}">'
             f'<span class="rk{" lead-rank" if s.rank <= 2 else ""}">{s.rank}</span>'
-            f'<span class="t1" style="font-size:29px">{esc(_nm(league, s.team_code))}</span>'
+            f'<span class="t1" style="font-size:29px">'
+            f'{team_dot(league, s.team_code, side="l")}'
+            f'<b class="tn">{esc(_nm(league, s.team_code))}</b></span>'
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(rec)}</span>'
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(s.pct)}</span>'
             f'<span class="t2" style="text-align:right;font-size:27px">{esc(gb)}</span>'
@@ -807,7 +854,8 @@ def body_leaders(leaders: dict, league: League, categories: list[str]) -> str:
 
 
 def body_matchup(*, away_name: str, home_name: str, kst: str,
-                 venue: str = "", note: str = "", local: str = "") -> str:
+                 venue: str = "", note: str = "", local: str = "",
+                 away_dot: str = "", home_dot: str = "") -> str:
     """한 경기짜리 카드의 본문 — **킥오프 알림** (v1.14).
 
     경기가 하나뿐이니 표가 아니라 **그 경기 자체**를 크게 보여준다.
@@ -822,9 +870,10 @@ def body_matchup(*, away_name: str, home_name: str, kst: str,
         f'<div class="bar"><span class="k">{esc(k)}</span>'
         f'<span class="v">{esc(v)}</span></div>'
         for k, v in (("경기장", venue), ("", note)) if v)
-    return (f'<div class="duo"><div><div class="n">{esc(away_name)}</div>'
+    return (f'<div class="duo"><div><div class="n">{away_dot}'
+            f'<b class="tn">{esc(away_name)}</b></div>'
             f'<div class="p">원정</div></div><div class="x">VS</div>'
-            f'<div><div class="n r">{esc(home_name)}</div>'
+            f'<div><div class="n r"><b class="tn">{esc(home_name)}</b>{home_dot}</div>'
             f'<div class="p r">홈</div></div></div>'
             f'<div class="bar"><span class="k">시작</span>'
             f'<span class="v">{when}</span></div>' + tail)
@@ -851,12 +900,14 @@ def body_gameinfo(*, kst: str, local: str = "", venue: str = "",
 
 
 def body_compare(rows: list[tuple], away_name: str, home_name: str,
-                 away_sub: str, home_sub: str, footer: tuple | None = None) -> str:
+                 away_sub: str, home_sub: str, footer: tuple | None = None,
+                 *, away_dot: str = "", home_dot: str = "") -> str:
     """분석 — 좌우 대비. `rows`는 (왼값, 이름, 오른값, 어느쪽이_앞서나) 이다.
     `앞서나`는 'l' | 'r' | '' — **비기면 아무 쪽도 강조하지 않는다.**"""
-    body = [f'<div class="duo"><div><div class="n">{esc(away_name)}</div>'
+    body = [f'<div class="duo"><div><div class="n">{away_dot}'
+            f'<b class="tn">{esc(away_name)}</b></div>'
             f'<div class="p">{esc(away_sub)}</div></div><div class="x">VS</div>'
-            f'<div><div class="n r">{esc(home_name)}</div>'
+            f'<div><div class="n r"><b class="tn">{esc(home_name)}</b>{home_dot}</div>'
             f'<div class="p r">{esc(home_sub)}</div></div></div>']
     for left, key, right, better in rows:
         lc = "v r on" if better == "l" else "v r"
@@ -1131,7 +1182,10 @@ CELL_MIN_PX = 46              # 이보다 좁으면 두 자리 수가 접힌다
 BIG_CELL_MIN = 4              # 이 값 이상인 칸을 강조한다(야구 한 이닝 4점)
 
 
-def _name_cell(name: str) -> str:
+DOT_COL_PX = 27               # 구단색 점 16px + 오른쪽 여백 11px
+
+
+def _name_cell(name: str, dot: str = "") -> str:
     """팀명 칸 — **글자 수가 아니라 폭으로 정한다**(약점 63).
 
     한글은 글자당 폰트 크기만큼, 영문·숫자·공백은 그 절반 남짓을 쓴다.
@@ -1139,10 +1193,16 @@ def _name_cell(name: str) -> str:
     여기서 몰래 자르면 '페퍼저축은헹' 사고가 그대로 되풀이된다.
     """
     units = sum(1.0 if ord(c) > 0x1100 else 0.55 for c in name)
+    # **점이 먹는 폭을 먼저 뺀다.** 안 빼면 점을 넣은 날부터 긴 팀명이 칸을
+    # 넘고, 그건 '페퍼저축은헹' 사고와 같은 얼굴이다(약점 63).
+    budget = NAME_COL_PX - 8 - (DOT_COL_PX if dot else 0)
     fs = NAME_FS_MAX
-    while fs > NAME_FS_MIN and units * fs > NAME_COL_PX - 8:
+    while fs > NAME_FS_MIN and units * fs > budget:
         fs -= 1
-    return f'<span class="nm" style="font-size:{fs}px">{esc(name)}</span>'
+    # 글자는 **자기 잎 노드**에 담는다 — 점을 형제로 두면 이 칸이 잎이 아니게 되어
+    # 잘림·작은글자 게이트가 통째로 건너뛴다(v1.36에서 실제로 그랬다).
+    return (f'<span class="nm" style="font-size:{fs}px">{dot}'
+            f'<b class="tn">{esc(name)}</b></span>')
 
 
 def _cells(vals, *, highlight: bool) -> str:
@@ -1158,7 +1218,7 @@ def _cells(vals, *, highlight: bool) -> str:
 
 
 def body_periods(*, labels: list, away_name: str, home_name: str,
-                 away: list, home: list,
+                 away: list, home: list, away_dot: str = "", home_dot: str = "",
                  total_labels: Optional[list] = None,
                  away_totals: Optional[list] = None,
                  home_totals: Optional[list] = None,
@@ -1185,11 +1245,11 @@ def body_periods(*, labels: list, away_name: str, home_name: str,
             f"구간을 줄이거나 팀명 칸을 좁혀야 합니다.")
     cols = f"{NAME_COL_PX}px repeat({n}, 1fr)" if n else f"{NAME_COL_PX}px"
 
-    def row(name, vals, totals, win):
+    def row(name, vals, totals, win, dot=""):
         tot = "".join('<span class="tot">%s</span>' % esc(v) for v in totals)
         cls = "fg fr win" if win else "fg fr"
         return (f'<div class="{cls}" style="grid-template-columns:{cols}">'
-                f'{_name_cell(name)}'
+                f'{_name_cell(name, dot)}'
                 f'{_cells(vals, highlight=highlight)}{tot}</div>')
 
     a_sum = away_totals[0] if away_totals else sum(v for v in away if v)
@@ -1198,8 +1258,8 @@ def body_periods(*, labels: list, away_name: str, home_name: str,
     head = (f'<div class="fg fh" style="grid-template-columns:{cols}">'
             f'<span class="nm"></span>{cells}</div>')
     return ('<div class="fw">' + head
-            + row(away_name, away, away_totals, a_sum > h_sum)
-            + row(home_name, home, home_totals, h_sum > a_sum) + '</div>')
+            + row(away_name, away, away_totals, a_sum > h_sum, away_dot)
+            + row(home_name, home, home_totals, h_sum > a_sum, home_dot) + '</div>')
 
 
 def body_timeline(*, away_name: str, home_name: str, events: list,
@@ -1356,9 +1416,21 @@ _MEASURE_JS = """() => {
   //    실측: 팀명 칸 178px에 '페퍼저축은행'(6자)이 '페퍼저축은헹'으로 잘려 나갔고
   //    접힘·겹침·이탈·폰트 검사 넷이 전부 통과했다. 높이도 정상, 카드 안에도 있고,
   //    폰트도 크다 — 잘린 것만 아무도 안 봤다(약점 62·92의 새 얼굴).
+  //    v1.36: **잎 노드만 보면 눈이 먼다.** 팀명 옆에 구단색 점을 붙이자
+  //    `.nm`이 잎이 아니게 됐고, 칸을 150px로 좁히는 변이시험이 통과해 버렸다
+  //    (약점 92의 새 얼굴: 골격이 바뀌면 검사 대상에서 조용히 빠진다).
+  //    이제 **글자를 담은 가장 안쪽 상자**를 본다:
+  //      · 인라인(display:inline)은 상자가 없어 clientWidth가 0이다 — 뺀다
+  //      · 블록 자식이 있으면 그 자식이 각자 검사된다 — 중복이므로 뺀다
   document.querySelectorAll('.card *').forEach(el => {
-    if (el.children.length === 0 && el.textContent.trim()
-        && el.scrollWidth > el.clientWidth + 1)
+    if (!el.textContent.trim()) return;
+    if (getComputedStyle(el).display === 'inline') return;
+    const hasBoxChild = [...el.children].some(c => {
+      const d = getComputedStyle(c).display;
+      return d !== 'inline' && d !== 'contents';
+    });
+    if (hasBoxChild) return;
+    if (el.scrollWidth > el.clientWidth + 1)
       out.push('잘림(' + (el.scrollWidth - el.clientWidth) + 'px): '
                + el.textContent.trim().slice(0, 20));
   });
@@ -1421,9 +1493,63 @@ KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "�
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 
+# ── 해시태그 (v1.36) ───────────────────────────────────────────
+#
+# 킹카티비 실측(2026-09-17): 그쪽은 글마다 `#라리가 #엘체 #레알마드리드 #리캡`을
+# 단다. 텔레그램에서 해시태그는 **누르면 그 채널 안에서만 검색**된다 —
+# 채널이 쌓일수록 "내 팀 것만 보기"가 되는 유일한 장치다. 우리 캡션에는
+# 지금까지 하나도 없었다.
+#
+# **태그는 캡션 맨 끝, 사진에 붙는 첫 메시지에만 단다.** 이어지는 텍스트에
+# 달면 같은 태그가 한 경기에 여러 번 찍혀 검색 결과가 중복으로 찬다.
+_TAG_STRIP = re.compile(r"[^0-9A-Za-z가-힣]")
+
+
+def _tag(word: str) -> str:
+    """텔레그램이 태그로 알아보는 꼴로 다듬는다. 남는 게 없으면 빈 문자열.
+
+    **숫자로 시작하는 태그는 버린다** — 텔레그램이 `#1군`을 태그로 읽지 않아
+    본문에 `#`만 덜렁 남는다.
+    """
+    w = _TAG_STRIP.sub("", str(word or ""))
+    if not w or w[0].isdigit():
+        return ""
+    return "#" + w
+
+
+def hashtags(*, kind: str, league: Optional[League], teams=()) -> list[str]:
+    """그 카드에 붙일 태그들. **리그 · 종류 · (있으면) 팀** 순서.
+
+    `teams`는 **그 카드가 실제로 한 경기를 말할 때만** 넘긴다. 하루치 목록
+    카드에 팀을 전부 달면 태그가 열 개가 넘어 캡션이 태그밭이 된다.
+    """
+    out = [_tag(LEAGUE_LABEL.get(league, "")) if league else "",
+           _tag(KIND_META.get(kind, ("", ""))[0])]
+    out += [_tag(t) for t in teams]
+    # 중복 제거 — 순서는 유지한다(dict가 삽입 순서를 지킨다).
+    return list(dict.fromkeys(x for x in out if x))
+
+
+def strip_tag_line(text: str) -> str:
+    """캡션 끝의 **해시태그 줄만** 떼어낸다 (v1.36).
+
+    태그는 '덧붙인 내용'이 아니다 — 접을 것이 없다. 검사가 태그 줄을
+    본문으로 세면 "긴 텍스트는 접어라"는 규칙이 태그 때문에 깨진 것처럼
+    보인다. 규칙을 지우지 않고 **태그만 빼고 재는** 자리가 여기다.
+    """
+    lines = (text or "").rstrip().splitlines()
+    while lines and lines[-1].strip() and all(
+            w.startswith("#") for w in lines[-1].split()):
+        lines.pop()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 def caption(*, kind: str, league: Optional[League], head: Headline,
             date_label: str = "", extra_lines: Optional[list[str]] = None,
-            extra_title: str = "", note: str = "") -> list[str]:
+            extra_title: str = "", note: str = "",
+            tags: Optional[list[str]] = None) -> list[str]:
     """`[0]`은 사진에 붙는 캡션, `[1:]`은 이어 보내는 텍스트.
 
     `extra_lines`는 **카드에 없는 것만** 넣는다. 카드에 있는 것을 여기 또 쓰면
@@ -1450,8 +1576,22 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
     if head.sub:
         head_line += f" — {esc(head.sub)}"
 
+    def _tagged(parts: list[str]) -> list[str]:
+        """태그를 **첫 파트 끝에** 붙인다. 안 들어가면 **버린다**.
+
+        자르지 않는다 — 태그를 자르면 `#레알마드리`처럼 존재하지 않는 태그가
+        생기고, 그건 없는 것보다 나쁘다(가짜 검색어가 채널에 쌓인다).
+        """
+        line = " ".join(tags or [])
+        if not line or not parts:
+            return parts
+        cand = parts[0] + "\n\n" + line
+        if len(cand) <= CAPTION_MAX:
+            parts[0] = cand
+        return parts
+
     if not extra_lines:
-        return [head_line[:CAPTION_MAX]]
+        return _tagged([head_line[:CAPTION_MAX]])
 
     # 카드에 없는 것이 있을 때만 인용블록을 붙인다(부문 순위의 '그 밖의 부문' 등).
     title = f"\n\n<b>{esc(extra_title)}</b>" if extra_title else ""
@@ -1459,7 +1599,7 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
               + "\n".join(esc(x) for x in extra_lines) + "</blockquote>")
     whole = head_line + title + "\n" + quoted
     if len(whole) <= CAPTION_MAX:
-        return [whole]
+        return _tagged([whole])
 
     # 넘치면 뒤로 넘긴다. **자르지 않는다** — 자르면 '전체'라는 약속이 거짓이 된다.
     keep = len(extra_lines)
@@ -1485,7 +1625,7 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
         out.append("<b>(이어서)</b>\n<blockquote expandable>"
                    + "\n".join(esc(x) for x in rest[:k]) + "</blockquote>")
         rest = rest[k:]
-    return out
+    return _tagged(out)
 
 
 def leaders_extra(leaders: dict, league: League, shown: list[str]) -> list[str]:

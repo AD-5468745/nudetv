@@ -277,8 +277,13 @@ if res:
         # (대표님 지적: "굳이 텍스트를 넣지 않아도 되는 카드들도 있는 것 같아").
         # 그래서 검사도 조건부로 바꾼다: **덧붙일 내용이 있을 때만** 인용블록을 쓴다.
         # 조건을 지우지 않고 좁힌다 — 지우면 긴 텍스트가 안 접혀도 아무도 모른다.
+        # v1.36 — **해시태그 줄은 '덧붙인 내용'이 아니다.** 접을 것이 없는
+        # 한 줄이라 인용블록을 요구하면 규칙이 태그 때문에 깨진 것처럼 보인다.
+        # 조건을 지우지 않고 **태그만 빼고 잰다**(v1.12에서 좁힌 것과 같은 수법).
+        import cards_v5 as _C5t
         _cap = parts[0]
-        _has_extra = "\n\n" in _cap or len(_cap.splitlines()) > 2
+        _body_only = _C5t.strip_tag_line(_cap)
+        _has_extra = "\n\n" in _body_only or len(_body_only.splitlines()) > 2
         check("덧붙인 내용이 있으면 인용블록을 쓴다",
               (not _has_extra) or "<blockquote" in _cap, _cap[:80])
         check("캡션 첫 줄이 무엇/언제를 말한다",

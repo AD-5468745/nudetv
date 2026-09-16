@@ -13,6 +13,7 @@ from contract import (ContentType, Game, GameMeta, GateError, KST, League, Score
                       SOURCE_RESULTLESS_CATEGORIES, assert_no_stale_scheduled,
                       assert_transition, esc, format_kickoff, idem_key, is_late,
                       assert_league_color_contrast, assert_team_names,
+                      assert_team_colors,
                       STALE_GRACE_BY_LEAGUE, stale_grace_for,
                       parse_status, plan_send_parts, quote,
                       stale_unresolved, day_schedule_scope, start_alert_bucket)
@@ -381,6 +382,13 @@ try:
     check("팀 표시명이 카드 폭에 맞음", True)
 except GateError as e:
     check("팀 표시명이 카드 폭에 맞음", False, str(e)[:80])
+try:
+    # v1.36 — 구단색도 같은 위험을 갖는다. 팀을 추가하고 색을 안 맞추면
+    # **그 팀만 점이 사라지는데**, 보는 사람은 '원래 없는 팀'으로 읽는다.
+    assert_team_colors()
+    check("구단색이 두 테마 모두에서 읽힘 (대비 4.5+)", True)
+except GateError as e:
+    check("구단색이 두 테마 모두에서 읽힘", False, str(e)[:80])
 try:
     # 승자 색이 리그색이 된 뒤로, 리그를 추가할 때마다 '그 색이 읽히는가'가 위험이 된다
     assert_league_color_contrast()

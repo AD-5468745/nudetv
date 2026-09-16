@@ -131,6 +131,8 @@ def _flow_body(game, league: League) -> str | None:
         body = C5.body_periods(
             labels=_period_labels(league, len(rows)),
             away_name=aw, home_name=hm, away=away_vals, home=home_vals,
+            away_dot=C5.team_dot(league, game.away, side="l"),
+            home_dot=C5.team_dot(league, game.home, side="l"),
             total_labels=tl, away_totals=at, home_totals=ht,
             highlight=SCORE_UNIT_BY_LEAGUE.get(league) is ScoreUnit.RUNS)
     except ValueError:
@@ -195,6 +197,21 @@ def result_card(games: list, league: League, day: str, *,
         body = C5.body_gameinfo(
             kst=_k, local=_loc or "",
             venue=(venue_name(_g.venue) or "") if _g.venue else "", extra=_ex)
+        # ── v1.36 — **두 줄짜리 카드를 없앤다** (2026-09-17 대표님) ────
+        #
+        # 흐름 데이터가 없는 리그(KBO는 이닝을 안 준다)의 종료 속보는 본문이
+        # `시작 18:30 · 경기장 잠실` 두 줄이었다. 실렌더 566px 카드에 사실이
+        # 둘뿐이다 — 하루에 가장 자주 나가는 카드가 가장 비어 있었다.
+        #
+        # **머리말이 안 한 말만 붙인다**: 이 결과가 나온 뒤 두 팀이 어디에
+        # 서 있는가(순위·승률·최근10). 점수는 머리말이 이미 말했고, 캡션은
+        # 경기 흐름을 말한다 — 셋이 겹치지 않는다.
+        #
+        # **기록이 없으면 아무것도 안 붙인다.** 기록은 30분에 한 번 긁는데
+        # 속보는 경기가 끝나는 순간 나간다. 그때 카드는 지금까지처럼 나간다.
+        _standing = _after_block(rb, _g, league)
+        if _standing:
+            body = _standing + body
     else:
         # ── **정리판** — 번호 + 시각 + 전 경기 (2026-09-07 대표님 확정) ──
         #
@@ -259,7 +276,8 @@ def result_card(games: list, league: League, day: str, *,
     parts = C5.caption(kind="result", league=league, head=head,
                        date_label=date_label,
                        extra_lines=_extra or None,
-                       extra_title=_title if _extra else "")
+                       extra_title=_title if _extra else "",
+                       tags=_tags("result", league, todays))
     return html, list(parts)
 
 
@@ -275,6 +293,62 @@ def result_card(games: list, league: League, day: str, *,
 #   · 만들 재료가 없으면 **None** — 부르는 쪽이 옛 카드로 떨어진다
 #   · 헤드라인은 `headline.py`가 만든다. **여기서 문장을 짓지 않는다**
 #   · 캡션은 `C5.caption()`이 만든다. 카드에 없는 것만 덧붙인다
+
+def _tags(kind: str, league: League | None, games: list | None = None) -> list:
+    """그 카드의 해시태그. **한 경기짜리 카드에만 팀 태그를 붙인다** (v1.36).
+
+    하루치 목록 카드에 팀을 전부 달면 KBO 5경기 = 팀 태그 10개가 되어
+    캡션이 태그밭이 된다. 그러면 태그를 누를 이유가 사라진다.
+    """
+    _teams = []
+    if games and len(games) == 1 and league is not None:
+        g = games[0]
+        _teams = [C5._nm(league, g.away), C5._nm(league, g.home)]
+    return C5.hashtags(kind=kind, league=league, teams=_teams)
+
+
+def _after_block(rb, game, league: League) -> str:
+    """종료 속보에 붙는 **결과 뒤 두 팀의 자리** (v1.36). 못 만들면 빈 문자열.
+
+    `analysis_card`의 비교표와 **같은 부품**(`C5.body_compare`)을 쓴다 —
+    같은 것을 두 벌 만들면 한쪽만 고치는 사고가 난다(약점 45·110).
+    다만 여기는 경기 **뒤**라 관전 포인트가 아니라 현재 위치만 적는다.
+    """
+    if rb is None:
+        return ""
+    try:
+        a, h = game.away.team_code, game.home.team_code
+        sa, sh = rb.team(a), rb.team(h)
+        if not sa or not sh:
+            return ""
+        rows: list = []
+        # 순위 — **표기는 `rank_word` 하나만 쓴다.** 리그가 조로 나뉘면
+        # "몇 위"만으로는 어느 조의 몇 위인지 알 수 없다.
+        rows.append((rank_word(sa, sh, always=True), "순위",
+                     rank_word(sh, sa, always=True),
+                     "l" if sa.rank < sh.rank else ("r" if sh.rank < sa.rank else "")))
+        try:
+            _pa, _ph = float(sa.pct), float(sh.pct)
+            rows.append((sa.pct, "승점률" if league is League.KL1 else "승률",
+                         sh.pct,
+                         "l" if _pa > _ph else ("r" if _ph > _pa else "")))
+        except (TypeError, ValueError):
+            pass
+        if sa.last10 and sh.last10 and sa.last10.total and sh.last10.total:
+            rows.append((f"{sa.last10.win}-{sa.last10.loss}", "최근10",
+                         f"{sh.last10.win}-{sh.last10.loss}",
+                         "l" if sa.last10.win > sh.last10.win
+                         else ("r" if sh.last10.win > sa.last10.win else "")))
+        if len(rows) < 2:
+            return ""                      # 순위 한 줄짜리 표는 표가 아니다
+        return C5.body_compare(
+            rows, C5._nm(league, game.away), C5._nm(league, game.home),
+            "원정", "홈",
+            away_dot=C5.team_dot(league, game.away, side="l", big=True),
+            home_dot=C5.team_dot(league, game.home, side="r", big=True))
+    except Exception:                      # noqa: BLE001
+        return ""                          # 블록 하나 때문에 속보를 잃지 않는다
+
 
 def _day_label(day: str, games: list | None = None) -> str:
     """카드에 찍는 날짜. **묶는 기준(sports_day)과 보여주는 날짜를 가른다.**
@@ -328,7 +402,8 @@ def morning_card(games: list, league: League, day: str, *,
                     head=head, body=body, foot_left=foot,
                     kind_label=_kind_label)
     return html, list(C5.caption(kind="morning", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab,
+                                 tags=_tags("morning", league, ordered)))
 
 
 def standings_card(rb, league: League, day: str, *,
@@ -350,7 +425,8 @@ def standings_card(rb, league: League, day: str, *,
     # v1.31 — **이 숫자가 언제 것인지 밝힌다.** 기록은 30분에 한 번 긁는다.
     return html, list(C5.caption(kind="standings", league=league, head=head,
                                  date_label=_day_label(day),
-                                 note=record_asof_note(rb)))
+                                 note=record_asof_note(rb),
+                                 tags=_tags("standings", league)))
 
 
 def leaders_card(rb, league: League, day: str, set_idx: int
@@ -371,7 +447,8 @@ def leaders_card(rb, league: League, day: str, set_idx: int
     return html, list(C5.caption(
         kind="leaders", league=league, head=head, date_label=_day_label(day),
         extra_lines=extra, extra_title="그 밖의 부문 1위" if extra else "",
-        note=record_asof_note(rb)))                       # v1.31
+        note=record_asof_note(rb),                        # v1.31
+        tags=_tags("leaders", league)))
 
 
 def night_card(games: list, day: str
@@ -479,7 +556,8 @@ def night_card(games: list, day: str
     shortest_html = C5.shell(body=_shortest, **_shell_kw)
     return (html, [short_html, shortest_html],
             list(C5.caption(kind="night", league=None, head=head,
-                            date_label=lab)))
+                            date_label=lab,
+                            tags=_tags("night", None))))
 
 
 def _h2h_of(rb, a: str, h: str, na: str, history) -> tuple[str, str, bool]:
@@ -634,7 +712,8 @@ def analysis_cards(rb, games: list, league: League, day: str, *,
     return html, list(C5.caption(kind="analysis", league=league, head=head,
                                  date_label=lab, extra_lines=_extra or None,
                                  extra_title="경기 분석" if _extra else "",
-                                 note=record_asof_note(rb)))     # v1.31
+                                 note=record_asof_note(rb),      # v1.31
+                                 tags=_tags("analysis", league, gs)))
 
 
 def analysis_card(rb, game, league: League, day: str, *,
@@ -804,7 +883,8 @@ def analysis_card(rb, game, league: League, day: str, *,
                     head=head, body=body, foot_left=foot)
     return html, list(C5.caption(kind="analysis", league=league, head=head,
                                  date_label=lab,
-                                 note=record_asof_note(rb)))     # v1.31
+                                 note=record_asof_note(rb),      # v1.31
+                                 tags=_tags("analysis", league, [game])))
 
 
 
@@ -862,7 +942,9 @@ def kickoff_card(games, league: League, *, now: datetime, rb=None
         body = C5.body_matchup(
             away_name=C5._nm(league, g.away), home_name=C5._nm(league, g.home),
             kst=kst, local=loc or "",
-            venue=(venue_name(g.venue) or "") if g.venue else "")
+            venue=(venue_name(g.venue) or "") if g.venue else "",
+            away_dot=C5.team_dot(league, g.away, side="l", big=True),
+            home_dot=C5.team_dot(league, g.home, side="r", big=True))
         foot = C5.LEAGUE_LABEL.get(league, "")
     else:
         # 여러 경기 — **예고판·정리판과 같은 목록 골격**을 쓴다.
@@ -894,7 +976,8 @@ def kickoff_card(games, league: League, *, now: datetime, rb=None
     return html, list(C5.caption(kind="kickoff", league=league, head=head,
                                  date_label=lab,
                                  extra_lines=_extra or None,
-                                 extra_title="맞대결 참고" if _extra else ""))
+                                 extra_title="맞대결 참고" if _extra else "",
+                                 tags=_tags("kickoff", league, gs)))
 
 
 def _P_spans(games) -> bool:
@@ -975,7 +1058,8 @@ def lineup_card(game, league: League, *, now: datetime
     html = C5.shell(kind="kickoff", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
     return html, list(C5.caption(kind="kickoff", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab,
+                                 tags=_tags("kickoff", league, [game])))
 
 
 def goal_card(game, league: League, goal_id: str, *,
@@ -1051,14 +1135,17 @@ def goal_card(game, league: League, goal_id: str, *,
         away_name=aw, home_name=hm, away_score=as_, home_score=hs,
         league=league,
         events=[(g.minute, g.side, g.name, "자책" if g.own_goal else "",
-                 getattr(g, "added", 0) or 0) for g in upto])
+                 getattr(g, "added", 0) or 0) for g in upto],
+        away_dot=C5.team_dot(league, game.away, side="r"),
+        home_dot=C5.team_dot(league, game.home, side="l"))
     lab = _day_label(game.sports_day, [game])
     foot = ((venue_name(game.venue) or "") if game.venue
             else C5.LEAGUE_LABEL.get(league, ""))
     html = C5.shell(kind="goal", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
     return html, list(C5.caption(kind="goal", league=league, head=head,
-                                 date_label=lab))
+                                 date_label=lab,
+                                 tags=_tags("goal", league, [game])))
 
 
 def flash_card(game, league: League, *, now: datetime | None = None, rb=None

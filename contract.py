@@ -2894,6 +2894,121 @@ def assert_v5_accent_cover() -> None:
             f"그 리그만 브랜드색으로 나가 리그 구분이 사라집니다.")
 
 
+# ── 구단색 (v1.36) ──────────────────────────────────────────────
+#
+# 대표님 지시(2026-09-17): *"시각적으로 보기 좋은 채널컨텐츠를 완성"*.
+# 카드가 깨끗하지만 **스포츠로 안 보인다**는 것이 실측 결론이었다 — 팀을
+# 가리키는 시각 신호가 글자밖에 없어서, 스크롤에서 KBO 결과판과 순위표가
+# 같은 표로 읽힌다.
+#
+# **로고를 쓰지 않는다.** 구단 엠블럼은 저작권이 있고, 이 프로젝트는 소개에
+# '합법·저작권'을 운영원칙으로 걸어 뒀다. 색은 저작권 대상이 아니다.
+#
+# **공식색은 하나만 적는다.** 테마별 변형은 `team_accent()`가 **계산**한다 —
+# 색상(hue)·채도는 그대로 두고 밝기만 옮겨 대비 4.5를 맞춘다. 손으로 두 벌을
+# 적으면 한쪽만 고치는 사고가 나고(약점 45), 무엇보다 **내가 지어낸 색이
+# 구단색인 척** 나간다. 계산이면 공식색 한 줄만 사실이면 된다.
+#
+# ⚠️ **색만으로 팀을 구분시키지 않는다**(리그색과 같은 규칙). KBO에만 빨강
+# 계열이 셋(KIA·SSG·키움)이고 색약에서는 더 붕괴한다. 카드에는 팀 이름이
+# 늘 글자로 함께 있다 — 색은 **보조 신호**다.
+#
+# 표에 없는 팀은 `None`이다. 점이 안 찍힐 뿐 카드는 그대로 나간다 —
+# 리그를 새로 붙였을 때 **없는 색을 아무거나 떨구지 않기** 위해서다.
+TEAM_COLORS: dict[League, dict[str, str]] = {
+    League.KBO: {
+        "LG": "#C30452",   # LG 트윈스 — 진홍
+        "OB": "#131230",   # 두산 베어스 — 남색
+        "KT": "#1A1A1A",   # KT 위즈 — 검정
+        "SK": "#CE0E2D",   # SSG 랜더스 — 빨강
+        "NC": "#315288",   # NC 다이노스 — 남색
+        "WO": "#570514",   # 키움 히어로즈 — 버건디
+        "HT": "#EA0029",   # KIA 타이거즈 — 빨강
+        "LT": "#041E42",   # 롯데 자이언츠 — 남색
+        "SS": "#074CA1",   # 삼성 라이온즈 — 파랑
+        "HH": "#FC4E00",   # 한화 이글스 — 주황
+    },
+}
+
+# 테마 배경. `cards_v5.THEMES`의 `bg`와 같아야 한다 — 다르면 대비 계산이
+# 거짓말이 된다. 한 곳에서만 적고 저쪽이 이 값을 쓰게 할 수도 있지만,
+# cards_v5가 contract를 읽지 contract가 cards_v5를 읽지는 않는다(의존 방향).
+# 그래서 **같은지 검사하는 게이트**를 둔다(`assert_team_colors`).
+THEME_BG = {"paper": "#FCFBF8", "dark": "#0C1016"}
+TEAM_COLOR_MIN_CONTRAST = 4.5
+
+
+# 대비 계산은 **이 파일에 이미 있는 것**을 쓴다(`contrast_ratio`·`_srgb_luminance`,
+# 아래 리그색 게이트가 쓰는 바로 그 함수). 여기서 한 벌 더 만들었다가 정적
+# 검사기가 잡았다 — 같은 계산이 두 벌이면 언젠가 한쪽만 고쳐진다(약점 45).
+def _fit_contrast(color: str, bg: str, need: float) -> Optional[str]:
+    """색상·채도는 두고 **밝기만** 옮겨 대비를 맞춘다. 못 맞추면 None.
+
+    밝은 바닥에서는 어둡게, 어두운 바닥에서는 밝게 간다 — 어느 쪽으로 갈지는
+    바닥이 정한다. 0.5%씩 200번 옮겨 보고 처음 통과하는 값을 쓴다:
+    **필요한 만큼만 옮겨야** 구단색이 남는다.
+    """
+    import colorsys
+    if contrast_ratio(color, bg) >= need:
+        return color
+    h = color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    hh, ll, ss = colorsys.rgb_to_hls(r, g, b)
+    up = _srgb_luminance(bg) < 0.18          # 어두운 바닥이면 밝히는 쪽으로
+    for i in range(1, 201):
+        t = i / 200
+        nl = ll + (1 - ll) * t if up else ll * (1 - t)
+        nr, ng, nb = colorsys.hls_to_rgb(hh, nl, ss)
+        cand = "#%02X%02X%02X" % (round(nr * 255), round(ng * 255), round(nb * 255))
+        if contrast_ratio(cand, bg) >= need:
+            return cand
+    return None
+
+
+_TEAM_ACCENT_CACHE: dict = {}
+
+
+def team_accent(league: "Optional[League]", team_code: str,
+                theme: str) -> Optional[str]:
+    """그 테마에서 쓸 구단색. 표에 없거나 못 맞추면 **None**(= 점을 안 찍는다).
+
+    **모르는 팀에 아무 색이나 주지 않는다.** 그러면 새로 붙인 리그의 팀들이
+    엉뚱한 색을 뒤집어쓰고 나가는데, 오류도 안 나고 아무도 못 알아챈다.
+    """
+    if league is None or not team_code:
+        return None
+    official = TEAM_COLORS.get(league, {}).get(team_code)
+    if not official:
+        return None
+    key = (official, theme)
+    if key not in _TEAM_ACCENT_CACHE:
+        bg = THEME_BG.get(theme)
+        _TEAM_ACCENT_CACHE[key] = (
+            _fit_contrast(official, bg, TEAM_COLOR_MIN_CONTRAST) if bg else None)
+    return _TEAM_ACCENT_CACHE[key]
+
+
+def assert_team_colors() -> None:
+    """구단색 표가 실제로 쓸 수 있는가 — **두 테마 모두**에서 대비를 맞추는가.
+
+    맞추지 못하는 색이 하나라도 있으면 막는다. 그 팀만 점이 사라지는데,
+    카드를 보는 사람은 '그 팀은 원래 점이 없다'고 읽는다(약점 45와 같은 얼굴).
+    """
+    bad = []
+    for lg, table in TEAM_COLORS.items():
+        for code, official in table.items():
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", official):
+                bad.append(f"{lg.value}:{code} 색 형식이 아닙니다({official})")
+                continue
+            for theme in THEME_BG:
+                got = team_accent(lg, code, theme)
+                if got is None:
+                    bad.append(f"{lg.value}:{code} {theme} 테마에서 대비 "
+                               f"{TEAM_COLOR_MIN_CONTRAST}를 못 맞춥니다")
+    if bad:
+        raise GateError("구단색 표 문제: " + " · ".join(bad))
+
+
 # ── 정규 구간 수 (v1.15) ────────────────────────────────────────
 #
 # 야구 9이닝 · 농구 4쿼터 · 배구 5세트. **구간 수가 이보다 많으면 연장**이다.
