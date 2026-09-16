@@ -1563,6 +1563,15 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
     실제로는 팬 위키였다), 약관상 표기 의무가 있는 소스는 `credit_line`이
     카드 꼬리말에 따로 붙인다. 그 둘을 섞으면 한쪽이 반드시 낡는다.
     """
+    # ── 말투 (v1.37) ──────────────────────────────────────────
+    # 대표님: *"사람이 직접 쓴듯한 자연스러운 대화체로"*.
+    # **여기 한 곳에서만 바꾼다.** 산문 생성기는 기사체 그대로 두고 내보내기
+    # 직전에 어미만 옮긴다 — 생성기를 고치면 사실 관계가 흔들린다.
+    # 머리줄(`head.text`)은 건드리지 않는다: `KT 7연승` 같은 이름꼴이라
+    # 어미가 없다.
+    import speech as _SP
+    extra_lines = _SP.polite_lines(extra_lines) if extra_lines else extra_lines
+
     emoji = KIND_EMOJI.get(kind, "")
     lg = LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그"
     label = KIND_META[kind][0]

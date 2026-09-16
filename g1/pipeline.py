@@ -1907,6 +1907,7 @@ def dryrun_send(item: QueueItem, payload: dict) -> dict:
 # 형용사·추측·LLM 작문 금지 — 사실 잠금 원칙.
 
 from contract import rank_word as _rank_word                      # noqa: E402
+from contract import josa as _josa                                 # noqa: E402
 from contract import rank_comparable as _rank_cmp                 # noqa: E402
 from contract import group_noun as _group_noun                    # noqa: E402
 from contract import (TEAM_NAMES, WLD, LeaderEntry, RecordBook, Standing,  # noqa: E402
@@ -4802,6 +4803,135 @@ def _wr_margin(g: Game) -> int | None:
     if not g.score:
         return None
     return abs(g.score.home - g.score.away)
+
+
+# ── 경기 총평 (v1.37) ──────────────────────────────────────────
+#
+# 대표님 지시(2026-09-17): *"경기분석, 경기내용에 대한 평가들이 상세히"*.
+#
+# **재료가 없어서 짧았던 게 아니다.** 종료 경기 하나에 대해 우리가 이미
+# 가진 것은 이닝별 점수 · 안타 · 실책 · 선발 · 승패투수 · 순위 · 연속 ·
+# 최근10 · 맞대결인데, 지금 나가는 글은 흐름 두 문장뿐이었다(실측).
+#
+# ⛔ **카드가 그린 것을 되풀이하지 않는다.** 카드는 숫자를 **표로** 보여준다.
+#    여기서는 그 숫자가 **무슨 뜻인지**만 말한다 — 안타 대비 득점, 순위에
+#    미친 영향, 맞대결 흐름. 표를 한 줄씩 읽어서는 안 보이는 것들이다.
+#
+# ⛔ **평가는 숫자에서 기계적으로 나오는 것만 쓴다.** '잘했다'·'아쉽다'
+#    같은 판단은 쓰지 않는다(사실 잠금 원칙).
+#
+# ⚠️ **기록(rb)은 이 경기보다 앞선 시점일 수 있다.** 기록은 30분에 한 번
+#    긁는데 총평은 경기가 끝나는 순간 쓴다. 그래서 "이 승리로 2연승이 됐다"
+#    처럼 **이 경기가 반영됐다고 주장하지 않는다** — "기록 기준 2연승"으로만
+#    말하고, 부르는 쪽이 기준시각을 캡션에 함께 싣는다(약점 123).
+
+REVIEW_MIN_HITS = 1                # 안타가 이보다 적으면 효율을 말하지 않는다
+
+
+def _eff_sentence(nm_a: str, nm_h: str, hits: tuple, runs: tuple) -> str:
+    """안타 대비 득점 한 문장. 못 만들면 빈 문자열."""
+    ha, hh = hits
+    ra, rh = runs
+    if ha is None or hh is None:
+        return ""
+    if ha < REVIEW_MIN_HITS and hh < REVIEW_MIN_HITS:
+        return ""
+    # **조사를 지어내지 않는다.** '삼성는'이 실제로 나갔다 — 받침에 맞춰
+    # 고르는 함수가 계약에 이미 있다(`josa`).
+    return (f"{nm_a}{_josa(nm_a, '은', '는')} 안타 {ha}개로 {ra}점, "
+            f"{nm_h}{_josa(nm_h, '은', '는')} {hh}개로 {rh}점을 냈다")
+
+
+def game_review(game, league: League, *, away_name: str, home_name: str,
+                rb=None) -> list[str]:
+    """종료 경기의 총평 문단들. **말할 재료가 없으면 빈 목록.**
+
+    문단 셋으로 나눈다 — ① 숫자가 말하는 것 ② 순위에 미친 자리
+    ③ 시즌 맞대결. 각 문단은 재료가 있을 때만 생긴다.
+    """
+    if game is None or getattr(game, "status", None) is not Status.FINAL:
+        return []
+    sc = getattr(game, "score", None)
+    if sc is None:
+        return []
+    meta = getattr(game, "meta", None)
+    out: list[str] = []
+    a_code = game.away.team_code
+    h_code = game.home.team_code
+
+    # ── ① 숫자가 말하는 것 ────────────────────────────────────
+    sents: list[str] = []
+    totals = dict(getattr(meta, "line_totals", {}) or {})
+    hits = totals.get("H")
+    errs = totals.get("E")
+    if hits and len(hits) == 2:
+        # `line_totals`는 **(홈, 원정)** 순서다(naver_game의 규약).
+        eff = _eff_sentence(away_name, home_name,
+                            (hits[1], hits[0]), (sc.away, sc.home))
+        if eff:
+            # 안타가 더 적은 쪽이 이겼으면 그것만으로 한 마디가 된다.
+            _win_away = sc.away > sc.home
+            _fewer_won = ((_win_away and hits[1] < hits[0])
+                          or (not _win_away and hits[0] < hits[1]))
+            if _fewer_won and sc.away != sc.home:
+                sents.append(eff + ". 안타가 적은 쪽이 이긴 경기다")
+            else:
+                sents.append(eff)
+    if errs and len(errs) == 2 and (errs[0] or errs[1]):
+        _e = []
+        if errs[1]:
+            _e.append(f"{away_name} {errs[1]}개")
+        if errs[0]:
+            _e.append(f"{home_name} {errs[0]}개")
+        sents.append("실책은 " + " · ".join(_e) + "였다")
+    elif errs and len(errs) == 2:
+        sents.append("양 팀 다 실책은 없었다")
+    if sents:
+        out.append(". ".join(sents) + ".")
+
+    # ── ② 순위에 미친 자리 ────────────────────────────────────
+    #
+    # 기록이 없으면 이 문단을 통째로 건너뛴다 — 30분에 한 번 긁으므로
+    # 없는 틱이 있고, 그때는 ①③만으로도 글이 선다.
+    if rb is not None:
+        try:
+            sa, sh = rb.team(a_code), rb.team(h_code)
+        except Exception:                                    # noqa: BLE001
+            sa = sh = None
+        if sa and sh:
+            bits = []
+            for st, nm_ in ((sa, away_name), (sh, home_name)):
+                piece = f"{nm_}{_josa(nm_, '은', '는')} {_rank_word(st, always=True)}"
+                # **1연승·1연패라고 쓰지 않는다.** 한 경기는 '연속'이 아니다 —
+                # 순위 카드도 그 자리에 '1승'·'1패'로 찍는다.
+                if (st.streak_len or 0) >= 2 and st.streak_kind in (
+                        StreakKind.WIN, StreakKind.LOSS):
+                    word = "연승" if st.streak_kind is StreakKind.WIN else "연패"
+                    piece += f", {st.streak_len}{word} 중"
+                if st.last10 and st.last10.total:
+                    piece += f"이고 최근 열 경기 {st.last10.win}승 {st.last10.loss}패"
+                bits.append(piece)
+            para = "기록 기준으로 " + ", ".join(bits) + "다"
+            # 선두와의 승차 — 둘 다 같은 단위(리그·지구)일 때만 견준다.
+            if _rank_cmp(sa, sh):
+                _gb = [x for x in (sa.games_behind, sh.games_behind)
+                       if x not in (None, "", "0", "0.0")]
+                if len(_gb) == 2:
+                    para += (f". 선두와의 승차는 {away_name} {sa.games_behind}경기, "
+                             f"{home_name} {sh.games_behind}경기 차다")
+            out.append(para + ".")
+
+    # ── ③ 시즌 맞대결 ────────────────────────────────────────
+    if rb is not None:
+        try:
+            wld = rb.between(a_code, h_code)
+        except Exception:                                    # noqa: BLE001
+            wld = None
+        if wld and wld.total:
+            _d = f" {wld.draw}무" if wld.draw else ""
+            out.append(f"올 시즌 두 팀의 맞대결은 {away_name} 기준 "
+                       f"{wld.win}승{_d} {wld.loss}패다.")
+    return out
 
 
 def wrapup_lines(games: list, league: League, *, name_of=None) -> list[str]:

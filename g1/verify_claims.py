@@ -799,7 +799,9 @@ check("  ↳ 사건이 많아도 문장 수에 상한이 있다",
 _g1 = _mkflow(_EXTRA)
 _r1 = _RV.result_card([_g1], _L.MLB, "2026-09-09")
 check("★★ 종료 속보 캡션에 흐름 문장이 실린다 (배선)",
-      _r1 is not None and any("따라붙었다" in p for p in _r1[1]),
+      # v1.37 — 어미가 존댓말로 바뀌므로 **어간**으로 본다.
+      # 어미로 검사하면 말투를 바꿀 때마다 배선 검사가 깨진다.
+      _r1 is not None and any("따라붙었" in p for p in _r1[1]),
       str(_r1[1])[:120] if _r1 else "None")
 check("  ↳ 접고펼치기 인용블록으로 들어간다 (대표님 지시)",
       _r1 is not None and any("blockquote expandable" in p for p in _r1[1]))
@@ -1021,8 +1023,13 @@ check("★★ 정리판 캡션에 '오늘의 하루'가 실린다 (배선)",
       _wrcard is not None and any("오늘의 하루" in p for p in _wrcard[1]),
       str(_wrcard[1])[:110] if _wrcard else "None")
 _ffcard = _RV.result_card([_WR[4]], _L.MLB, "2026-09-09")
-check("★★ 한 경기짜리(종료 속보)에는 여전히 '경기 흐름'이 붙는다 (v1.27 유지)",
-      _ffcard is not None and any("경기 흐름" in p for p in _ffcard[1]),
+# v1.37 — 소제목이 '경기 흐름'에서 **'경기 내용'**으로 넓어졌다(흐름 + 총평).
+# 검사는 **이름이 아니라 배선**을 보는 것이므로 이름만 따라간다.
+check("★★ 한 경기짜리(종료 속보)에는 여전히 '경기 내용'이 붙는다 (v1.27 유지)",
+      _ffcard is not None and any("경기 내용" in p for p in _ffcard[1]),
+      str(_ffcard[1])[:110] if _ffcard else "None")
+check("  ↳ 그 안에 흐름 문장이 실제로 들어 있다 (이름만 바뀐 게 아니다)",
+      _ffcard is not None and any("회말" in p or "회초" in p for p in _ffcard[1]),
       str(_ffcard[1])[:110] if _ffcard else "None")
 
 # (변이) 점수 차 문턱을 넓히면 접전이 아닌 것까지 접전이 되는가
@@ -1157,7 +1164,7 @@ _gpcard = _RV.flash_card(_mkgoal([(17, "away", 0), (40, "home", 0),
                          now=_dt.datetime(2026, 9, 10, 0, 0,
                                           tzinfo=_dt.timezone.utc))
 check("★★ 축구 종료 속보 캡션에 흐름 문장이 실린다 (배선)",
-      _gpcard is not None and any("역전했다" in p for p in _gpcard[1]),
+      _gpcard is not None and any("역전했" in p for p in _gpcard[1]),
       str(_gpcard[1])[:110] if _gpcard else "None")
 
 # (변이) 묶기를 끄면 반복이 생기는가

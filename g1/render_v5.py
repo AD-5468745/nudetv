@@ -248,6 +248,9 @@ def result_card(games: list, league: League, day: str, *,
     # 2026-09-07: 정리판은 그 리그의 하루를 닫는 한 장이다).
     _extra: list[str] = []
     _title = ""
+    # 총평이 기록(rb)을 쓰면 **그 기록이 언제 것인지 밝힌다**(약점 123).
+    # 기록은 30분에 한 번 긁으므로 이 경기가 아직 안 반영됐을 수 있다.
+    _used_rb = False
     try:
         import pipeline as _Pf                     # 순환 import를 피해 함수 안에서
         if len(todays) == 1:
@@ -260,7 +263,17 @@ def result_card(games: list, league: League, day: str, *,
                                      away_name=_an, home_name=_hn)
                       or _Pf.goal_prose(_g1, league,
                                         away_name=_an, home_name=_hn))
-            _title = "경기 흐름"
+            # ── v1.37 — **총평을 뒤에 잇는다** (대표님: "평가들이 상세히") ──
+            # 흐름 문단은 '언제 갈렸나'만 말한다. 총평은 '그래서 무슨 뜻인가'다
+            # — 안타 대비 득점, 순위에서의 자리, 시즌 맞대결.
+            # 흐름을 못 만든 경기(이닝 보강 실패)에도 총평은 붙는다.
+            _rv = _Pf.game_review(_g1, league, away_name=_an, home_name=_hn,
+                                  rb=rb)
+            if _rv:
+                _extra = list(_extra) + _rv
+                _used_rb = True
+            # 흐름 + 총평이 함께 들어가므로 이름을 넓힌다(v1.37).
+            _title = "경기 내용" if _extra else ""
         else:
             # ── ★ v1.29 — 정리판: **그날이 어떤 하루였나** ─────────────
             #
@@ -277,6 +290,8 @@ def result_card(games: list, league: League, day: str, *,
                        date_label=date_label,
                        extra_lines=_extra or None,
                        extra_title=_title if _extra else "",
+                       note=(record_asof_note(rb) if (_used_rb and rb is not None)
+                             else ""),
                        tags=_tags("result", league, todays))
     return html, list(parts)
 

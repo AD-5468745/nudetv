@@ -510,6 +510,87 @@ class _KboRb(_Rb):
 check("  ↳ 단위가 없는 리그(KBO)의 보관본은 그대로 쓴다",
       not TK._units_missing(_KboRb([st("LG", 1, 80, 45, "0", lg=League.KBO)])))
 
+# ══════════════════════════════════════════════════════════════
+# 말투 · 총평 (v1.37 — 2026-09-17)
+# ══════════════════════════════════════════════════════════════
+print("\n말투와 총평")
+import speech as _SP                                              # noqa: E402
+
+for _src, _want in (
+        ("두산이 1회말 두 점을 먼저 냈다.", "냈습니다."),
+        ("그 뒤로 앞뒤가 바뀌지 않았다.", "않았습니다."),
+        ("지금은 2연승 중이다.", "중입니다."),
+        ("최근 열 경기만 보면 6승 4패다.", "4패입니다."),
+        ("1계단 차이다.", "차입니다."),
+        ("NC가 안방에서 SSG를 맞는다.", "맞습니다."),
+        ("점수 차로 갈렸다.", "갈렸습니다."),
+        ("3-1로 벌렸다.", "벌렸습니다."),
+        ("맞대결은 KIA가 앞선다.", "앞섭니다."),
+        ("승차는 팽팽하다.", "팽팽합니다."),
+        ("단정하기는 이르다.", "이릅니다."),
+        ("그런 경기는 없다.", "없습니다."),
+):
+    check(f"어미 — …{_src[-7:]} → {_want}", _SP.polite(_src).endswith(_want),
+          _SP.polite(_src))
+
+check("★★ 문장이 아닌 줄은 건드리지 않는다 (부문 순위 목록)",
+      _SP.polite("득점 — 김도영 (KIA) 106") == "득점 — 김도영 (KIA) 106")
+check("★★ 모르는 어미는 **그대로 둔다** (잘못 바꾸느니 안 바꾼다)",
+      _SP.polite("값이 짧다.") == "값이 짧다.", _SP.polite("값이 짧다."))
+check("  ↳ 못 바꾼 문장은 세어서 드러난다",
+      _SP.unconverted("값이 짧다.") == ["값이 짧다"],
+      str(_SP.unconverted("값이 짧다.")))
+check("★★ 바꾼 문장은 미변환으로 세지 않는다 (앞섭니다 꼴)",
+      _SP.unconverted(_SP.polite("맞대결은 KIA가 앞선다.")) == [],
+      str(_SP.unconverted(_SP.polite("맞대결은 KIA가 앞선다."))))
+
+
+class _MT:
+    def __init__(self, **kw):
+        self.line_totals = kw.get("line_totals", {})
+        self.line_score = kw.get("line_score", [])
+        self.goals = ()
+        self.cancel_reason = None
+        self.player_lines = []
+        self.highlights = ()
+
+
+class _TR:
+    def __init__(self, c): self.team_code = c
+
+
+class _RG:
+    def __init__(self, meta, hs, as_, st=C.Status.FINAL):
+        self.home, self.away = _TR("OB"), _TR("SS")
+        self.status = st
+        self.score = C.Score(hs, as_, C.ScoreUnit.RUNS)
+        self.meta = meta
+        self.venue = "잠실"
+
+
+_rv = P.game_review(_RG(_MT(line_totals={"R": (3, 1), "H": (7, 3), "E": (0, 0)}), 3, 1),
+                    C.League.KBO, away_name="삼성", home_name="두산")
+check("★★ 총평이 안타 대비 득점을 말한다 (카드는 숫자만 보여준다)",
+      any("안타 3개로 1점" in x for x in _rv), str(_rv))
+check("★★ 조사를 받침에 맞춘다 ('삼성는'이 실제로 나갔다)",
+      all("삼성는" not in x and "두산는" not in x for x in _rv), str(_rv))
+check("  ↳ 실책이 0이면 0이라고 말한다 (빈칸으로 두지 않는다)",
+      any("실책은 없었다" in x for x in _rv), str(_rv))
+
+_rv_few = P.game_review(
+    _RG(_MT(line_totals={"R": (5, 2), "H": (4, 9), "E": (0, 0)}), 5, 2),
+    C.League.KBO, away_name="삼성", home_name="두산")
+check("★ 안타가 적은 쪽이 이기면 그것을 짚는다",
+      any("안타가 적은 쪽이 이긴" in x for x in _rv_few), str(_rv_few))
+
+check("★★ 재료가 없으면 아무 말도 안 한다 (빈칸을 지어내지 않는다)",
+      P.game_review(_RG(_MT(), 3, 1), C.League.KBO,
+                    away_name="삼성", home_name="두산") == [], "")
+check("★★ 안 끝난 경기에는 총평을 쓰지 않는다",
+      P.game_review(_RG(_MT(line_totals={"H": (7, 3)}), 3, 1,
+                        st=C.Status.SCHEDULED),
+                    C.League.KBO, away_name="삼성", home_name="두산") == [], "")
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {FAIL} FAIL")
