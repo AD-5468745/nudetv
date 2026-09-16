@@ -347,14 +347,24 @@ jobs:
           git config user.name  "nudetv-bot"
           git config user.email "bot@users.noreply.github.com"
 
-          LOOPS=$(python -c "print(int(float('${LOOP_HOURS:-0}') * 12))" 2>/dev/null || echo 0)
+          # ── v1.39 — **2분 간격.** 대표님 지시: 킹카티비와 같거나 더 빠르게.
+          #
+          # 실측(2026-09-16 · 같은 골을 양쪽이 올린 시각 비교): 우리가 1~11분
+          # 늦었다. 원인 둘 — 수집 제동 10분, 시계 주기 5분. 제동은 진행 중
+          # 경기에서 0으로 풀었고, 남은 것이 이 주기다.
+          #
+          # 5분 → 2분이면 최악 지연이 15분에서 2분이 된다.
+          # 커밋이 늘지 않는 이유: 바뀐 게 없으면 애초에 커밋하지 않는다
+          # (`git diff --cached --quiet && return 0`). 커밋 수는 **회차가 아니라
+          # 실제 발송량**을 따라간다.
+          LOOPS=$(python -c "print(int(float('${LOOP_HOURS:-0}') * 30))" 2>/dev/null || echo 0)
           if [ "$LOOPS" -le 0 ]; then
             python g1/tick.py $DRY          # 평소: 한 번 일하고 끝
             exit $?
           fi
 
           # 비상 연속 운전 — 깃허브 자동 시계가 안 켜질 때만 씁니다.
-          echo "비상 연속 운전: 5분 간격 ${LOOPS}회 (약 ${LOOP_HOURS}시간)"
+          echo "연속 운전: 2분 간격 ${LOOPS}회 (약 ${LOOP_HOURS}시간)"
           LAST=0
           for i in $(seq 1 "$LOOPS"); do
             echo "───── ${i}/${LOOPS} ─────"
@@ -366,7 +376,7 @@ jobs:
             # for 루프이므로 남은 횟수가 0보다 크면 5분 뒤 반드시 한 번 더 돕니다.
             # 마지막 회차(0)에는 미루지 않습니다. 단발 실행도 값이 없어 미루지 않습니다.
             TICK_LOOPS_LEFT=$(( LOOPS - i )) \
-            TICK_LOOP_INTERVAL_SECONDS=300 \
+            TICK_LOOP_INTERVAL_SECONDS=120 \
             python g1/tick.py $DRY
             LAST=$?
             # 대장을 못 올렸으면 **더 보내지 않고 멈춥니다.**
@@ -377,7 +387,7 @@ jobs:
               LAST=1
               break
             fi
-            [ "$i" -lt "$LOOPS" ] && sleep 300
+            [ "$i" -lt "$LOOPS" ] && sleep 120
           done
           # 연속 운전을 **끝까지** 마쳤다는 표시입니다. 다음 실행을 예약할지
           # 판단하는 유일한 근거입니다 — 중간에 죽은 실행이 사슬을 이어가면
