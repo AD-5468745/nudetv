@@ -117,10 +117,19 @@ def poll(transport, state: DiscussionState, *, limit: int = UPDATE_LIMIT) -> lis
             "timeout": UPDATE_TIMEOUT_S,
             # **필요한 것만 받는다.** 전부 받으면 남의 채널 소식까지 섞여 온다.
             "allowed_updates": ["message"]})
-    except Exception:                                    # noqa: BLE001
+    except Exception as e:                               # noqa: BLE001
+        # ⚠️ **조용히 물러나지 않는다** (2026-09-17).
+        # 처음엔 그냥 `return []` 이었다. 그래서 받아오기가 막혔는데도
+        # 로그에 한 줄도 안 남아, 채널에서 "왜 댓글로 안 가지"만 보였다.
+        # 실패해도 발송은 계속하되 **이유는 반드시 남긴다.**
+        print(f"    ⚠️ [토론방] 받아오기 실패 — {e.__class__.__name__}: "
+              f"{str(e)[:120]}")
         return []
     if not isinstance(res, list):
+        print(f"    ⚠️ [토론방] 받아오기 응답이 목록이 아닙니다: {str(res)[:120]}")
         return []
+    if not res:
+        print(f"    ⓘ [토론방] 새 소식 0건 (읽은 데까지 {state.offset})")
 
     asks: list = []
     for u in res:
@@ -155,6 +164,9 @@ def poll(transport, state: DiscussionState, *, limit: int = UPDATE_LIMIT) -> lis
             "text": text,
             "user": (frm.get("first_name") or "").strip(),
         })
+    if res:
+        print(f"    ⓘ [토론방] 소식 {len(res)}건 · 전달짝 {len(state.map)}개 · "
+              f"질문 {len(asks)}건")
     return asks
 
 
