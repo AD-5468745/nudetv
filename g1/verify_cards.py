@@ -1158,5 +1158,60 @@ check("★★ 태그가 안 들어가면 **자르지 않고 버린다** (가짜 
 check("  ↳ 태그 줄만 떼어내는 자가 있다 (검사가 태그를 본문으로 세지 않게)",
       C5.strip_tag_line("머리줄\n둘째 줄\n\n#KBO #경기결과") == "머리줄\n둘째 줄")
 
+# ══════════════════════════════════════════════════════════════
+# 10. 앵커 카드 — 대결 그림 (v1.38 · 2026-09-17)
+# ══════════════════════════════════════════════════════════════
+print("\n10. 앵커 카드")
+import render_v5 as _R38                                         # noqa: E402
+from adapters import logos as _LG38                              # noqa: E402
+
+
+class _AG:
+    """앵커용 예정 경기."""
+    def __init__(self, a="SK", h="NC"):
+        from datetime import datetime as _d, timezone as _tz
+        self.away, self.home = _Ref(a), _Ref(h)
+        self.status = Status.SCHEDULED
+        self.score = None
+        self.venue = "창원"
+        self.meta = _Meta()
+        self.start_utc = _d(2026, 9, 17, 9, 30, tzinfo=_tz.utc)
+        from contract import KST as _K
+        self.start_kst = self.start_utc.astimezone(_K)
+        self.start_local = self.start_kst
+        self.sports_day = "2026-09-17"
+        self.game_id = f"2026-09-17-{a}-{h}"
+
+    def is_draw(self): return False
+
+
+check("앵커가 카드 종류로 등록돼 있다", "anchor" in C5.KIND_META)
+check("  ↳ 이모지도 있다 (캡션 첫 글자)", C5.KIND_EMOJI.get("anchor"))
+
+_saved_logo = _LG38.LOGOS_ENABLED
+try:
+    _LG38.LOGOS_ENABLED = False          # 로고를 못 받는 상황
+    _an = _R38.anchor_card(_AG(), KBO)
+    check("★★ 로고를 못 받아도 앵커가 만들어진다 (그림 하나에 경기를 잃지 않는다)",
+          _an is not None)
+    if _an:
+        check("  ↳ 빈 동그라미를 남기지 않는다 — 구단색 + 이름이 들어간다",
+              'class="ini"' in _an[0] and ">SSG<" in _an[0])
+        check("★★ 이름을 잘라 다른 팀으로 만들지 않는다 (SSG를 SS로 줄이면 삼성이 된다)",
+              ">SS<" not in _an[0], "SSG가 SS로 줄었습니다")
+        check("  ↳ 대결 구도 골격을 쓴다", 'class="vs"' in _an[0])
+        check("  ↳ 캡션에 두 팀과 리그 태그가 붙는다",
+              all(t in _an[1][0] for t in ("#KBO", "#SSG", "#NC")), _an[1][0])
+        check("★★ 시작 시각을 한 장에 두 번 쓰지 않는다",
+              _an[0].count("18:30") == 1, f"{_an[0].count('18:30')}번")
+finally:
+    _LG38.LOGOS_ENABLED = _saved_logo
+
+check("★★ 로고 스위치 하나로 전부 되돌아간다",
+      _LG38.team_logo(KBO, _Ref("OB")) is None or _LG38.LOGOS_ENABLED,
+      "스위치가 듣지 않습니다")
+check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그림 방지)",
+      _LG38.emblem_url("LCK", "T1") is None)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

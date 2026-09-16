@@ -166,6 +166,59 @@ if wf.exists():
 else:
     check("워크플로 존재", False)
 
+# ══════════════════════════════════════════════════════════════
+# 18. 조사한 경쟁 채널의 이름이 남아 있는가 (v1.37)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-17): *"참조했다는걸 알아차리지 못하게 해야해"*.
+#
+# 실측: 이 저장소 주석 **13곳**에 경쟁 채널 이름이 평문으로 있었다. 저장소가
+# 공개라 누구나 읽을 수 있었다 — 무엇을 보고 만들었는지가 그대로 드러난다.
+#
+# ⚠️ **검사기에도 그 이름을 평문으로 적지 않는다.** 여기 적으면 지운 이름이
+# 검사기 안에서 되살아난다. 그래서 **지문(sha256 앞 16자리)만** 둔다 —
+# 지문만으로는 원래 낱말을 알 수 없고, 대조는 그대로 된다.
+# (발송 대장의 채널 ID를 지문으로 바꾼 것과 같은 수법이다.)
+import hashlib                                                    # noqa: E402
+
+_FORBIDDEN_DIGESTS = {
+    "a14ef296d6636033", "d635e10cdc4d2e73", "0f5341b2a1140e20",
+    "c88fa8fe11f0fe98", "27809560060dd389", "d4e9c52fdfc4e0f7",
+    "213ae9036e992a88",
+}
+# 낱말 후보: 한글 2~10자 · 영문(점 포함) 4~14자.
+_TOKEN = re.compile(r"[가-힣]{2,10}|[A-Za-z][A-Za-z.]{3,13}")
+
+
+def _name_hits() -> list:
+    hits = []
+    for f in files():
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            for tok in _TOKEN.findall(line):
+                d = hashlib.sha256(tok.lower().encode()).hexdigest()[:16]
+                if d in _FORBIDDEN_DIGESTS:
+                    hits.append(f"{f.relative_to(ROOT)}:{i}")
+                    break
+    return hits
+
+
+_nm_hits = _name_hits()
+check("★★★ 조사한 채널·작성자 이름이 저장소에 없다",
+      not _nm_hits, " · ".join(_nm_hits[:5]))
+
+# 변이시험 — 지문 대조가 실제로 무는가. (여기서도 이름을 쓰지 않으려고
+# **지문에서 거꾸로 만들 수 없는 대신**, 알려진 낱말 하나를 즉석에서 넣는다.)
+_probe = "zzprobe"
+_FORBIDDEN_DIGESTS.add(hashlib.sha256(_probe.encode()).hexdigest()[:16])
+check("  ↳ (변이) 금지 낱말을 넣으면 실제로 잡는다",
+      hashlib.sha256(_probe.encode()).hexdigest()[:16] in _FORBIDDEN_DIGESTS
+      and bool(_TOKEN.findall(f"주석에 {_probe} 가 있다")))
+_FORBIDDEN_DIGESTS.discard(hashlib.sha256(_probe.encode()).hexdigest()[:16])
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 if fail:
     print("\n⚠️ 위 항목을 고치기 전에는 저장소를 공개로 두지 마세요.")

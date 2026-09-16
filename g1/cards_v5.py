@@ -72,6 +72,10 @@ KIND_META = {
     "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
     "analysis": ("경기 분석", "M12 4v16M5 8h14M7.5 8l-3 6h6zM16.5 8l-3 6h6z"),
     "night":    ("나이트 브리핑", "M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"),
+    # v1.38 — 그 경기의 **문패**. 채널에 나가는 건 이 한 장이고, 나머지
+    # (분석·라인업·시작·득점·취소·결과)는 전부 이 글의 댓글로 들어간다.
+    # 아이콘은 마주 보는 두 화살표 — '대결'을 도형으로 말한다.
+    "anchor":   ("경기", "M3 8h11l-3-3M21 16H10l3 3"),
 }
 
 # ── 테마 ──────────────────────────────────────────────────────
@@ -344,6 +348,27 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .hi{{display:inline-flex;width:22px;height:22px;margin-left:11px;
   vertical-align:-2px;color:{th['faint']};opacity:.85}}
 .hi>svg{{width:100%;height:100%}}
+/* ── 대결 그림 (v1.38) ────────────────────────────────────────
+   대표님: *"팀들의 로고를 삽입하고, 서로 대결한다는 이미지로"*.
+   로고를 못 받은 팀은 **구단색 원판에 팀 이름 첫 글자**로 대신한다 —
+   한쪽만 빈 칸이 되면 그 팀이 없는 것처럼 보인다. */
+.vs{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+  gap:24px;padding:34px 0 30px}}
+.vs .side{{display:flex;flex-direction:column;align-items:center;gap:18px;min-width:0}}
+.vs .em{{width:172px;height:172px;display:flex;align-items:center;
+  justify-content:center;border-radius:50%;background:{th['line']};
+  overflow:hidden;flex:none}}
+.vs .em img{{width:150px;height:150px;object-fit:contain;display:block}}
+.vs .em .ini{{font-size:64px;font-weight:800;letter-spacing:-.02em;
+  line-height:1;color:{th['bg']}}}
+.vs .nm2{{font-size:46px;font-weight:800;letter-spacing:-.03em;
+  text-align:center;color:{th['ink']};max-width:100%;overflow-wrap:anywhere}}
+.vs .role{{font-size:23px;font-weight:700;letter-spacing:.1em;color:{th['faint']}}}
+.vs .mid{{display:flex;flex-direction:column;align-items:center;gap:10px}}
+.vs .mid .x{{font-size:34px;font-weight:800;letter-spacing:.14em;
+  color:{th['accent']}}}
+.vs .mid .ln{{width:2px;height:64px;background:{th['rule']};opacity:.5}}
+
 /* ── 구단색 점 (v1.36, 2026-09-17) ────────────────────────────
    대표님: *"시각적으로 보기 좋은 채널컨텐츠를 완성"*.
    팀을 가리키는 시각 신호가 글자밖에 없어 결과판과 순위표가 같은 표로
@@ -759,6 +784,56 @@ def body_goal(*, away_name: str, home_name: str,
     return row + body_timeline(away_name=away_name, home_name=home_name,
                                events=events, league=league,
                                show_header=False)
+
+
+def emblem(*, logo: str = "", color: str = "", initial: str = "") -> str:
+    """대결 그림의 동그란 자리 하나. 로고가 없으면 **구단색 + 첫 글자**.
+
+    빈 칸을 남기지 않는다 — 한쪽만 비면 그 팀이 없는 것처럼 보인다.
+    """
+    if logo:
+        return f'<span class="em"><img src="{logo}" alt=""></span>'
+    bg = color or "#8C968F"
+    # **이름을 자르지 않는다 — 자르면 다른 팀이 된다.** `SSG`를 두 자로 줄여
+    # `SS`로 찍었더니 삼성(SS)으로 읽혔다. 세 자까지는 그대로 넣고
+    # 글자 크기만 줄인다. 그보다 길면 그때 두 자로 줄인다(한글 팀명).
+    _t = (initial or "").strip()
+    ini = esc(_t if len(_t) <= 3 else _t[:2])
+    _fs = 64 if len(ini) <= 2 else 46
+    return (f'<span class="em" style="background:{bg}">'
+            f'<span class="ini" style="font-size:{_fs}px">{ini}</span></span>')
+
+
+def body_versus(*, away_name: str, home_name: str,
+                away_logo: str = "", home_logo: str = "",
+                away_color: str = "", home_color: str = "",
+                rows: Optional[list] = None) -> str:
+    """앵커 카드의 **대결 그림** (v1.38) — 로고 · 이름 · 역할, 가운데 VS.
+
+    `rows`는 그 아래 붙는 (왼값, 이름, 오른값, 앞선쪽) 목록이다.
+    `body_compare`와 같은 꼴이라 **같은 줄 부품**을 그대로 쓴다(약점 45).
+    """
+    head = (
+        '<div class="vs">'
+        '<span class="side">'
+        + emblem(logo=away_logo, color=away_color, initial=away_name)
+        + f'<span class="nm2">{esc(away_name)}</span>'
+        '<span class="role">원정</span></span>'
+        '<span class="mid"><span class="ln"></span>'
+        '<span class="x">VS</span><span class="ln"></span></span>'
+        '<span class="side">'
+        + emblem(logo=home_logo, color=home_color, initial=home_name)
+        + f'<span class="nm2">{esc(home_name)}</span>'
+        '<span class="role">홈</span></span>'
+        '</div>')
+    body = [head]
+    for left, key, right, better in (rows or []):
+        lc = "v r on" if better == "l" else "v r"
+        rc = "v on" if better == "r" else "v"
+        body.append(f'<div class="cmp"><div class="{lc}">{esc(left)}</div>'
+                    f'<div class="k">{esc(key)}</div>'
+                    f'<div class="{rc}">{esc(right)}</div></div>')
+    return "".join(body)
 
 
 def body_standings(rows: list, league: League) -> str:
@@ -1387,9 +1462,16 @@ _MEASURE_JS = """() => {
   // **여기도 목록을 버린다.** 가로로 나란히 놓이는 것은 `display:grid`나 `flex`가
   // 만든다 — 그러니 그것을 직접 찾으면 새 골격이 저절로 검사 대상이 된다.
   document.querySelectorAll('.card *').forEach(row => {
-    const disp = getComputedStyle(row).display;
+    const rcs = getComputedStyle(row);
+    const disp = rcs.display;
     if (disp !== 'grid' && disp !== 'flex') return;
-    if (getComputedStyle(row).gridTemplateColumns === 'none' && disp === 'grid') return;
+    // **세로로 쌓는 flex는 '한 줄'이 아니다** (v1.38).
+    //   `flex-direction:column`은 자식을 위아래로 놓으므로 좌우 좌표가 겹치는
+    //   것이 정상이다. 그걸 겹침으로 세면 멀쩡한 칸이 전부 걸린다 —
+    //   대결 그림(로고·이름·역할을 세로로 쌓는다)이 그렇게 걸렸다.
+    //   **가로 배치만 남기고 거른다.** 검사를 푸는 것이 아니라 대상을 맞춘다.
+    if (disp === 'flex' && /^column/.test(rcs.flexDirection)) return;
+    if (rcs.gridTemplateColumns === 'none' && disp === 'grid') return;
     const kids = [...row.children].map(el => el.getBoundingClientRect())
                    .filter(r => r.width > 0);
     if (kids.length < 2) return;
@@ -1489,13 +1571,13 @@ CAPTION_MAX = 1024
 FOLLOW_MAX = 4096
 
 KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
-              "goal": "⚽", "standings": "📊",
+              "goal": "⚽", "standings": "📊", "anchor": "🆚",
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 
 # ── 해시태그 (v1.36) ───────────────────────────────────────────
 #
-# 킹카티비 실측(2026-09-17): 그쪽은 글마다 `#라리가 #엘체 #레알마드리드 #리캡`을
+# 경쟁 채널 조사(2026-09-17): 그쪽은 글마다 `#라리가 #엘체 #레알마드리드 #리캡`을
 # 단다. 텔레그램에서 해시태그는 **누르면 그 채널 안에서만 검색**된다 —
 # 채널이 쌓일수록 "내 팀 것만 보기"가 되는 유일한 장치다. 우리 캡션에는
 # 지금까지 하나도 없었다.

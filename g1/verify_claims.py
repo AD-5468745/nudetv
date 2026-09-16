@@ -828,7 +828,7 @@ check("★★ (변이) 앞뒤를 안 보면 추격과 벌림이 같은 말이 �
 
 # ── ★ v1.29 — 킥오프 텍스트: 카드가 못 담는 것만 ──────────────────────
 #
-# 대표님 지시(킹카 대비 보완 **우선순위 2번**).
+# 대표님 지시(경쟁 채널 조사 · 보완 **2번**).
 # ⛔ 카드(`body_schedule`)가 그리는 것은 **시각 · 대진 · 장소**다.
 #    그래서 텍스트는 **순위 · 최근 흐름 · 맞대결**만 맡는다.
 print("\n킥오프 텍스트 (v1.29)")
@@ -1041,7 +1041,7 @@ check("★★ (변이) 문턱이 1점이라 3점 차는 접전이 아니다",
 
 # ── ★ v1.30 — 축구 득점 흐름 문장 ────────────────────────────────────
 #
-# v1.27이 야구 이닝으로 한 것을 축구에. 대표님 지시(킹카 대비 보완 3번).
+# v1.27이 야구 이닝으로 한 것을 축구에. 대표님 지시(경쟁 채널 조사 · 보완 3번).
 # ⛔ 카드(`body_timeline`)가 **분 · 득점자 이름 · 자책 꼬리표**를 그린다.
 #    그래서 텍스트는 **이름도 자책도 쓰지 않고** 누적 점수의 흐름만 말한다.
 print("\n축구 득점 흐름 (v1.30)")
@@ -1176,7 +1176,7 @@ check("★★ (변이) 연속 추가골이 세 번 이상인 경기가 실제로
 
 # ── ★ v1.31 — 기록 기준시각: **이 숫자가 언제 것인가** ──────────────────
 #
-# 대표님 지시(킹카 대비 보완 3번). 분석·순위표·리더보드는 **30분에 한 번 긁는
+# 대표님 지시(경쟁 채널 조사 · 보완 3번). 분석·순위표·리더보드는 **30분에 한 번 긁는
 # 기록**으로 그린다. 시점이 섞이면 카드를 아예 안 만드는 규칙은 이미 있는데
 # (§7-131), **정작 그 시점을 밝히지는 않고 있었다.**
 #
@@ -1268,9 +1268,9 @@ check("★★ (변이) note를 안 넘기면 옛 캡션 그대로다 — 되돌�
                                        note="기록 19:00 기준")[0])
 
 
-# ── ★ v1.31 — 표본이 얇으면 그 사실을 밝힌다 (킹카 대비 보완 4번) ──────────
+# ── ★ v1.31 — 표본이 얇으면 그 사실을 밝힌다 (경쟁 채널 조사 · 보완 4번) ──────────
 #
-# 킹카는 *"4경기 표본이라 단정하기 이르다"* 를 적는다. 우리 원칙은 더 엄격해서
+# 그쪽은 *"4경기 표본이라 단정하기 이르다"* 를 적는다. 우리 원칙은 더 엄격해서
 # **지킬 수 없으면 말하지 않는다**(§7-108) — 최근 폼은 표본이 모자라면 문단을
 # 빼고, 제목은 실제 표본 수를 따라간다(v1.11p).
 # **다만 순위는 뺄 수가 없다.** 실측으로 빈 자리를 찾았다:
@@ -1608,6 +1608,61 @@ try:
 finally:
     C.GOAL_MINUTE_IS_ELAPSED = _saved_set
 check("  ↳ 되돌린 뒤 EPL이 다시 맞는다", C.goal_clock(15, 0, _L.EPL)[1] == "15")
+
+# ══════════════════════════════════════════════════════════════
+# 취소 문구 — 한 경기를 '전 경기'라 부르지 않는다 (v1.37)
+# ══════════════════════════════════════════════════════════════
+# 실측 2026-09-03: KIA-NC 한 경기가 우천취소된 날, 그 경기의 종료 속보가
+# `전 경기 우천취소 — 1경기 모두`로 나갔다. 독자는 그 리그 오늘 경기가
+# 전부 날아간 것으로 읽는다 — 심각도 높음(사람이 잘못 앎).
+class _CG:
+    def __init__(self, a, h, reason="우천취소", venue="잠실"):
+        self.away, self.home = _TRc(a), _TRc(h)
+        self.status = C.Status.CANCELED
+        self.score = None
+        self.venue = venue
+        self.meta = _CM(reason)
+        self.sports_day = "2026-09-03"
+        self.game_id = f"g-{a}-{h}"
+        self.start_utc = _dt.datetime(2026, 9, 3, 9, 30, tzinfo=_dt.timezone.utc)
+        self.start_kst = self.start_utc.astimezone(C.KST)
+        self.start_local = self.start_kst
+        self.is_terminal = True
+
+
+class _TRc:
+    def __init__(self, c): self.team_code = c
+
+
+class _CM:
+    def __init__(self, r):
+        self.cancel_reason = r
+        self.player_lines = []
+        self.line_score = []
+        self.line_totals = {}
+        self.goals = ()
+        self.highlights = ()
+
+
+import headline as _Hc                                        # noqa: E402
+_one = _Hc.for_result([_CG("HT", "NC")], _L.KBO)
+check("★★★ 한 경기 취소를 '전 경기'라 부르지 않는다 (실제로 나갔던 문구)",
+      _one is not None and "전 경기" not in _one.text, _one.text if _one else "None")
+check("  ↳ 대신 그 경기를 말한다",
+      _one is not None and "KIA" in _one.text and "NC" in _one.text,
+      _one.text if _one else "None")
+check("  ↳ 사유는 번역표를 거친 한국어다",
+      _one is not None and "우천취소" in _one.text, _one.text if _one else "None")
+
+_all = _Hc.for_result([_CG("HT", "NC"), _CG("LG", "OB"), _CG("SS", "KT")], _L.KBO)
+check("★★ 여러 경기가 다 취소된 날은 여전히 '전 경기'다 (무디게 한 게 아니다)",
+      _all is not None and "전 경기" in _all.text, _all.text if _all else "None")
+
+_mix = _Hc.for_result([_CG("HT", "NC")], _L.KBO, )
+check("  ↳ 규칙 이름이 갈린다 (게이트가 어느 쪽인지 되짚을 수 있다)",
+      _one is not None and _one.rule == "R-CANCEL-ONE"
+      and _all is not None and _all.rule == "R-CANCEL",
+      f"{_one.rule if _one else '?'} / {_all.rule if _all else '?'}")
 
 print()
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")

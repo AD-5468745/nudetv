@@ -27,6 +27,7 @@ from typing import Optional
 
 from contract import (League, REGULAR_PERIODS, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, StreakKind, TEAM_NAMES, cancel_reason_text, josa,
+                      venue_name,
                       rank_comparable, rank_word)
 
 
@@ -216,6 +217,24 @@ def for_result(games: list, league: League, *, standings: list | None = None
         # 중요한 것은 사유가 아니라 **오늘 볼 경기가 없다**는 사실이다.
         # (v1.11h에서 전 경기 취소를 알리기로 한 이유가 그것이었다.)
         allout = not fin
+        # ★ **한 경기짜리 카드에 '전 경기'라고 쓰지 않는다** (v1.37).
+        #
+        # 취소·연기도 종결 상태라 그 경기의 **종료 속보**가 나간다. 그런데
+        # 이 함수는 리그 묶음용 문형뿐이어서, 한 경기가 취소된 날 속보가
+        # `전 경기 우천취소 — 1경기 모두`로 나갔다(실측 2026-09-03 KIA-NC).
+        # 독자는 **그 리그 오늘 경기가 다 날아간 것으로 읽는다** — 실제로는
+        # 한 경기다. 심각도 높음(사람이 잘못 앎)에 해당하는 자리다.
+        #
+        # 한 경기면 그 경기를 말한다. 이름은 이 파일의 `_nm` 하나로 만든다.
+        if len(off) == 1 and not fin:
+            _g = off[0]
+            _an, _hn = _nm(league, _g.away), _nm(league, _g.home)
+            return Headline(
+                rule="R-CANCEL-ONE",
+                text=f"{_an} vs {_hn} {why}",
+                sub=(venue_name(_g.venue) or "") if getattr(_g, "venue", None) else "",
+                facts={"off": 1, "final": 0, "reason": why,
+                       "away": _an, "home": _hn})
         return Headline(
             rule="R-CANCEL",
             text=(f"전 경기 {why}" if allout else f"{len(off)}경기 {why}"),
@@ -1129,7 +1148,7 @@ def _verdict(*, rule, lines, facts, lead, trail, trail_name, h2h_text, pick,
 # 이 파일이 만들 수 있는 규칙 전부. **게이트가 이 목록으로 미등록 규칙을 막는다** —
 # 새 규칙을 넣으면 여기 한 줄 더해야 하고, 그때 '이게 정말 사실인가'를 한 번 더 생각하게 된다.
 ALL_RULES = frozenset({
-    "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-COUNT",
+    "R-STREAK", "R-BLOWOUT", "R-CANCEL", "R-CANCEL-ONE", "R-COUNT",
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
     "A-COUNTDOWN", "K-COUNTDOWN", "L-STARTING", "N-ONE",
     "G-GOAL",                      # v1.35 — 경기 중 득점 속보

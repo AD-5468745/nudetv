@@ -39,7 +39,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       LINEUP_ENABLED, is_upcoming, record_asof_note,
                       GOAL_FLASH_ENABLED, goal_flash_enabled_for,
                       rank_comparable, rank_word,
-                      goal_key, goal_sort_key)
+                      goal_key, goal_sort_key, team_accent, card_theme)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
 #
@@ -972,7 +972,7 @@ def kickoff_card(games, league: League, *, now: datetime, rb=None
     lab = _day_label(gs[0].sports_day, gs)
     html = C5.shell(kind="kickoff", league=league, date_label=lab,
                     head=head, body=body, foot_left=foot)
-    # ── ★ v1.29 — 카드가 못 담는 것만 텍스트로 (킹카 대비 우선순위 2번) ────
+    # ── ★ v1.29 — 카드가 못 담는 것만 텍스트로 (경쟁 채널 조사 · 보완 2번) ────
     #
     # ⛔ 카드(`body_schedule`)가 그리는 것은 **시각 · 대진 · 장소**다.
     #    그래서 여기 붙는 것은 **순위 · 최근 흐름 · 맞대결** — 카드에 한 글자도
@@ -1042,6 +1042,89 @@ def _lineup_body(game, league: League, *, with_goals: bool) -> str | None:
     return C5.body_lineup(teams)
 
 
+def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
+                ) -> tuple[str, list[str]] | None:
+    """그 경기의 **문패** (v1.38). 채널에 나가는 유일한 장이다.
+
+    대표님 설계(2026-09-17): 경기마다 앵커 한 장을 채널에 올리고, 분석·라인업·
+    시작·득점·취소·결과는 **전부 그 글의 댓글**로 들어간다. 그래야 채널이
+    경기 순서대로 읽힌다.
+
+    그림은 **두 팀 로고가 마주 보는 대결 구도**다. 로고를 못 받으면 구단색
+    원판에 이름 첫 글자로 그린다 — 한쪽만 비면 그 팀이 없는 것처럼 보인다.
+    """
+    if game is None:
+        return None
+    na = C5._nm(league, game.away)
+    nh = C5._nm(league, game.home)
+    kst, loc = format_kickoff(game)
+
+    # 로고 — **실패해도 아무 일도 일어나지 않는다**(장식 보강기).
+    la = lh = ""
+    try:
+        from adapters import logos as _LG
+        _season = (game.sports_day or "")[:4]
+        la = _LG.team_logo(league, game.away, season=_season,
+                           day=game.sports_day) or ""
+        lh = _LG.team_logo(league, game.home, season=_season,
+                           day=game.sports_day) or ""
+    except Exception:                                    # noqa: BLE001
+        la = lh = ""
+
+    ca = team_accent(league, game.away.team_code, card_theme(league)) or ""
+    ch = team_accent(league, game.home.team_code, card_theme(league)) or ""
+
+    # 비교 줄 — 기록이 있을 때만. 없으면 그림과 시각만으로도 문패가 선다.
+    rows: list = []
+    _h2h = ""
+    if rb is not None:
+        try:
+            sa, sh = rb.team(game.away.team_code), rb.team(game.home.team_code)
+        except Exception:                                # noqa: BLE001
+            sa = sh = None
+        if sa and sh:
+            rows.append((rank_word(sa, sh, always=True), "순위",
+                         rank_word(sh, sa, always=True),
+                         "l" if sa.rank < sh.rank else
+                         ("r" if sh.rank < sa.rank else "")))
+            if sa.last10 and sh.last10 and sa.last10.total and sh.last10.total:
+                rows.append((f"{sa.last10.win}-{sa.last10.loss}", "최근10",
+                             f"{sh.last10.win}-{sh.last10.loss}",
+                             "l" if sa.last10.win > sh.last10.win else
+                             ("r" if sh.last10.win > sa.last10.win else "")))
+            _w = rb.between(game.away.team_code, game.home.team_code)
+            if _w and _w.total:
+                _d = f" {_w.draw}무" if _w.draw else ""
+                # **맞대결은 한쪽 값이 아니다.** 비교 줄에 넣으면 오른쪽 칸이
+                # 빈 채로 남아 '홈 팀 값이 없다'로 읽힌다 — 아래 줄로 내린다.
+                _h2h = f"{na} {_w.win}승{_d} {_w.loss}패"
+
+    body = C5.body_versus(away_name=na, home_name=nh,
+                          away_logo=la, home_logo=lh,
+                          away_color=ca, home_color=ch, rows=rows)
+    # 시작 시각은 **머리말이 이미 말한다**(`18:30 시작`). 여기 또 쓰면 한 장에
+    # 같은 사실이 두 번 나온다 — 그게 고치려던 문제다.
+    _bars = []
+    if game.venue:
+        _bars.append(("경기장", venue_name(game.venue) or ""))
+    if loc:
+        _bars.append(("현지 시각", loc))
+    if _h2h:
+        _bars.append(("올 시즌 맞대결", _h2h))
+    body += "".join(
+        f'<div class="bar"><span class="k">{C5.esc(k)}</span>'
+        f'<span class="v">{C5.esc(v)}</span></div>' for k, v in _bars if v)
+
+    head = H.Headline(rule="A-MATCH", text=f"{na} vs {nh}",
+                      sub=f"{kst} 시작", facts={"away": na, "home": nh})
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="anchor", league=league, date_label=lab, head=head,
+                    body=body, foot_left=C5.LEAGUE_LABEL.get(league, ""))
+    return html, list(C5.caption(kind="anchor", league=league, head=head,
+                                 date_label=lab,
+                                 tags=_tags("anchor", league, [game])))
+
+
 def lineup_card(game, league: League, *, now: datetime
                 ) -> tuple[str, list[str]] | None:
     """경기 시작 전 선발 라인업. 경기 하나당 한 장.
@@ -1082,7 +1165,7 @@ def goal_card(game, league: League, goal_id: str, *,
     """경기 중 득점 속보 (v1.35). **골 하나당 한 장.**
 
     대표님 지시(2026-09-12): *"유료는 아직보류 나머지는 모두 업그레이드하자"*.
-    킹카티비 대비 실질 격차로 판정한 유일한 항목이다(그쪽은 텍스트 + 채널
+    경쟁 채널 조사에서 실질 격차로 판정한 유일한 항목이다(그쪽은 텍스트 + 채널
     바로가기로만 알린다 — 카드는 없다).
 
     `goal_id`는 `contract.goal_key(goal)`이 만든 이름이다. **순번이 아니다** —
