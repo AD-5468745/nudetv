@@ -2279,6 +2279,12 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
                               DISCUSSION_BUTTON_TEXT)
     except Exception:                                    # noqa: BLE001
         return
+    # ★★★ **앵커에는 버튼을 달지 않는다** (v1.56).
+    # 인라인 버튼이 텔레그램의 `댓글 남기기` 바를 덮어, 손님이 토론방으로
+    # 들어갈 문이 아예 사라졌다(실채널 확인). 이 함수는 남겨 두되 아무 일도
+    # 하지 않는다 — 되살릴 자리를 지우면 다음에 또 처음부터 만들게 된다.
+    return
+
     anchors = _anchor_message_ids(ledger)
     if not anchors:
         return

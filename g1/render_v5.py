@@ -40,6 +40,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       LINEUP_ENABLED, is_upcoming, record_asof_note,
                       GOAL_FLASH_ENABLED, goal_flash_enabled_for,
                       rank_comparable, rank_word, name_accent,
+                      ANCHOR_THREAD_HINT,
                       PCT_RULE, pct_label,
                       goal_key, goal_sort_key, team_accent, card_theme)
 
@@ -1364,8 +1365,12 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
     lab = _day_label(game.sports_day, [game])
     html = C5.shell(kind="anchor", league=league, date_label=lab, head=head,
                     body=body, foot_left=C5.LEAGUE_LABEL.get(league, ""))
+    # ★ **문구는 우리가, 문은 텔레그램이** (v1.56).
+    # 앵커에 인라인 버튼을 달면 `댓글 남기기` 바가 사라진다 — 손님이
+    # 토론방으로 들어갈 길이 없어진다. 그래서 버튼을 떼고 안내만 남긴다.
     return html, list(C5.caption(kind="anchor", league=league, head=head,
                                  date_label=lab,
+                                 hint=ANCHOR_THREAD_HINT,
                                  tags=_tags("anchor", league, [game])))
 
 

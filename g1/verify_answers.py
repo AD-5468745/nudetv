@@ -401,71 +401,35 @@ finally:
 
 
 # ══════════════════════════════════════════════════════════════
-print("\n8. 앵커 버튼 — 토론방으로 가는 자리")
+print("\n8. 앵커 버튼 — **떼기로 했다** (v1.56)")
 # ══════════════════════════════════════════════════════════════
-from contract import BUTTON_CONTENT_TYPES, DISCUSSION_BUTTON_TEXT  # noqa: E402
-from sender import SendState                                       # noqa: E402
+#
+# 여기 있던 검사들은 v1.39~v1.55의 동작(앵커에 토론방 버튼을 단다)을
+# 지키고 있었다. 그 동작을 **버렸다** — 실채널에서 두 번 안 먹었고,
+# 무엇보다 **인라인 버튼이 텔레그램의 `댓글 남기기` 바를 덮어** 손님이
+# 토론방으로 들어갈 문 자체가 사라졌기 때문이다(대표님 화면 확인).
+#
+# ★ **그때 배운 것은 남긴다** — 되살릴 날이 오면 이 세 가지를 다시 지켜야 한다:
+#   ① 텔레그램은 **모든 채널 글**을 토론방으로 전달한다. 전달 지도를 그대로
+#      돌면 득점 속보·순위표까지 버튼이 붙는다(실제로 그랬다).
+#   ② 그룹 주소(`t.me/<그룹>/<번호>`)는 **그룹 입장 화면**을 연다.
+#      그 경기 댓글창이 아니다.
+#   ③ 같은 글을 두 번 고치면 텔레그램이 오류를 준다.
+from contract import BUTTON_CONTENT_TYPES, DISCUSSION_BUTTON_TEXT  # noqa: E402,F401
+from sender import SendState                                       # noqa: E402,F401
 
-check("★★ 앵커에 버튼이 붙는다 (채널에 나가는 유일한 장이다)",
-      "anchor" in BUTTON_CONTENT_TYPES, str(sorted(BUTTON_CONTENT_TYPES)))
-check("  ↳ 문구가 정해져 있다", "토론방" in DISCUSSION_BUTTON_TEXT)
-
-check("★★ 공개 그룹과 비공개 그룹의 주소 꼴이 다르다",
+check("★★★ 앵커에 버튼을 달지 않는다 (댓글 바를 덮지 않는다)",
+      "anchor" not in BUTTON_CONTENT_TYPES, str(sorted(BUTTON_CONTENT_TYPES)))
+check("★★ 주소 꼴을 만드는 함수는 그대로 둔다 (되살릴 자리를 지우지 않는다)",
+      D.comment_link("@ch", 983, 41) == "https://t.me/ch/983?comment=41",
+      D.comment_link("@ch", 983, 41))
+check("  ↳ 공개 아이디를 알면 그 꼴을 쓴다 (비공개 꼴은 `?comment=`가 무시된다)",
+      # ⚠️ 실제 채널 번호를 적지 않는다 — 공개 저장소다(게이트가 잡았다).
+      D.comment_link("-1009999999999", 983, 41, username="ch")
+      == "https://t.me/ch/983?comment=41")
+check("★★ 그룹 주소와 채널 댓글 주소는 **다른 것**이다 (그룹 입장 화면이 뜬다)",
       D.thread_link("@g", 41) == "https://t.me/g/41"
-      and D.thread_link("-1009999999999", 41) == "https://t.me/c/9999999999/41",
-      D.thread_link("@g", 41))
-
-
-class _BtnTr:
-    def __init__(self): self.sets = []
-    def call(self, method, payload, files=None):
-        if method == "editMessageReplyMarkup":
-            self.sets.append(payload)
-            return {"ok": True}
-        return {"message_id": 1}
-
-
-_bst = D.DiscussionState(pathlib.Path(tempfile.mkdtemp()) / "b.json")
-_bst.remember(983, 41)      # 앵커
-_bst.remember(984, 42)      # 득점 속보 — 텔레그램은 **모든 채널 글**을 전달한다
-
-
-class _LedA:
-    """대장 대역 — 983번만 앵커다."""
-    def __init__(self):
-        from contract import ContentType as _CT
-        class _R:
-            state = SendState.SENT
-            message_ids = [983]
-        self._rows = {f"ch|{_CT.ANCHOR.value}|KBO:2026-09-17:g1|s0|r0": _R()}
-
-
-_saved_dc = T.DISCUSSION_CHAT_ID
-try:
-    T.DISCUSSION_CHAT_ID = "@somegroup"
-    _btr = _BtnTr()
-    T._fill_thread_buttons(_btr, _bst, "@mych", _LedA())
-    check("★★ 전달 번호를 알면 그 앵커에 버튼을 채운다", len(_btr.sets) == 1,
-          str(len(_btr.sets)))
-    _rows = _btr.sets[0]["reply_markup"]["inline_keyboard"] if _btr.sets else []
-    check("★★★ 버튼이 **그 채널 글의 댓글창**을 가리킨다 (그룹 입장이 아니라)",
-          _rows and _rows[0][0]["url"] == "https://t.me/mych/983?comment=41",
-          str(_rows[:1]))
-    check("  ↳ 문구가 '토론방'이다", _rows and "토론방" in _rows[0][0]["text"])
-    check("★★★ 앵커가 아닌 글에는 안 단다 (모든 카드에 붙었던 사고)",
-          len(_btr.sets) == 1
-          and int(_btr.sets[0]["message_id"]) == 983, str(_btr.sets))
-    _btr2 = _BtnTr()
-    T._fill_thread_buttons(_btr2, _bst, "@mych", _LedA())
-    check("★★ 같은 앵커를 두 번 고치지 않는다 (텔레그램이 오류를 준다)",
-          len(_btr2.sets) == 0, str(len(_btr2.sets)))
-    T.DISCUSSION_CHAT_ID = ""
-    _btr3 = _BtnTr()
-    T._fill_thread_buttons(_btr3, D.DiscussionState(
-        pathlib.Path(tempfile.mkdtemp()) / "c.json"), "@mych", _LedA())
-    check("★★ 토론방이 없으면 아무것도 안 한다", len(_btr3.sets) == 0)
-finally:
-    T.DISCUSSION_CHAT_ID = _saved_dc
+      and D.comment_link("@ch", 983, 41) != D.thread_link("@g", 41))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -524,6 +488,31 @@ check("★★★ 속보도 채널로 새지 않는다 (경기별 콘텐츠는 �
       ContentType.GOAL_FLASH in T.WAIT_FOR_THREAD_TYPES
       and ContentType.KICKOFF in T.WAIT_FOR_THREAD_TYPES
       and ContentType.FINAL_FLASH in T.WAIT_FOR_THREAD_TYPES)
+# ══════════════════════════════════════════════════════════════
+print("\n10-2. ★★★ 앵커에는 버튼을 달지 않는다 (v1.56)")
+# ══════════════════════════════════════════════════════════════
+#
+# 앵커는 손님이 토론방으로 들어가는 **유일한 문**이고, 그 문은 텔레그램이
+# 직접 그리는 `댓글 남기기` 바다. 우리가 인라인 버튼을 달자 **그 바가
+# 사라졌다**(2026-09-18 대표님 화면: 버튼 둘만 보이고 댓글 바가 없다).
+#
+# 버튼 주소를 두 번 고쳐 봤지만 둘 다 안 열렸다:
+#   ① `t.me/c/<내부번호>/…?comment=`  — 비공개 꼴이라 텔레그램이 무시
+#   ② `t.me/<공개아이디>/…?comment=`  — 공개로 바꾼 뒤에도 안 열림
+# **문을 새로 만들지 말고, 원래 있던 문을 막지 않는다.**
+from contract import (BUTTON_CONTENT_TYPES as _BCT,             # noqa: E402
+                      ANCHOR_THREAD_HINT as _HINT)
+check("★★★ 앵커는 버튼 다는 종류에서 빠져 있다 (댓글 바를 덮지 않는다)",
+      "anchor" not in _BCT, str(sorted(_BCT)))
+check("★★ 토론방 밖에 남는 카드는 버튼을 그대로 쓴다 (잃은 것은 앵커뿐)",
+      {"kickoff", "lineup", "goal_flash"} <= _BCT, str(sorted(_BCT)))
+check("★★★ 앵커 캡션이 **길을 알려 준다** (버튼 대신 문구가 맡는다)",
+      "댓글" in _HINT and _HINT.startswith("👇"), _HINT)
+import inspect as _insp56                                       # noqa: E402
+check("★★★ 앵커에 버튼을 다시 달지 않는다 (배선이 멈춰 있다)",
+      _insp56.getsource(T._fill_thread_buttons).count("return") >= 1
+      and "v1.56" in _insp56.getsource(T._fill_thread_buttons))
+
 # ══════════════════════════════════════════════════════════════
 print("\n11. ★★★ 각 경기 정보는 **그 경기 토론방으로만** 간다")
 # ══════════════════════════════════════════════════════════════

@@ -1761,12 +1761,15 @@ def strip_tag_line(text: str) -> str:
 
 def caption(*, kind: str, league: Optional[League], head: Headline,
             date_label: str = "", extra_lines: Optional[list[str]] = None,
-            extra_title: str = "", note: str = "",
+            extra_title: str = "", note: str = "", hint: str = "",
             tags: Optional[list[str]] = None) -> list[str]:
     """`[0]`은 사진에 붙는 캡션, `[1:]`은 이어 보내는 텍스트.
 
     `extra_lines`는 **카드에 없는 것만** 넣는다. 카드에 있는 것을 여기 또 쓰면
     같은 내용이 한 화면에 두 번 나온다 — 그게 고치려던 문제다.
+
+    `hint`는 **제 줄을 갖는 길 안내**다(v1.56) — "아래 댓글에서 봅니다".
+    머리줄에 붙이면 날짜와 뒤엉켜 정작 눌러야 할 곳을 못 찾는다.
 
     `note`는 머리줄 끝에 붙는 짧은 단서다(v1.31). **접히지 않는 자리**에 둔다 —
     기록 기준시각처럼 **신뢰의 근거가 되는 것**은 펼쳐야 보이면 뜻이 없다.
@@ -1797,6 +1800,10 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
     head_line = "".join(parts) + f"\n{esc(lead)}"
     if head.sub:
         head_line += f" — {esc(head.sub)}"
+    if hint:
+        # **길 안내는 제 줄을 가진다.** 머리줄 끝에 붙이면 날짜·기준시각과
+        # 뒤엉켜 한 줄이 길어지고, 정작 눌러야 할 곳을 못 찾는다.
+        head_line += f"\n\n{esc(hint)}"
 
     def _tagged(parts: list[str]) -> list[str]:
         """태그를 **첫 파트 끝에** 붙인다. 안 들어가면 **버린다**.
