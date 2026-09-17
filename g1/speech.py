@@ -124,8 +124,21 @@ def polite(text: str) -> str:
         # 마침표를 떼고 바꾼 뒤 다시 붙인다
         m = re.match(r"^(.*?)([.!?]?)$", piece, re.S)
         body, dot = m.group(1), m.group(2)
-        out.append(polite_sentence(body) + dot)
+        # 붙임표로 갈린 조각도 각각 본다 — **끝나는 조각만 바뀐다**는
+        # 규칙은 그대로다(`polite_sentence`가 어미를 못 알아보면 안 건드린다).
+        if _DASH in body:
+            body = _DASH.join(polite_sentence(x) for x in body.split(_DASH))
+        else:
+            body = polite_sentence(body)
+        out.append(body + dot)
     return "".join(out)
+
+
+# 줄 가운데를 가르는 붙임표. 분석 카드의 예상글이 이 꼴을 쓴다:
+#   `다만 원정 vs 홈은 NC가 낫다 — 원정 28-38 대 홈 29-34.`
+# 마침표로만 자르면 `낫다`가 문장 끝이 아니라서 **안 바뀐 채** 남는다.
+# 실측 2026-09-18: 한 상자 안에서 `가져갑니다`와 `낫다`가 나란히 나왔다.
+_DASH = " — "
 
 
 def polite_lines(lines) -> list:

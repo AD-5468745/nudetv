@@ -772,6 +772,52 @@ def analysis_cards(rb, games: list, league: League, day: str, *,
                                  tags=_tags("analysis", league, gs)))
 
 
+def _wld_text(t) -> str:
+    """(승, 패, 무) → `3승 1패` · 무승부가 있으면 `2승 2패 1무`.
+
+    ★ **차례는 저장소 관례(승-패-무)를 따른다.** 여기만 승-무-패로 썼더니
+    한 상자 안에서 `0승 4무 1패`와 `0승 1패 4무`가 나란히 나왔다 — 같은
+    수를 두 차례로 적으면 독자가 둘을 대조하게 된다(2026-09-18 실렌더).
+    """
+    w, l, d = (int(t[0]), int(t[1]), int(t[2]) if len(t) > 2 else 0)
+    return f"{w}승 {l}패 {d}무" if d else f"{w}승 {l}패"
+
+
+def _streak_num(st):
+    """연승은 +, 연패는 −. 연속이 없으면 0. 알 수 없으면 None.
+
+    **한 축에 놓아야 비교가 된다** — 연승 3과 연패 3은 반대 방향이라
+    둘 다 '3'으로 두면 무승부로 읽힌다.
+    """
+    from contract import StreakKind as _SK
+    n = int(getattr(st, "streak_len", 0) or 0)
+    kind = getattr(st, "streak_kind", None)
+    if kind is _SK.WIN:
+        return n
+    if kind is _SK.LOSS:
+        return -n
+    if kind is None:
+        return None
+    return 0
+
+
+def _streak_text(st) -> str:
+    """`3연승` · `2연패` · 그 밖에는 `—`. **1연승이라고 쓰지 않는다** —
+    한 경기는 '연속'이 아니다(순위 카드도 그 자리에 `1승`으로 찍는다)."""
+    from contract import StreakKind as _SK
+    n = int(getattr(st, "streak_len", 0) or 0)
+    kind = getattr(st, "streak_kind", None)
+    if n >= 2 and kind is _SK.WIN:
+        return f"{n}연승"
+    if n >= 2 and kind is _SK.LOSS:
+        return f"{n}연패"
+    if n == 1 and kind is _SK.WIN:
+        return "1승"
+    if n == 1 and kind is _SK.LOSS:
+        return "1패"
+    return "—"
+
+
 def analysis_card(rb, game, league: League, day: str, *,
                   team_stats: dict | None = None, history: list | None = None,
                   now: datetime | None = None) -> tuple[str, list[str]] | None:
@@ -791,13 +837,21 @@ def analysis_card(rb, game, league: League, day: str, *,
     metrics: list = []
     rows: list = []
 
-    def add(label, av, hv, at, ht, higher, *, compare=True):
-        """표에 한 줄 싣는다. `compare=False`면 **우위 계산에서 뺀다.**"""
+    def add(label, av, hv, at, ht, higher, *, compare=True, row=True):
+        """표에 한 줄 싣는다.
+
+        `compare=False` — **우위 계산에서 뺀다**(표에는 남는다).
+        `row=False`     — **표에서 뺀다**(세기에는 남는다). 카드 아래쪽이
+                          이미 그림으로 말하는 값에 쓴다. 같은 사실을 표와
+                          그림으로 두 번 그리면 카드가 길어지기만 한다.
+        """
         m = H.Metric(label=label, away_text=at, home_text=ht,
                      away_val=av, home_val=hv, higher_better=higher,
                      as_of=as_of)
         if compare:
             metrics.append(m)
+        if not row:
+            return
         w = m.winner()
         rows.append((at, label, ht, "l" if w == "away" else ("r" if w == "home" else "")))
 
@@ -817,6 +871,68 @@ def analysis_card(rb, game, league: League, day: str, *,
         add("최근10", sa.last10.win, sh.last10.win,
             f"{sa.last10.win}-{sa.last10.loss}", f"{sh.last10.win}-{sh.last10.loss}",
             True)
+
+    import pipeline as P                  # 최근 폼·맞대결 셈은 옛 파일이 원천이다
+
+    # ── **비교 항목을 넷 늘린다 (v1.43)** ────────────────────────
+    #
+    # 대표님 지시(2026-09-18): *"경기분석 승리팀 예측등 컨텐츠가 더 있을텐데?"*
+    #
+    # 예상 한 줄(`기록은 삼성 쪽이다 — 6개 항목 중 4개`)은 **비교 항목이 셋
+    # 이상**이어야 뜬다(`headline.for_preview`). 그런데 팀 기록(타율·평균자책)이
+    # KBO 전용이라 나머지 리그는 순위·승률 둘뿐이었다.
+    # **실측 2026-09-18: 예정 경기 121장 중 예상이 붙은 카드 0장.**
+    #
+    # 아래 넷은 **이미 갖고 있는 값**이다 — 새 소스도 유료 API도 필요 없다.
+
+    # ① 홈 이점 — 홈 팀의 *홈 성적* vs 원정 팀의 *원정 성적*.
+    #    같은 '승률'을 또 비교하는 게 아니다. 이 경기에서 각자가 서는
+    #    **그 자리의** 성적이라, 예측에서 가장 자주 쓰이는 축이다.
+    if (sa.away and sa.away.total) and (sh.home and sh.home.total):
+        _aw = sa.away.win / max(1, sa.away.win + sa.away.loss)
+        _hw = sh.home.win / max(1, sh.home.win + sh.home.loss)
+        add("원정 vs 홈", _aw, _hw,
+            f"원정 {sa.away.win}-{sa.away.loss}", f"홈 {sh.home.win}-{sh.home.loss}",
+            True)
+
+    # ② 최근 5경기 — 카드 아래 그림으로만 있고 **비교에는 안 들어갔다**.
+    #    순위표가 최근10을 주는 리그(KBO)는 겹치므로 넣지 않는다.
+    if not (sa.last10 and sh.last10 and sa.last10.total and sh.last10.total):
+        _f5a = P.form_record(history, a, game.start_utc) if history else None
+        _f5h = P.form_record(history, h, game.start_utc) if history else None
+        if _f5a and _f5h and sum(_f5a) and sum(_f5h):
+            # 승 1점 · 무 0.5점 — 무승부가 있는 종목에서 승만 세면 거짓이 된다.
+            _pa5 = _f5a[0] + _f5a[2] * 0.5
+            _ph5 = _f5h[0] + _f5h[2] * 0.5
+            # **표에는 안 싣는다** — 카드 아래가 이미 승·무·패 점으로 그린다.
+            # 맞대결과 같은 이유다(표 + 그림 = 같은 사실 두 번, 카드만 길어진다).
+            add("최근 5경기", _pa5, _ph5, _wld_text(_f5a), _wld_text(_f5h),
+                True, row=False)
+
+    # ③ 시즌 맞대결 — 소스가 주면 그것, 없으면 우리가 센다(`_h2h_of`가 그렇게 한다).
+    #    ★ **소스가 먼저, 없을 때만 우리가 센다** — `_h2h_of`가 정한 순서를
+    #    그대로 따른다. 두 곳이 다른 표본을 쓰면 카드가 스스로 어긋난다.
+    _mw = None
+    try:
+        _mw = rb.between(a, h)
+    except Exception:                                    # noqa: BLE001
+        _mw = None
+    if (_mw is None or not _mw.total) and history:
+        _got = P.h2h_from_games(history, a, h)
+        _mw = _got[0] if _got else None
+    if _mw is not None and getattr(_mw, "total", 0):
+        # **표에는 안 싣는다** — 카드 아래 막대그림(`body_h2h`)이 같은 값을
+        # 이미 그린다. 실측 2026-09-18: 표 한 줄 · 막대 · 예상글까지
+        # **같은 맞대결이 한 카드에 세 번** 나왔다.
+        add("시즌 맞대결", _mw.win, _mw.loss,
+            _wld_text((_mw.win, _mw.loss, _mw.draw)),
+            _wld_text((_mw.loss, _mw.win, _mw.draw)), True, row=False)
+
+    # ④ 연승·연패 — 흐름이다. 연승은 +, 연패는 −로 한 축에 놓는다.
+    _sa_n = _streak_num(sa)
+    _sh_n = _streak_num(sh)
+    if _sa_n is not None and _sh_n is not None and (_sa_n or _sh_n):
+        add("흐름", _sa_n, _sh_n, _streak_text(sa), _streak_text(sh), True)
     # ── **승점 · 전적** (v1.40) — 축구가 비교표 세 줄을 못 채우는 문제 ──
     #
     # K리그 순위표에는 최근10도 홈·원정 분리도 없다(소스가 안 준다). 팀 기록도
@@ -903,8 +1019,12 @@ def analysis_card(rb, game, league: League, day: str, *,
         return None                        # 순위·승률뿐이면 '분석'이 아니다
     # ── 근거를 여러 각도로 (v1.16 — 대표님: *"분석글을 상세하게"*) ──
     # 확률은 만들지 않는다. **가진 값의 각도를 늘린다.**
+    # ★ **비교 항목에 이미 넣었으면 예상글의 전용 줄은 뺀다** (2026-09-18).
+    # 둘 다 있으면 `다만 최근 5경기는 김천이 낫습니다 — …` 바로 밑에
+    # `최근 5경기는 김천 …`이 또 나온다. 한 상자에 같은 말이 두 번이다.
     _form = None
-    if history:
+    _has_form_metric = any(m.label == "최근 5경기" for m in metrics)
+    if history and not _has_form_metric:
         _fa = P.form_record(history, a, game.start_utc)
         _fh = P.form_record(history, h, game.start_utc)
         if sum(_fa) and sum(_fh):
@@ -949,6 +1069,16 @@ def analysis_card(rb, game, league: League, day: str, *,
     if _w2 is not None and getattr(_w2, "total", 0):
         body += C5.body_h2h(na, nh, _w2.win, _w2.loss, _w2.draw)
     if verdict:
+        # ★ **카드 안에서 말투가 갈리면 안 된다** (2026-09-18 실렌더).
+        # 예상글은 기사체(`가져간다`)인데 바로 아래 꼬리말은 존댓말
+        # (`보장하지 않습니다`)이라, 한 상자 안에 두 목소리가 섞여 있었다.
+        # 캡션과 같은 변환기를 쓴다 — 문장을 고치지 않고 어미만 바꾼다.
+        try:
+            import speech as _SP
+            verdict = replace(verdict,
+                              lines=tuple(_SP.polite_lines(list(verdict.lines))))
+        except Exception:                                # noqa: BLE001
+            pass
         body += C5.body_verdict(verdict)
     foot = " · ".join([x for x in (kst, place) if x]) or day
     lab = _day_label(day, [game])
