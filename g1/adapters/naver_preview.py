@@ -58,7 +58,17 @@ PREVIEW_LEAGUES: dict = {
     League.KBO: ("kbaseball", "kbo"),
     League.MLB: ("wbaseball", "mlb"),
     League.NPB: ("wbaseball", "npb"),
+    # ★ **축구도 있다** (2026-09-18 정정).
+    # 처음에 "축구엔 이 창구가 없다"고 적었는데, **유럽 경기로만 확인한**
+    # 탓이었다. 국내 축구는 미리보기가 꽉 차 있다 — 순위·승무패·경기당
+    # 득실 · 주목 선수(공격포인트) · BEST5 · 최근 맞대결 3경기.
+    # 분류 이름도 `kleague1`이 아니라 **`kleague`**다(그것도 틀렸었다).
+    League.KL1: ("kfootball", "kleague"),
 }
+
+# 종목이 다르면 들어 있는 칸이 다르다. **칸 이름을 리그마다 짐작하지 않는다.**
+BASEBALL_LEAGUES = frozenset({League.KBO, League.MLB, League.NPB})
+FOOTBALL_LEAGUES = frozenset({League.KL1})
 
 _sched: dict = {}                 # (리그, 날짜) → (받은시각, {(원정,홈): [(시각, id)]})
 _cache: dict = {}                 # gameId → (받은시각, 미리보기)
@@ -347,4 +357,75 @@ def next_games(rec: dict, side: str) -> list:
         if not (d and an and hn):
             continue
         out.append((d, an, hn, str(g.get("stadium") or "")))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# 축구 미리보기 (v1.46)
+# ══════════════════════════════════════════════════════════════
+#
+# 야구와 **칸 이름이 완전히 다르다**(`hometeam_record` ↔ `homeStandings`).
+# 그래서 뽑는 함수도 따로 둔다 — 한 함수에 두 종목을 넣으면 `or`가 늘어나고,
+# 그러다 한쪽 칸이 사라지는 날 어느 종목이 빈 것인지 알 수 없게 된다.
+
+
+def fb_team_record(pv: dict, side: str) -> dict:
+    """축구 팀 기록 — 순위 · 승무패 · **경기당 득점/실점**. 없으면 빈 dict.
+
+    경기당 득실은 우리 분석 카드가 자리(`gf`·`ga`)만 만들어 두고 한 번도
+    채우지 못한 값이다 — 축구 팀 기록을 주는 곳이 없었기 때문이다.
+    """
+    d = (pv or {}).get(f"{side}team_record") or {}
+    out: dict = {}
+    if d.get("rank") is not None:
+        out["rank"] = d["rank"]
+    for k in ("won", "drawn", "lost"):
+        if d.get(k) is not None:
+            out[k] = d[k]
+    if _num(d.get("gainGoalAvg")) is not None:
+        out["gf"] = str(d["gainGoalAvg"])
+    if _num(d.get("lossGoalAvg")) is not None:
+        out["ga"] = str(d["lossGoalAvg"])
+    return out
+
+
+def fb_top_player(pv: dict, side: str) -> Optional[dict]:
+    """축구 주목 선수 — 공격포인트·골·도움·출전. 없으면 None."""
+    d = (pv or {}).get(f"{side}_team_top_player") or {}
+    name = str(d.get("playerName") or "").strip()
+    if not name:
+        return None
+    out: dict = {"name": name}
+    for k, ours in (("goals", "goals"), ("assists", "assists"),
+                    ("attackPoint", "points"), ("plays", "plays")):
+        if d.get(k) is not None:
+            out[ours] = d[k]
+    return out
+
+
+def fb_best5(pv: dict, side: str) -> list:
+    """`[(이름, 골, 도움)]` — 공격포인트 상위 다섯. 없으면 빈 목록."""
+    out = []
+    for p in (pv or {}).get(f"{side}_team_best5_players") or []:
+        nm = str(p.get("playerName") or "").strip()
+        if not nm:
+            continue
+        out.append((nm, p.get("goals"), p.get("assists")))
+    return out
+
+
+def fb_recent_vs(pv: dict) -> list:
+    """`[(연도, 홈이름, 홈골, 원정골, 원정이름)]` — 최근 맞대결.
+
+    **점수 칸이 비면 버린다** — 아직 안 치른 경기가 섞여 들어오는 것을
+    야구 쪽에서 이미 겪었다(0-0으로 찍혔다).
+    """
+    out = []
+    for g in (pv or {}).get("team_vs_lately_game_resultlist") or []:
+        hg, ag = g.get("homeGainGoal"), g.get("awayGainGoal")
+        hn = str(g.get("homeTeamName") or "")
+        an = str(g.get("awayTeamName") or "")
+        if hg is None or ag is None or not (hn and an):
+            continue
+        out.append((str(g.get("meetYear") or ""), hn, int(hg), int(ag), an))
     return out

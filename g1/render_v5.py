@@ -1326,6 +1326,89 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
                                  tags=_tags("anchor", league, [game])))
 
 
+def _pregame_football(game, league: League, preview: dict, na: str, nh: str):
+    """축구 경기 전 정보 (v1.46).
+
+    야구와 **같은 장 이름, 다른 내용**이다 — 선발투수가 없는 종목이라
+    그 자리를 팀 기록과 주목 선수가 대신한다.
+
+    ★ **경기당 득점/실점**은 우리 분석 카드가 자리만 만들어 두고 한 번도
+    채우지 못한 값이다(축구 팀 기록을 주는 곳이 없었다). 여기서 처음 쓴다.
+    """
+    from adapters import naver_preview as _NP
+    ra = _NP.fb_team_record(preview, "away")
+    rh = _NP.fb_team_record(preview, "home")
+    body = ""
+    if ra and rh:
+        _rows = []
+        if ra.get("rank") and rh.get("rank"):
+            _rows.append((f"{ra['rank']}위", "순위", f"{rh['rank']}위"))
+        # 승·무·패는 **한 줄로 합친다** — 세 줄로 쪼개면 카드만 길어지고
+        # 셋을 따로 견주는 사람은 없다.
+        if all(k in ra for k in ("won", "drawn", "lost")) and \
+                all(k in rh for k in ("won", "drawn", "lost")):
+            _rows.append((f"{ra['won']}승 {ra['lost']}패 {ra['drawn']}무", "전적",
+                          f"{rh['won']}승 {rh['lost']}패 {rh['drawn']}무"))
+        if ra.get("gf") and rh.get("gf"):
+            _rows.append((ra["gf"], "경기당 득점", rh["gf"]))
+        if ra.get("ga") and rh.get("ga"):
+            _rows.append((ra["ga"], "경기당 실점", rh["ga"]))
+        if _rows:
+            body += ('<div class="anh">팀 기록<span>올 시즌</span></div>'
+                     + "".join(
+                         f'<div class="cmp"><div class="v r">{C5.esc(a)}</div>'
+                         f'<div class="k">{C5.esc(k)}</div>'
+                         f'<div class="v">{C5.esc(h)}</div></div>'
+                         for a, k, h in _rows))
+
+    # 주목 선수 — 공격포인트로 뽑힌 한 명씩.
+    ta, th = _NP.fb_top_player(preview, "away"), _NP.fb_top_player(preview, "home")
+    if ta and th:
+        def _line(d):
+            bits = []
+            if d.get("goals") is not None:
+                bits.append(f"{d['goals']}골")
+            if d.get("assists") is not None:
+                bits.append(f"{d['assists']}도움")
+            return " ".join(bits)
+        body += ('<div class="anh">주목 선수<span>공격포인트</span></div>'
+                 '<div class="duo"><div>'
+                 f'<div class="n"><b class="tn">{C5.esc(ta["name"])}</b></div>'
+                 f'<div class="p">{C5.esc(_line(ta))}</div></div>'
+                 '<div class="x">VS</div><div>'
+                 f'<div class="n r"><b class="tn">{C5.esc(th["name"])}</b></div>'
+                 f'<div class="p r">{C5.esc(_line(th))}</div></div></div>')
+
+    if not body:
+        return None
+
+    kst, _loc = format_kickoff(game)
+    head = H.Headline(rule="P-PREGAME", text=f"{na} vs {nh}",
+                      sub=f"{kst} 시작", facts={"away": na, "home": nh})
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="pregame", league=league, date_label=lab, head=head,
+                    body=body, foot_left=(venue_name(game.venue) or "")
+                    if game.venue else C5.LEAGUE_LABEL.get(league, ""))
+
+    # 캡션 — 카드에 자리가 없는 것: 각 팀 BEST5와 최근 맞대결.
+    extra: list = []
+    for _side, _nm2 in (("away", na), ("home", nh)):
+        b5 = _NP.fb_best5(preview, _side)
+        if not b5:
+            continue
+        extra.append(f"{_nm2} — " + " · ".join(
+            f"{n} {g or 0}골 {a or 0}도움" for n, g, a in b5[:3]))
+    _rv = _NP.fb_recent_vs(preview)
+    if _rv:
+        extra.append("")
+        extra.append("■ 최근 맞대결")
+        extra.extend(f"{y} {hn} {hg}-{ag} {an}" for y, hn, hg, ag, an in _rv[:3])
+    return html, list(C5.caption(
+        kind="pregame", league=league, head=head, date_label=lab,
+        extra_lines=extra or None, extra_title="주목 선수" if extra else "",
+        tags=_tags("pregame", league, [game])))
+
+
 def pregame_card(game, league: League, *, preview: dict | None = None,
                  now: datetime | None = None) -> tuple[str, list[str]] | None:
     """경기 전 정보 — 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜 (v1.44 · 2차).
@@ -1347,6 +1430,10 @@ def pregame_card(game, league: League, *, preview: dict | None = None,
         return None
     na = C5._nm(league, game.away)
     nh = C5._nm(league, game.home)
+
+    # ── 축구는 칸이 완전히 다르다 (v1.46) ───────────────────────
+    if league in _NP.FOOTBALL_LEAGUES:
+        return _pregame_football(game, league, preview, na, nh)
 
     body = ""
     _sa = _NP.starter(preview, "away")
