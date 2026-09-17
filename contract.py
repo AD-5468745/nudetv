@@ -896,6 +896,12 @@ class GameMeta:
     # 흔들려 골이 사라졌다 돌아올 때 **같은 골이 두 번** 나간다.
     goal_seen_at: dict = field(default_factory=dict)
 
+    # 하이라이트 영상이 있는 경기인가 (v1.49).
+    # 대표님 지시(2026-09-17): *"스포츠경기영상 시청을 유도할 수 있는 컨텐츠"*.
+    # 소스가 경기마다 주는데 우리가 한 번도 안 쓰던 값이다(실측 2026-09-18).
+    # **모르면 False다** — 없는 영상을 있다고 하면 손님이 헛걸음한다.
+    has_video: bool = False
+
     # v1.9 신설 — 코리안리거·리더보드
     player_lines: list[PlayerLine] = field(default_factory=list)
 

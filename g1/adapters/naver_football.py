@@ -374,7 +374,8 @@ class NaverFootballAdapter(NoticeMixin):
             # 현지 병기가 없을 뿐 틀린 값이 찍히지는 않는다.
             home_tz="Asia/Seoul",
             status=status, score=score, venue=None,
-            meta=GameMeta())
+            # 하이라이트 유무는 **소스가 주는 그대로** 담는다. 없으면 False.
+            meta=GameMeta(has_video=bool(g.get("hasVideo"))))
 
     # ── 한국 선수 경기만 (v1.15) ──────────────────────────────
     def _korean_only(self, games: list[Game], now: datetime) -> list[Game]:

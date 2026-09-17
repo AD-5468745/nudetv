@@ -971,10 +971,34 @@ def _record_jobs() -> dict:
     from adapters.npb_records import NpbRecordAdapter
     from adapters.naver_stats import NaverStatsAdapter
     _y = _season_year()
-    return {"KBO": lambda: KboRecordAdapter().fetch(),
+    jobs = {"KBO": lambda: KboRecordAdapter().fetch(),
             "NPB": lambda: NpbRecordAdapter().fetch(),
             "MLB": lambda: NaverStatsAdapter(League.MLB).fetch(_y),
             "KL1": lambda: NaverStatsAdapter(League.KL1).fetch(_y)}
+
+    # ── **유럽 축구 순위 (v1.49)** ──────────────────────────────
+    #
+    # 대표님: *"야구시즌 끝나면 단조로워질거야"*. 11~2월에 남는 종목이
+    # 축구인데, **유럽 7개 대회는 순위 기록을 아예 안 모으고 있었다** —
+    # 그래서 분석 카드가 한 장도 안 나갔다.
+    #
+    # 네이버는 유럽 순위를 안 준다(실측: 창구 8개 전부 403/400).
+    # football-data가 준다. 팀 이름은 **경기 킥오프 시각으로 자동 대조**한다
+    # (`fd_records.build_mapping`) — 140팀 표를 손으로 적지 않는다.
+    #
+    # 키가 없으면 아무 일도 안 한다 — 지금까지와 똑같이 돈다.
+    try:
+        from adapters import fd_records as _FDR
+        from adapters.football_data import LEAGUE_TO_CODE as _FDC, load_token
+        _tok = load_token()
+    except Exception:                                    # noqa: BLE001
+        _tok = ""
+    if _tok and _FDR.FD_RECORDS_ENABLED:
+        for _lg, _code in _FDC.items():
+            def _mk(lg=_lg, code=_code):
+                return _FDR.fetch(lg, code, _load_games(lg.value), _tok)
+            jobs[_lg.value] = _mk
+    return jobs
 
 
 
@@ -1388,6 +1412,8 @@ def _save_games(name: str, games: list) -> None:
         # **골을 처음 본 시각** (v1.35). fix49와 같은 자리다 — 여기 없으면
         # 매 틱 모든 골이 '새 골'로 보여 같은 속보가 무한히 반복된다.
         "goal_seen_at": g.meta.goal_seen_at or None,
+        # 하이라이트 유무 (v1.49). **False는 안 담는다** — 스냅샷이 커진다.
+        "has_video": True if g.meta.has_video else None,
     } for g in games]
     tmp = _snap_path(name).with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -1493,7 +1519,9 @@ def _load_games(name: str) -> list:
                           lineup=d.get("lineup") or None,
                           lineup_seen_at=d.get("lineup_seen_at"),
                           # v1.35 — 없으면 빈 dict라 옛 스냅샷도 그냥 읽힌다.
-                          goal_seen_at=dict(d.get("goal_seen_at") or {}))))
+                          goal_seen_at=dict(d.get("goal_seen_at") or {}),
+                          # 없으면 False — 옛 스냅샷도 그냥 읽힌다.
+                          has_video=bool(d.get("has_video")))))
     # **저장된 라인업 안의 한국 선수를 되살린다** (v1.17c).
     # `player_lines`는 스냅샷에 담지 않는 칸이라(야구 기록 경로의 몫) 축구는
     # `lineup["korean"]`에 실어 저장했다. 여기서 되돌리지 않으면 카드가
@@ -3464,6 +3492,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if len(_hs) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_hs)}건")
         _homeless.clear()
+    # 유럽 순위 수집이 남긴 진단 (v1.49) — 대조가 덜 됐다거나 등급에 막혔다거나.
+    try:
+        from adapters import fd_records as _FDn
+        _fdn = _FDn.take_notes()
+    except Exception:                                    # noqa: BLE001
+        _fdn = []
+    if _fdn:
+        _seen2: list = []
+        for n in _fdn:
+            if n not in _seen2:
+                _seen2.append(n)
+        lines += [f"유럽 순위 — {n}" for n in _seen2[:3]]
     _ar = take_archive_rejects()
     if _ar:
         _seen: list = []

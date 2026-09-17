@@ -1792,6 +1792,18 @@ def flash_card(game, league: League, *, now: datetime | None = None, rb=None
     # 대표님 설계에도 취소·우천취소는 따로 알리는 항목이다.
     _kind = _KIND_BY_STATUS.get(getattr(game, "status", None), "result")
     extra = _lineup_body(game, league, with_goals=True) if LINEUP_ENABLED else None
+    # ── **하이라이트가 있는 경기는 그렇다고 말한다** (v1.49) ──────
+    #
+    # 대표님 지시(2026-09-17): *"스포츠경기영상 시청을 유도할 수 있는 컨텐츠"*.
+    # 소스가 경기마다 주는 값인데 우리가 한 번도 안 쓰고 있었다(실측 2026-09-18:
+    # 유럽 경기에 실제로 `있음/없음`이 갈려서 온다).
+    #
+    # **주소는 안 붙인다.** 우리가 가진 것은 '있다/없다'뿐이고, 어디서 보는지는
+    # 모른다. 없는 주소를 지어내느니 사실만 적는다.
+    if getattr(getattr(game, "meta", None), "has_video", False):
+        extra = (extra or "") + (
+            '<div class="bar"><span class="k">하이라이트</span>'
+            '<span class="v">이 경기는 하이라이트 영상이 있습니다</span></div>')
     return result_card([game], league, game.sports_day, now=now,
                        extra_body=extra or "", kind=_kind, rb=rb)
 

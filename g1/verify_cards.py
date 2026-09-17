@@ -1214,6 +1214,51 @@ check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그�
       _LG38.emblem_url("옛 e스포츠 리그", "T1") is None)
 
 # ══════════════════════════════════════════════════════════════
+print("\n★ 하이라이트 표시 (v1.49)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-17): *"스포츠경기영상 시청을 유도할 수 있는 컨텐츠"*.
+# 소스가 경기마다 주는 값인데 한 번도 안 쓰고 있었다.
+import render_v5 as _R49                                        # noqa: E402
+from datetime import datetime as _dt49, timezone as _tz49       # noqa: E402
+
+
+class _VidM(_Meta):
+    """렌더가 보는 칸을 다 갖춘 대역. **가짜가 계약보다 좁으면 안 된다.**"""
+
+    def __init__(self, has_video):
+        super().__init__(None)
+        self.line_score = []
+        self.line_totals = {}
+        self.goals = ()
+        self.highlights = ()
+        self.lineup = None
+        self.decided_by = None
+        self.penalties = None
+        self.aggregate = None
+        self.set_scores = []
+        self.has_video = has_video
+
+
+class _VidG(_G):
+    def __init__(self, has_video):
+        super().__init__("OB", "SS", 3, 1, venue="잠실")
+        self.meta = _VidM(has_video)
+        self.is_terminal = True
+        self.league = KBO
+        self.start_local = self.start_kst
+
+
+_with = _R49.flash_card(_VidG(True), KBO, now=_dt49.now(_tz49.utc))
+_without = _R49.flash_card(_VidG(False), KBO, now=_dt49.now(_tz49.utc))
+check("★★ 하이라이트가 있으면 카드가 그렇다고 말한다",
+      bool(_with) and "하이라이트" in _with[0])
+check("★★★ 없으면 **말하지 않는다** (없는 영상을 있다고 하면 헛걸음한다)",
+      bool(_without) and "하이라이트" not in _without[0])
+check("  ↳ 주소를 지어내지 않는다 (우리가 아는 것은 있다/없다뿐)",
+      bool(_with) and "http" not in _with[0].split("하이라이트")[1][:200])
+
+# ══════════════════════════════════════════════════════════════
 print("\n★ 분석 카드의 비교 항목 (1차 — v1.43)")
 # ══════════════════════════════════════════════════════════════
 #

@@ -359,5 +359,79 @@ import tick as _T2                                               # noqa: E402
 check("★★★ 보관본을 못 되살리면 이유를 남긴다 (조용히 버리지 않는다)",
       hasattr(_T2, "take_archive_rejects") and "_archive_rejects" in dir(_T2))
 
+# ══════════════════════════════════════════════════════════════
+print("\n★ 유럽 축구 — 팀 이름 자동 대조 (v1.49)")
+# ══════════════════════════════════════════════════════════════
+#
+# football-data는 영문 세 글자(MCI), 우리 데이터는 한글 약칭(맨시티)이다.
+# 140팀 대조표를 **손으로 적지 않고** 경기로 짝짓는다.
+#
+# ★ 처음엔 **날짜**로 맞췄다가 하루씩 밀려 `MCI → 아스널`이 나왔다 —
+#   18:00 UTC 경기는 한국 날짜로 다음 날이기 때문이다. 오류도 안 나고
+#   조용히 틀렸다. 그래서 **킥오프 시각**으로 맞춘다.
+from adapters import fd_records as _FD                          # noqa: E402
+from datetime import datetime as _dtf, timezone as _tzf         # noqa: E402
+
+
+class _FRef:
+    def __init__(self, c):
+        self.team_code = c
+
+
+class _FG:
+    def __init__(self, iso, h, a):
+        self.start_utc = _dtf.fromisoformat(iso).replace(tzinfo=_tzf.utc)
+        self.home, self.away = _FRef(h), _FRef(a)
+        self.sports_day = iso[:10]
+
+
+def _fake(ms):
+    return lambda path, token: {"matches": [
+        {"utcDate": i + "Z", "homeTeam": {"tla": h}, "awayTeam": {"tla": a}}
+        for i, h, a in ms]}
+
+
+def _map(src, ours):
+    _real, _FD._get = _FD._get, _fake(src)
+    try:
+        return _FD.build_mapping("PL", "x", ours)
+    finally:
+        _FD._get = _real
+
+
+_ok = _map([("2026-09-14T18:00:00", "MCI", "MUN"),
+            ("2026-09-15T19:00:00", "ARS", "LIV")],
+           [_FG("2026-09-14T18:00:00", "맨시티", "맨유"),
+            _FG("2026-09-15T19:00:00", "아스널", "리버풀")])
+check("★★★ 킥오프 시각이 같으면 팀을 올바로 짝짓는다",
+      _ok == {"MCI": "맨시티", "MUN": "맨유", "ARS": "아스널", "LIV": "리버풀"},
+      str(_ok))
+check("★★★ 날짜가 아니라 **시각**으로 맞춘다 (날짜는 기준이 서로 다르다)",
+      "_stamp" in dir(_FD) and "_day" not in dir(_FD))
+check("★★ 같은 시각에 경기가 여럿이면 짝짓지 않는다 (자리로 못 가른다)",
+      _map([("2026-09-14T18:00:00", "MCI", "MUN"),
+            ("2026-09-14T18:00:00", "ARS", "LIV")],
+           [_FG("2026-09-14T18:00:00", "맨시티", "맨유"),
+            _FG("2026-09-14T18:00:00", "아스널", "리버풀")]) == {})
+check("★★★ 한 영문코드가 두 한글이름에 붙으면 **둘 다 버린다**",
+      "MCI" not in _map([("2026-09-14T18:00:00", "MCI", "MUN"),
+                         ("2026-09-15T19:00:00", "MCI", "LIV")],
+                        [_FG("2026-09-14T18:00:00", "맨시티", "맨유"),
+                         _FG("2026-09-15T19:00:00", "맨체스터시티", "리버풀")]))
+check("★★★ 한 한글이름에 영문코드가 둘이면 **둘 다 버린다**",
+      not ({"MCI", "MNC"} & set(_map(
+          [("2026-09-14T18:00:00", "MCI", "MUN"),
+           ("2026-09-15T19:00:00", "MNC", "LIV")],
+          [_FG("2026-09-14T18:00:00", "맨시티", "맨유"),
+           _FG("2026-09-15T19:00:00", "맨시티", "리버풀")]))))
+check("★★ 연속은 폼 문자열 **끝**에서 센다 (오래된 것이 앞이다)",
+      _FD._streak_of("L,W,W,W")[1] == 3
+      and _FD._streak_of("W,L,L")[0] is StreakKind.LOSS)
+check("  ↳ 모양이 다르면 아무것도 안 만든다 (지어내지 않는다)",
+      _FD._streak_of("W,X,L") == (StreakKind.NONE, 0)
+      and _FD._streak_of("") == (StreakKind.NONE, 0))
+check("★★★ 대조가 덜 되면 그 리그 순위를 통째로 안 만든다 (반쪽 표 금지)",
+      _FD.MIN_MAPPED_RATIO >= 0.8)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)
