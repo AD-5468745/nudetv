@@ -2726,7 +2726,10 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             _pv = None                                   # 보강기다 — 실패는 조용히
         return _try_v5("analysis", lambda R: R.analysis_card(
             rb, _one, item.league, day, team_stats=_ts or team_stats,
-            history=games, now=_now(), preview=_pv))
+            history=games, now=_now(), preview=_pv,
+            # 휴식일은 **모든 대회**를 봐야 한다 — 리그만 보면 컵대회를 뛴
+            # 팀이 푹 쉰 것처럼 나온다.
+            all_games=all_games))
 
     elif item.content_type is ContentType.BOXSCORE:
         # ── **경기 기록실 (3차 · v1.45)** ──────────────────────────

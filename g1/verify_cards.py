@@ -1214,6 +1214,43 @@ check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그�
       _LG38.emblem_url("옛 e스포츠 리그", "T1") is None)
 
 # ══════════════════════════════════════════════════════════════
+print("\n★ 휴식일 (v1.51)")
+# ══════════════════════════════════════════════════════════════
+#
+# 같은 회사 사이트가 프리뷰 첫 문단으로 쓰는 값이다(2026-09-18 참고).
+# 우리는 일정 데이터를 이미 갖고 있으면서 안 쓰고 있었다.
+import pipeline as _P51                                        # noqa: E402
+import render_v5 as _R51                                       # noqa: E402
+from datetime import datetime as _d51, timedelta as _t51       # noqa: E402
+
+
+class _RG51:
+    """끝난 경기 대역 — 날짜와 두 팀만 있으면 된다."""
+
+    def __init__(self, days_ago, code, other="ZZZ", lg=None):
+        self.status = Status.FINAL
+        self.score = Score(1, 0, ScoreUnit.GOALS)
+        self.start_utc = _d51(2026, 9, 20, 6, 0, tzinfo=timezone.utc) \
+            - _t51(days=days_ago)
+        self.home, self.away = _Ref(code), _Ref(other)
+        self.game_id = f"{code}-{days_ago}"
+        self.league = lg or KBO
+
+
+_NOW51 = _d51(2026, 9, 20, 6, 0, tzinfo=timezone.utc)
+check("★★★ 며칠 쉬고 나오는지 센다",
+      (_P51.rest_days([_RG51(4, "A")], "A", _NOW51) or (None,))[0] == 4)
+check("★★★ **모든 대회**를 함께 본다 (컵대회를 뛴 팀이 푹 쉰 것처럼 나오면 안 된다)",
+      (_P51.rest_days([_RG51(7, "A"), _RG51(3, "A", lg=League.UEL)],
+                      "A", _NOW51) or (None,))[0] == 3)
+check("★★★ 너무 먼 과거면 **모른다고 답한다** (그 사이 경기를 못 봤을 수 있다)",
+      _P51.rest_days([_RG51(30, "A")], "A", _NOW51) is None)
+check("  ↳ 기록이 아예 없으면 모른다",
+      _P51.rest_days([], "A", _NOW51) is None)
+check("★★ 하루 차이는 휴식 차이가 아니다 (과장하지 않는다)",
+      _R51.REST_GAP_MIN_DAYS >= 2, str(_R51.REST_GAP_MIN_DAYS))
+
+# ══════════════════════════════════════════════════════════════
 print("\n★ 리그 이름은 한 곳이 정한다 (v1.50)")
 # ══════════════════════════════════════════════════════════════
 #

@@ -49,6 +49,9 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
 # 예전에는 옛 카드로 떨어졌지만 옛 카드 경로는 2026-09-17에 전부 걷어냈다.
 # 새 카드가 실서비스에서 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야
 # 켜 볼 수 있다. 종류별로 나눈 이유도 같다 — 하나가 잘못돼도 나머지는 산다.
+# 휴식일을 비교 항목으로 올릴 최소 차이. 하루 차이는 휴식 차이가 아니다.
+REST_GAP_MIN_DAYS = 2
+
 USE_V5 = {
     "anchor": True,          # v1.39: 그 경기의 문패 — 채널에 나가는 유일한 장
     "pregame": True,         # v1.44: 경기 전 정보 — 선발·팀기록·라인업·불펜
@@ -823,7 +826,8 @@ def _streak_text(st) -> str:
 def analysis_card(rb, game, league: League, day: str, *,
                   team_stats: dict | None = None, history: list | None = None,
                   now: datetime | None = None,
-                  preview: dict | None = None) -> tuple[str, list[str]] | None:
+                  preview: dict | None = None,
+                  all_games: list | None = None) -> tuple[str, list[str]] | None:
     # `preview`는 지금 쓰지 않는다 — **분석 카드는 이미 높이 한계에 닿아 있다**
     # (실측 2026-09-18: 선발 블록을 얹자 2585px로 넘쳐 카드가 통째로 None이
     # 됐다). 미리보기 내용은 `pregame_card`가 따로 싣는다. 인자는 남겨 둔다:
@@ -934,6 +938,23 @@ def analysis_card(rb, game, league: League, day: str, *,
         add("시즌 맞대결", _mw.win, _mw.loss,
             _wld_text((_mw.win, _mw.loss, _mw.draw)),
             _wld_text((_mw.loss, _mw.win, _mw.draw)), True, row=False)
+
+    # ⑤ **휴식일** (v1.51) — 며칠 쉬고 나오나.
+    #
+    # 같은 회사 사이트가 프리뷰 첫 문단으로 쓰는 값이다(2026-09-18 참고):
+    # *"7일 간격으로 휴식을 확보했다. 반면 상대는 유로파리그를 마치고 4일
+    # 만에 다시 뛴다."* 우리는 일정 데이터를 이미 갖고 있으면서 안 쓰고 있었다.
+    #
+    # ★ **모든 대회를 함께 본다** — 리그 경기만 세면 컵대회를 뛴 팀이 푹 쉰
+    # 것처럼 나온다. 그래서 `history`가 아니라 **전 리그 묶음**을 넘긴다.
+    _pool_all = all_games if all_games else history
+    _ra = P.rest_days(_pool_all, a, game.start_utc) if _pool_all else None
+    _rh = P.rest_days(_pool_all, h, game.start_utc) if _pool_all else None
+    # ★ **차이가 뚜렷할 때만 싣는다.** 하루 차이는 휴식 차이가 아닌데,
+    # 다른 항목이 다 팽팽한 날에는 그 하루가 '가장 벌어진 곳'으로 뽑혀
+    # `6일 대 7일`이 예상의 근거로 올라간다(실렌더로 봤다). 과장이다.
+    if _ra and _rh and abs(_ra[0] - _rh[0]) >= REST_GAP_MIN_DAYS:
+        add("휴식", _ra[0], _rh[0], f"{_ra[0]}일", f"{_rh[0]}일", True)
 
     # ④ 연승·연패 — 흐름이다. 연승은 +, 연패는 −로 한 축에 놓는다.
     _sa_n = _streak_num(sa)

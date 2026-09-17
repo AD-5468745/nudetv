@@ -3658,6 +3658,38 @@ def _team_result(g: Game, code: str) -> str:
     return "W" if mine > yours else "L"
 
 
+def rest_days(history: list[Game], code: str, before_utc: datetime):
+    """그 팀이 **며칠 쉬고** 이 경기에 나오나. `(일수, 직전경기)`. 모르면 None.
+
+    같은 회사 사이트(2026-09-18 참고)가 프리뷰의 첫 문단으로 쓰는 값이다:
+    *"맨체스터 시티는 7일 간격으로 휴식을 확보했다. 반면 선덜랜드는
+    유로파리그 경기를 마치고 4일 만에 다시 뛴다."*
+
+    ★ **모든 대회를 함께 본다.** 리그 경기만 세면 컵대회를 뛴 팀이 푹 쉰 것
+    처럼 나온다 — 위 예시의 선덜랜드가 정확히 그 경우다(유로파리그).
+    그래서 `history`에는 **그 팀이 나온 모든 경기**를 넣어 부른다.
+
+    ⚠️ **우리가 가진 경기만 본다.** 수집을 시작한 지 얼마 안 된 리그는 직전
+    경기가 스냅샷에 없을 수 있고, 그러면 '오래 쉬었다'가 거짓이 된다.
+    그래서 **너무 먼 과거면 모른다고 답한다**(`REST_DAYS_MAX`).
+    """
+    gs = [g for g in history
+          if g.status is Status.FINAL and g.start_utc < before_utc
+          and code in (g.home.team_code, g.away.team_code)]
+    if not gs:
+        return None
+    last = max(gs, key=lambda g: g.start_utc)
+    days = (before_utc - last.start_utc).total_seconds() / 86400
+    if days > REST_DAYS_MAX:
+        return None                       # 그 사이 경기를 우리가 못 봤을 수 있다
+    return (int(round(days)), last)
+
+
+# 이보다 오래 쉬었다고 나오면 **우리 기록이 모자란 것**으로 본다.
+# 어느 리그든 2주 넘게 안 뛰는 일은 드물다(A매치 휴식기 정도).
+REST_DAYS_MAX = 14
+
+
 def recent_form(history: list[Game], code: str, before_utc: datetime,
                 n: int = 5) -> list[Game]:
     """그 팀의 **직전 n경기** (오래된 것 → 최근 것 순).
