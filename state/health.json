@@ -1,80 +1,80 @@
 {
- "at": "2026-09-16T23:59:52.155754+00:00",
+ "at": "2026-09-17T00:02:17.911771+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 238,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "MLB": {
-   "at": "2026-09-16T23:59:52.155754+00:00",
+   "at": "2026-09-17T00:02:17.911771+00:00",
    "count": 94,
    "stale_hours": 0.0
   },
   "KBL": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 0,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_M": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_W": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "KL1": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 60,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "NPB": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 289,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "EPL": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 12,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LALIGA": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 22,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "SERIEA": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 15,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "BUNDESLIGA": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 10,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LIGUE1": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 11,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UCL": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 54,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UEL": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 72,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "MLS": {
    "at": "2026-09-16T23:52:26.437435+00:00",
    "count": 5,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   }
  },
  "korean_players": {
@@ -82,9 +82,10 @@
   "이강인": "2026-09-16"
  },
  "alert_lines": 0,
- "lost_lines": 1,
- "status_lines": 8,
+ "lost_lines": 2,
+ "status_lines": 9,
  "lost_kinds": [
+  "empty_render",
   "unqueued_final_flash"
  ],
  "stale_blocked": [],
