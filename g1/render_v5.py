@@ -1050,9 +1050,18 @@ def analysis_card(rb, game, league: League, day: str, *,
     # ★ **비교 항목에 이미 넣었으면 예상글의 전용 줄은 뺀다** (2026-09-18).
     # 둘 다 있으면 `다만 최근 5경기는 김천이 낫습니다 — …` 바로 밑에
     # `최근 5경기는 김천 …`이 또 나온다. 한 상자에 같은 말이 두 번이다.
+    # ★ **카드가 그림으로 이미 말한 것은 예상글에서 뺀다** (v1.54).
+    #
+    # 실측 2026-09-18: KBO 분석 카드가 1911~1982px로 **한계(2000)까지
+    # 18px** 남기고 돌고 있었고, 일부는 넘어서 압축본으로 다시 그려졌다.
+    # 원인은 중복이다 — 최근 5경기 점그림과 맞대결 막대가 카드에 있는데,
+    # 바로 그 아래 예상글이 같은 값을 문장으로 또 적었다.
+    #
+    # 빼면 두 가지가 한꺼번에 좋아진다: 같은 말이 사라지고, 높이가 준다.
     _form = None
     _has_form_metric = any(m.label == "최근 5경기" for m in metrics)
-    if history and not _has_form_metric:
+    _draws_form = bool(form_rows)
+    if history and not _has_form_metric and not _draws_form:
         _fa = P.form_record(history, a, game.start_utc)
         _fh = P.form_record(history, h, game.start_utc)
         if sum(_fa) and sum(_fh):
@@ -1060,6 +1069,19 @@ def analysis_card(rb, game, league: League, day: str, *,
     _streak = tuple((nm_, st_.streak_kind, st_.streak_len)
                     for nm_, st_ in ((na, sa), (nh, sh))
                     if getattr(st_, "streak_len", 0))
+    # ★ **최근10 줄도 뺀다 — 점그림이 같은 것을 더 잘 말한다** (v1.54).
+    #
+    # 표의 `6-4 / 5-5`와 아래 점그림(승·승·패·승·승)은 같은 질문에 답한다:
+    # "요즘 어떤가". 점그림은 **차례와 직전 상대까지** 보여 주므로 더 낫다.
+    # 두 개를 다 그리면 카드만 길어지고, 길어지면 이 장이 통째로 사라진다.
+    # **세기에는 남긴다** — 예상의 근거로는 여전히 쓴다.
+    if form_rows:
+        rows = [r for r in rows if r[1] != "최근10"]
+
+    # 맞대결도 같다 — 막대를 그릴 거면 문장으로 또 적지 않는다.
+    _will_draw_h2h = bool(_mw is not None and getattr(_mw, "total", 0))
+    if _will_draw_h2h:
+        h2h_text = ""
     verdict = H.for_preview(away_name=na, home_name=nh, metrics=metrics,
                             h2h_text=h2h_text, h2h_recent=_h2h_recent,
                             h2h_full=_h2h_full, form=_form,
