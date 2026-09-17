@@ -100,6 +100,19 @@ def pct_label(league: "Optional[League]") -> str:
     return "승점률" if PCT_RULE.get(league) == "points" else "승률"
 
 
+def gap_label(league: "Optional[League]") -> str:
+    """순위표의 `games_behind` 칸을 부르는 말.
+
+    야구·농구는 **경기 차**, 축구는 **승점 차**다 — 같은 칸에 서로 다른
+    단위가 들어 있다. 축구에 '경기 차'라고 쓰면 29경기 시즌에
+    `27경기 차`라는 말이 안 되는 문장이 나간다(실측 2026-09-17 K리그).
+
+    **낱말은 여기 하나뿐이다.** 카드·산문·머리말이 각자 정하면 어긋난다 —
+    실제로 머리말만 고쳐져 있고 산문은 안 고쳐져 있었다.
+    """
+    return "승점 차" if PCT_RULE.get(league) == "points" else "경기 차"
+
+
 def _pct_of(league: "League", record, games: int) -> Optional[float]:
     """그 리그 규칙으로 다시 계산한 승률. 계산할 수 없으면 None."""
     if PCT_RULE.get(league) == "points":

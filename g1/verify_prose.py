@@ -273,7 +273,11 @@ _hk = H.for_standings(_kl, League.KL1)
 check("★★★ K리그 순위 머리말에 '경기 차'가 없다 (그 값은 승점차다)",
       _hk is None or "경기 차" not in _hk.text, _hk.text if _hk else "None")
 check("  ↳ 야구는 그대로 '경기 차'다",
-      H._gb_word(League.KBO) == "경기 차" and H._gb_word(League.KL1) == "점 차")
+      H._gb_word(League.KBO) == "경기 차"
+      and H._gb_word(League.KL1) == "승점 차",
+      f"KBO={H._gb_word(League.KBO)!r} KL1={H._gb_word(League.KL1)!r}")
+check("  ↳ 낱말은 계약 한 곳이 정한다 (머리말만 고쳐져 산문이 어긋났었다)",
+      H._gb_word(League.KL1) == C.gap_label(League.KL1))
 
 # ══════════════════════════════════════════════════════════════
 print("\n11. ★★ 맞대결 — 무승부를 센다")
@@ -625,17 +629,23 @@ _late = _fr(2, 1, [_GL(12, "away", "손흥민"), _GL(55, "home", "살라"),
                    _GL(88, "home", "살라")])
 check("★★★ 축구 총평이 경기 내용을 쓴다 (전에는 순위·맞대결뿐이었다)",
       bool(_late), _late)
-check("  ↳ 선제골을 누가 언제 넣었는지 말한다",
-      "토트넘" in _late and "12분" in _late, _late)
+# 선제골은 **흐름글이 이미 읊는다** — 여기서 또 쓰면 두 줄 연속 같은 말이다
+# (실측 2026-09-17: "광주가 전반 14분에 먼저 넣었습니다. 광주가 전반 14분
+#  아이데일의 골로 먼저 앞서 나갔습니다.").
+check("  ↳ 선제골은 총평이 쓰지 않는다 (흐름글이 이미 말했다)",
+      "먼저 앞서" not in _late, _late)
 check("  ↳ 결승골을 짚는다", "결승골" in _late, _late)
 check("  ↳ 막판 골은 막판이라고 말한다", "막판" in _late, _late)
 check("  ↳ 멀티골을 센다", "살라 2골" in _late, _late)
 check("★ 겹말이 없다 ('경기 막판에 88분에')", "막판에 88분" not in _late, _late)
 
-check("★★ 완봉은 만회하지 못했다고 쓴다",
-      "만회하지 못했다" in _fr(3, 0, [_GL(9, "home", "홀란"),
-                                      _GL(40, "home", "홀란"),
-                                      _GL(77, "home", "포든")]))
+# 완봉도 흐름글의 점수 진행으로 이미 보인다 — 총평은 멀티골만 보탠다.
+check("★★ 완봉에서도 되풀이하지 않고 멀티골만 보탠다",
+      "홀란 2골" in _fr(3, 0, [_GL(9, "home", "홀란"), _GL(40, "home", "홀란"),
+                               _GL(77, "home", "포든")])
+      and "만회하지" not in _fr(3, 0, [_GL(9, "home", "홀란"),
+                                       _GL(40, "home", "홀란"),
+                                       _GL(77, "home", "포든")]))
 
 # ★★★ 여기가 핵심이다 — **안 세고 쓰면 틀린 말이 채널에 나간다.**
 # 1-0, 1-1, 1-2, 2-2 는 홈이 한 번도 앞선 적이 없다. 골 수만 보고
@@ -644,7 +654,8 @@ _one = _fr(2, 2, [_GL(5, "away", "케인"), _GL(30, "home", "사카"),
                   _GL(61, "away", "케인"), _GL(90, "home", "사카", added=4)])
 check("★★★ 앞선 적 없는 팀을 '앞서 봤다'고 쓰지 않는다",
       "두 팀 다 앞서" not in _one, _one)
-check("  ↳ 대신 따라붙었다고 쓴다", "따라붙어" in _one, _one)
+check("  ↳ 한쪽만 앞섰던 무승부는 흐름글에 맡기고 잠자코 있는다",
+      "따라붙어" not in _one and "앞서" not in _one, _one)
 _both = _fr(2, 2, [_GL(5, "home", "사카"), _GL(30, "away", "케인"),
                    _GL(61, "away", "케인"), _GL(80, "home", "사카")])
 check("★★ 진짜로 둘 다 앞섰으면 그렇게 쓴다",
@@ -685,8 +696,11 @@ def _kl(hs, as_, goals):
 
 _clock = _kl(2, 1, [_GL(2, "home", "클리말라"), _GL(25, "home", "A"),
                     _GL(70, "away", "B")])
-check("★★★ 분 표기를 속보·흐름글과 같은 함수로 뽑는다 (한 캡션에 3분과 2분)",
-      "전반 3분" in _clock and "2분 " not in _clock, _clock)
+# 선제골 문장을 뺀 뒤로는 결승골 문장에서 확인한다 — 같은 `_min`을 쓴다.
+# 소스가 경과 분(25)을 주므로 공식 표기는 26분이다. 원본 값이 그대로
+# 찍히면(`25분`) 같은 캡션 안에서 흐름글과 어긋난다.
+check("★★★ 분 표기를 속보·흐름글과 같은 함수로 뽑는다 (한 캡션에 26분과 25분)",
+      "전반 26분" in _clock and "25분" not in _clock, _clock)
 
 _dec = _fr(2, 1, [_GL(12, "home", "김민준"), _GL(30, "home", "이강인"),
                   _GL(70, "away", "손")])
@@ -716,6 +730,61 @@ _many = _fr(6, 0, [_GL(10, "home", "A"), _GL(20, "home", "A"),
                    _GL(50, "home", "C"), _GL(60, "home", "C")])
 check("★ 멀티골이 셋 이상이면 말없이 자르지 않고 몇 명인지 밝힌다",
       "3명" in _many, _many)
+
+# ── 실경기로 잡은 것들 (2026-09-17) ──────────────────────────
+#
+# 아래는 저장된 실제 경기를 카드로 그려 보고 발견한 자리다.
+
+# ① 흐름글이 이미 한 말을 되풀이하지 않는다.
+#    실측: "광주가 전반 14분에 먼저 넣었습니다. 광주가 전반 14분 아이데일의
+#    골로 먼저 앞서 나갔습니다." — 한 인용블록에 두 줄 연속 같은 사실.
+_dup = _fr(1, 1, [_GL(13, "home", "아이데일"), _GL(24, "away", "채현우")])
+check("★★★ 흐름글이 읊는 선제골을 총평이 또 쓰지 않는다",
+      "먼저 앞서 나갔다" not in _dup, _dup)
+check("  ↳ 한쪽만 앞섰던 무승부도 흐름글이 다 말했으므로 잠자코 있는다",
+      "따라붙어" not in _dup, _dup)
+
+# ② 자책골 — 실측 결과 `side`가 **이득을 본 쪽**이었다(37경기 중 5건 전부).
+#    그래서 세는 것은 허용하되, **이름은 절대 붙이지 않는다**(상대 팀 선수다).
+_og = _fr(2, 1, [_GL(10, "away", "손"), _GL(36, "home", "마일리", own_goal=True),
+                 _GL(70, "home", "레반도프스키")])
+check("★★★ 자책골이 섞여도 침묵하지 않는다 (산수가 맞으면 쓴다)", bool(_og), _og)
+check("★★★ 자책골에 득점자 이름을 붙이지 않는다 (그 이름은 상대 팀 선수다)",
+      "마일리" not in _og, _og)
+_og_dec = _fr(2, 1, [_GL(10, "away", "손"),
+                     _GL(36, "home", "마일리", own_goal=True),
+                     _GL(70, "home", "자책", own_goal=True)])
+check("  ↳ 자책골이 결승골이면 '자책골'이라고 말한다",
+      "자책골" in _og_dec and "마일리" not in _og_dec and "자책의" not in _og_dec,
+      _og_dec)
+check("★★★ 자책골 칸이 아예 없으면 여전히 침묵한다",
+      _fr(1, 0, [_NoOG(20, "home", "A")]) == "")
+
+# ③ 순위 문장이 '중다'로 끝났다 (실측 2026-09-17 울산 2연승 중)
+def _kl_st(code, rank, w, d, loss, gb, streak_len=0):
+    """K리그 순위 한 줄 — 승점률과 승점 차를 실제 규칙대로 채운다."""
+    _g = w + d + loss
+    return Standing(
+        league=League.KL1, season="2026", team_code=code, rank=rank,
+        games=_g, record=WLD(w, loss, d),
+        pct=f"{(w * 3 + d) / (_g * 3):.3f}", games_behind=gb,
+        streak_kind=(StreakKind.WIN if streak_len else StreakKind.NONE),
+        streak_len=streak_len, group=None)
+
+
+_rb_streak = _Rb([_kl_st("K01", 2, 14, 5, 10, "15", streak_len=2),
+                  _kl_st("K18", 7, 10, 7, 12, "25")])
+_kl_g = _FG(2, 1, [_GL(53, "home", "A"), _GL(56, "home", "이동경"),
+                   _GL(73, "away", "B")])
+_kl_g.home, _kl_g.away = _TR("K01"), _TR("K18")
+_kl_rv = P.game_review(_kl_g, League.KL1, away_name="인천", home_name="울산",
+                       rb=_rb_streak)
+_kl_txt = " ".join(_kl_rv)
+check("★★ '2연승 중' 뒤에 '다'를 붙이지 않는다 ('중다'가 나갔다)",
+      "중다" not in _kl_txt and "중이다" in _kl_txt, _kl_txt)
+check("★★★ 축구의 선두 차이를 '경기'라고 쓰지 않는다 (29경기 시즌에 '27경기 차')",
+      "경기 차" not in _kl_txt and ("승점" in _kl_txt or "선두와는" not in _kl_txt),
+      _kl_txt)
 
 print()
 print("=" * 64)

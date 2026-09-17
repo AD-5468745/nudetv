@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from contract import (pct_label, CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
+from contract import (gap_label, pct_label, CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       ContentType, Game, GateError, League, LEAGUE_COLORS,
                       TELEGRAM_TEXT_MAX,
                       QueueItem, SEND_JPEG_QUALITY, SEND_JPEG_SUBSAMPLING,
@@ -2244,7 +2244,7 @@ def record_headline(rb: RecordBook) -> tuple[str, str]:
         return ("선두 경쟁", f"<b>{names}</b> {_u}공동 선두 (승차 없음)")
     return ("선두 경쟁",
             f"{_u}선두 <b>{esc(n1)}</b> · 2위 {esc(n2)}{josa(n2, '과', '와')} "
-            f"{esc(second.games_behind)}경기 차")
+            f"{esc(second.games_behind)}{gap_label(top.league)}")
 
 
 def _gb_zero(gb: str) -> bool:
@@ -4969,13 +4969,22 @@ def _goal_story(game, league: League, *, away_name: str,
         if sc.home == 0 and sc.away == 0:
             return "양 팀 다 끝내 골문을 열지 못했다."
         return ""
-    # 자책골은 **넣은 쪽이 아니라 이득을 본 쪽**의 점수다. 어댑터가 어느 편으로
-    # 묶는지 실측한 적이 없으므로(표본 0건), 자책골이 섞인 경기는 세지 않는다.
+    # ── 자책골 (2026-09-17 실측) ─────────────────────────────────
     #
-    # ★ **칸이 없는 것도 자책골일 수 있다.** `getattr(..., False)`로만 보면
-    # 어댑터가 그 칸을 빼는 날 가드가 조용히 사라진다 — 가드가 사라진 것을
-    # 아무도 모른다. 칸 자체가 없으면 침묵한다.
-    if any(not hasattr(g, "own_goal") or g.own_goal for g in goals):
+    # 전에는 자책골이 섞이면 무조건 침묵했다 — 소스가 그 골을 **넣은 쪽**으로
+    # 묶는지 **이득을 본 쪽**으로 묶는지 실측한 적이 없었기 때문이다.
+    # 이제 쟀다: 유럽 5대 리그·UCL·UEL·K리그·MLS의 종료 경기 37건 중 자책골이
+    # 든 5건 **전부** `side`가 **이득을 본 쪽**이었다(골 수가 점수와 정확히
+    # 일치). 표본이 5건뿐이라 규칙으로 못 박지는 않지만, **아래 산수 검사가
+    # 그 자리에서 잡는다** — 반대로 묶인 자책골이 하나라도 있으면 골 수가
+    # 점수와 어긋나고 이 문단은 저절로 침묵한다. 자기교정이다.
+    #
+    # ★ 다만 **자책골에 이름을 붙이지 않는다.** `side`가 이득을 본 쪽이므로
+    # 그 이름은 **상대 팀 선수**다 — "마일리의 골로 리즈가 앞섰다"가 된다.
+    #
+    # ★ **칸이 없으면 침묵한다.** `getattr(..., False)`로만 보면 어댑터가
+    # 그 칸을 빼는 날 가드가 조용히 사라지고, 사라진 것을 아무도 모른다.
+    if any(not hasattr(g, "own_goal") for g in goals):
         return ""
     hs = sum(1 for g in goals if getattr(g, "side", None) == "home")
     as_ = sum(1 for g in goals if getattr(g, "side", None) == "away")
@@ -5001,22 +5010,28 @@ def _goal_story(game, league: League, *, away_name: str,
         return f"{half} {num}분"
 
     def _who(g) -> str:
+        """득점자 이름. **자책골이면 빈 문자열** — 그 이름은 상대 팀 선수다."""
+        if getattr(g, "own_goal", False):
+            return ""
         return (getattr(g, "name", "") or "").strip()
 
     sents: list[str] = []
 
-    # ① 선제골 — 누가 먼저 열었나
-    first = goals[0]
-    _side = nm.get(getattr(first, "side", ""), "")
-    if _side:
-        _fm = _min(first)
-        _fn = _who(first)
-        _lead = f"{_fm} " if _fm else ""
-        _by = f"{_fn}의 골로 " if _fn else ""
-        sents.append(f"{_side}{_josa(_side, '이', '가')} {_lead}{_by}"
-                     f"먼저 앞서 나갔다".replace("  ", " "))
+    # ── ① 선제골은 **쓰지 않는다** ──────────────────────────────
+    #
+    # 바로 위 문단(흐름글)이 이미 골을 순서대로 읊는다. 선제골을 여기서 또
+    # 쓰면 한 인용블록 안에서 두 줄 연속으로 같은 사실이 나온다 —
+    # *"광주가 전반 14분에 먼저 넣었습니다. 광주가 전반 14분 아이데일의
+    # 골로 먼저 앞서 나갔습니다."* (실측 2026-09-17 K리그 안양-광주)
+    #
+    # 이 문단이 보태는 것은 흐름글이 **말하지 않는 것**이다:
+    # 무엇이 결승골이었나 · 완봉이었나 · 무승부가 어떻게 흘렀나 · 멀티골.
 
-    # ② 어떻게 갈렸나 — 무승부 · 완봉 · 결승골 시점
+    # ② 어떻게 갈렸나 — **흐름글이 안 하는 말만**
+    #
+    # 흐름글은 골을 순서대로 읊는다("전반 14분에 먼저 넣었습니다. 전반
+    # 25분에 1-1로 따라붙었습니다"). 그래서 선제골·따라붙음·완봉은 이미
+    # 나온 말이다. 흐름글이 **절대 안 하는 말**은 어느 골이 결승골이었나다.
     if sc.home == sc.away:
         # **'두 팀 다 앞서 봤다'는 세어서 확인한다.** 골이 셋 이상이라고
         # 앞선 적이 있는 것이 아니다 — 1-0, 1-1, 1-2, 2-2 는 홈이 한 번도
@@ -5032,22 +5047,15 @@ def _goal_story(game, league: League, *, away_name: str,
                 _led.add("home")
             elif _a > _h:
                 _led.add("away")
+        # **양쪽이 다 앞서 봤다는 것만** 흐름글에서 바로 안 읽힌다.
+        # 한쪽만 앞섰던 무승부는 흐름글이 이미 다 말했으므로 잠자코 있는다.
         if len(_led) == 2:
             sents.append("두 팀 다 앞서 보고도 승부를 가르지 못했다")
-        elif _led:
-            # 앞선 적이 한쪽뿐이면 **따라붙은 쪽을 말한다.** 앞선 쪽은 이미
-            # 첫 문장이 말했다 — 같은 말을 두 번 하면 글이 얇아 보인다.
-            _chase = nm["away"] if "home" in _led else nm["home"]
-            sents.append(f"{_chase}{_josa(_chase, '이', '가')} 따라붙어 "
-                         f"승부를 원점으로 돌렸다")
-        else:
-            sents.append("승부는 갈리지 않았다")
     else:
         win = "home" if sc.home > sc.away else "away"
-        wname, lname = nm[win], nm["away" if win == "home" else "home"]
+        wname = nm[win]
         if min(hs, as_) == 0:
-            sents.append(f"{lname}{_josa(lname, '은', '는')} 끝내 한 골도 "
-                         f"만회하지 못했다")
+            pass          # 완봉은 흐름글의 점수 진행으로 이미 보인다
         else:
             # ★ **결승골은 '진 팀의 최종 득점 + 1번째' 골이다.**
             #    2-1이면 이긴 팀의 **두 번째** 골이 결승골이다. 전에는
@@ -5068,9 +5076,15 @@ def _goal_story(game, league: League, *, away_name: str,
                 _dm = _min(decider)
                 _late = (getattr(decider, "minute", 0) or 0) >= 80
                 _head = ("경기 막판 " if _late else "") + (f"{_dm}에 " if _dm else "")
-                sents.append(f"{_head}나온 "
-                             + (f"{_dn}의 골이 " if _dn else "골이 ")
-                             + f"{wname}의 결승골이 됐다")
+                # 이름이 없는 까닭은 둘 중 하나다 — 소스가 득점자를 안 줬거나,
+                # **자책골**이라 이름을 안 쓰기로 한 것. 자책골이면 그렇게 말한다.
+                if _dn:
+                    _what = f"{_dn}의 골이 "
+                elif getattr(decider, "own_goal", False):
+                    _what = "자책골이 "
+                else:
+                    _what = "골이 "
+                sents.append(f"{_head}나온 {_what}{wname}의 결승골이 됐다")
 
     # ③ 멀티골 — 한 사람이 두 번 이상
     #    ★ **이름만 세면 동명이인이 한 사람이 된다.** 양 팀에 김진수가
@@ -5170,14 +5184,27 @@ def game_review(game, league: League, *, away_name: str, home_name: str,
                 if st.last10 and st.last10.total:
                     piece += f"이고 최근 열 경기 {st.last10.win}승 {st.last10.loss}패"
                 bits.append(piece)
-            para = "기록 기준으로 " + ", ".join(bits) + "다"
+            _joined = ", ".join(bits)
+            # `…2연승 중` 뒤에 `다`를 붙이면 **"중다"**가 된다(실측 2026-09-17
+            # 울산). 명사로 끝나는 꼴은 `이다`를 붙여야 말이 된다.
+            para = "기록 기준으로 " + _joined + ("이다" if _joined.endswith("중")
+                                                 else "다")
             # 선두와의 승차 — 둘 다 같은 단위(리그·지구)일 때만 견준다.
             if _rank_cmp(sa, sh):
                 _gb = [x for x in (sa.games_behind, sh.games_behind)
                        if x not in (None, "", "0", "0.0")]
                 if len(_gb) == 2:
-                    para += (f". 선두와의 승차는 {away_name} {sa.games_behind}경기, "
-                             f"{home_name} {sh.games_behind}경기 차다")
+                    # ★ **축구의 그 칸은 승점 차다.** `경기 차`라고 쓰면
+                    # 29경기 시즌에 "27경기 차"라는 말이 안 되는 문장이
+                    # 채널에 나간다(실측 2026-09-17 K리그 안양-광주).
+                    # 낱말은 `headline._gb_word` 하나가 정한다.
+                    # 단위를 손으로 쪼개지 않는다 — 한때 앞은 `27경기`,
+                    # 뒤는 `48승점차`로 서로 다른 단위가 한 문장에 났다.
+                    _w = gap_label(league)              # '경기 차' | '승점 차'
+                    _u = _w.split()[0]                  # '경기'    | '승점'
+                    para += (f". 선두와는 {away_name} {sa.games_behind}{_u}, "
+                             f"{home_name} {sh.games_behind}{_u} 차로 "
+                             f"벌어져 있다")
             out.append(para + ".")
 
     # ── ③ 시즌 맞대결 ────────────────────────────────────────

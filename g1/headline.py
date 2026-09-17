@@ -28,7 +28,7 @@ from typing import Optional
 from contract import (League, REGULAR_PERIODS, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
                       Status, StreakKind, TEAM_NAMES, cancel_reason_text, josa,
                       venue_name,
-                      rank_comparable, rank_word)
+                      rank_comparable, rank_word, gap_label)
 
 
 @dataclass(frozen=True)
@@ -609,12 +609,14 @@ def for_goal(*, scorer: str, team_name: str, when: str, own_goal: bool,
 # 전부 "경기 차"라고 썼다 — 실렌더: K리그1 `2·3위 1경기 차`.
 # 그 표의 `games_behind`는 실제로 **승점차**다(서울 59점, 전북 42점 → "17").
 # 그대로 두면 "17경기 차"라는 말이 안 되는 문장이 나올 수 있다.
-_GB_WORD = {ScoreUnit.GOALS: "점 차"}       # 축구 = 승점 차
-
-
 def _gb_word(league: "League | None") -> str:
-    """`games_behind`를 부르는 말. 야구·농구는 '경기 차', 축구는 '점 차'."""
-    return _GB_WORD.get(SCORE_UNIT_BY_LEAGUE.get(league), "경기 차")
+    """`games_behind`를 부르는 말. **계약이 정한다**(`contract.gap_label`).
+
+    여기 표를 따로 들고 있었더니, 축구를 '점 차'로 고친 것이 이 파일에만
+    적용되고 산문(`pipeline.game_review`)은 그대로 '경기 차'였다 —
+    같은 자료를 두 화면이 다르게 불렀다(실측 2026-09-17).
+    """
+    return gap_label(league)
 
 
 def for_standings(standings: list, league: League, *, group: str | None = None
