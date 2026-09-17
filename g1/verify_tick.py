@@ -607,12 +607,16 @@ check("★ 3시간 안에 붙은 경기는 한 장으로 묶인다 (지나치게
 # 예고와 몇 분 차로 겹친다.** 실측 리그1 2026-09-13:
 #   00:15 경기 → 예고 22:15   ·   03:45 경기 → 예고 22:00(심야 회피)
 # 15분 차에 두 장이면 쪼갠 뜻이 없고 도배만 된다.
-# `mkgame(hh=N)`은 **한국시각 N:30**을 만든다.
-#   00:30 경기 → 예고 22:30 (전날, 심야 아님)
-#   03:30 경기 → 예고 01:30 → 심야(00~06)라 **전날 22:00**으로 회피
-# 두 예고가 30분 차라 병합 대상이다. 시작 시각은 3시간 차라 원래 다른 덩어리다.
-_l1 = ([mkgame(League.MLB, "AAA", "BBB", day="2026-09-13", hh=0)]
-       + [mkgame(League.MLB, "CCC", "DDD", day="2026-09-13", hh=3)]
+# `mkgame(hh=N)`은 **한국시각 N:30**을 만든다. 예고 리드는 3시간 30분이다.
+#   01:30 경기 → 예고 22:00 (전날 · 심야 회피)
+#   05:30 경기 → 예고 22:00 (전날 · 심야 회피)  ← 같은 자리로 모인다
+# 두 예고가 같은 시각이라 병합 대상이다. 시작은 4시간 차라 원래 다른 덩어리다.
+#
+# ⚠️ **이 표본은 리드 값에 매여 있다.** 예고를 앵커 뒤로 옮기면서 리드가
+# 120분 → 210분이 되자 옛 표본(00:30·03:30)이 더는 겹치지 않아, 변이시험이
+# "겹침을 못 만들어" 실패했다 — 시험이 깨진 것이지 코드가 깨진 게 아니었다.
+_l1 = ([mkgame(League.MLB, "AAA", "BBB", day="2026-09-13", hh=1)]
+       + [mkgame(League.MLB, "CCC", "DDD", day="2026-09-13", hh=5)]
        + [mkgame(League.MLB, "EEE", "FFF", day="2026-09-13", hh=20)])
 _raw = C.preview_buckets(_l1)
 _lead = P.PREVIEW_BEFORE_FIRST_SECONDS
@@ -2827,6 +2831,22 @@ check("★★ 종료 직후도 진행 중으로 친다 (결과를 늦게 보면 
 check("★★ 세 단계가 서로 다르다 (같으면 나눈 뜻이 없다)",
       len({T.FETCH_EVERY_PLAYING_SECONDS, T.FETCH_EVERY_LIVE_SECONDS,
            T.FETCH_EVERY_SECONDS}) == 3)
+
+
+# ══════════════════════════════════════════════════════════════
+print("\n★ 채널 순서 — 전체 예고가 첫 앵커보다 먼저 (v1.42)")
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-17: 예고 120분 · 앵커 180분이라 **앵커가 한 시간 먼저** 나갔다.
+# 대표님: "각 경기 앵커먼저 날라오고 이후에 전체예고가 날라오면 안되지".
+# 목차가 본문 뒤에 오는 셈이었다.
+check("★★★ 전체 예고가 앵커보다 먼저 나간다",
+      P.PREVIEW_BEFORE_FIRST_SECONDS > P.ANCHOR_LEAD_SECONDS,
+      f"예고 {P.PREVIEW_BEFORE_FIRST_SECONDS // 60}분 · "
+      f"앵커 {P.ANCHOR_LEAD_SECONDS // 60}분")
+check("  ↳ 두 값이 **관계로** 묶여 있다 (한쪽만 바뀌면 다시 뒤집힌다)",
+      P.PREVIEW_BEFORE_FIRST_SECONDS - P.ANCHOR_LEAD_SECONDS == 30 * 60,
+      f"차이 {(P.PREVIEW_BEFORE_FIRST_SECONDS - P.ANCHOR_LEAD_SECONDS) // 60}분")
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
