@@ -83,6 +83,75 @@ check("ALL_RULES에 안 쓰이는 규칙이 없다 (죽은 규칙 금지)",
 check("규칙을 실제로 찾았다 (이 검사가 헛돌지 않게)", len(_used) >= 15, f"{len(_used)}개")
 
 # ═════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+print("\n★ 결과 부제는 경기의 **성격**을 말한다 (v1.53)")
+# ══════════════════════════════════════════════════════════════
+#
+# 전에는 `한 골 차`·`4골 차`였다 — 큰 글씨가 이미 `라싱 2 : 7 바르셀로나`라고
+# 말하는데 부제가 그 뺄셈을 되풀이했다. 읽는 사람이 새로 아는 것이 없다.
+# 같은 회사 사이트는 `완승`·`역전승`·`완봉승`이라고 성격을 말한다(참고).
+from contract import League as _L53, Score as _S53, ScoreUnit as _U53   # noqa: E402,F401
+
+
+class _M53:
+    def __init__(self, line):
+        self.line_score = line
+        self.line_totals = {}
+        self.goals = ()
+        self.player_lines = []
+        self.cancel_reason = None
+
+
+class _R53:
+    def __init__(self, c):
+        self.team_code = c
+
+
+class _G53:
+    """⚠️ **`Score`는 홈이 먼저다.** 처음에 원정을 먼저 넣었다가 이긴 팀을
+    반대로 부르는 줄 알고 코드를 의심했다 — 틀린 쪽은 이 대역이었다.
+    `line`도 계약대로 **(홈, 원정)** 차례다."""
+
+    def __init__(self, home, away, line=(), unit=_U53.RUNS, lg=_L53.KBO):
+        self.away, self.home = _R53("SS"), _R53("OB")   # 원정 삼성 · 홈 두산
+        self.status = Status.FINAL
+        self.score = _S53(home, away, unit)
+        self.meta = _M53(list(line))
+        self.league = lg
+
+
+def _sub53(g, lg=_L53.KBO):
+    h = H.for_single_result(g, lg)
+    return h.sub if h else ""
+
+
+# 진 팀이 앞섰던 적이 있으면 역전승 — 이닝별 표로만 알 수 있다.
+# 홈 4 : 원정 2. 원정이 1회 2점을 먼저 냈다가 뒤집혔다.
+_COMEBACK = [(0, 2), (0, 0), (2, 0), (2, 0)]
+check("★★★ 역전승을 역전승이라고 부른다",
+      "역전승" in _sub53(_G53(4, 2, _COMEBACK)), _sub53(_G53(4, 2, _COMEBACK)))
+# 같은 4:2인데 홈이 한 번도 뒤지지 않았다.
+_LEAD_ALL = [(2, 0), (0, 2), (2, 0)]
+check("★★ 한 번도 뒤진 적 없으면 역전승이 아니다",
+      "역전승" not in _sub53(_G53(4, 2, _LEAD_ALL)), _sub53(_G53(4, 2, _LEAD_ALL)))
+check("★★ 상대가 0점이면 완봉승 (야구)",
+      "완봉승" in _sub53(_G53(3, 0)), _sub53(_G53(3, 0)))
+check("  ↳ 축구는 완봉이라 하지 않는다",
+      "무실점" in _sub53(_G53(3, 0, unit=_U53.GOALS, lg=_L53.EPL), _L53.EPL),
+      _sub53(_G53(3, 0, unit=_U53.GOALS, lg=_L53.EPL), _L53.EPL))
+check("★★ 한 점 차는 신승", "신승" in _sub53(_G53(4, 3)), _sub53(_G53(4, 3)))
+check("★★★ 뺄셈을 되풀이하지 않는다 (`4골 차` 같은 부제 금지)",
+      "골 차" not in _sub53(_G53(5, 1, unit=_U53.GOALS, lg=_L53.EPL), _L53.EPL)
+      and "점 차" not in _sub53(_G53(9, 2)),
+      _sub53(_G53(9, 2)))
+check("★★ 무승부에는 성격을 붙이지 않는다 (큰 글씨가 이미 말한다)",
+      _sub53(_G53(2, 2)) == "", _sub53(_G53(2, 2)))
+check("★ 이긴 팀 이름을 앞에 둔다 (누가 이겼는지가 먼저다)",
+      _sub53(_G53(3, 0)).startswith("두산"), _sub53(_G53(3, 0)))
+check("  ↳ 원정이 이기면 원정 이름이 앞에 온다",
+      _sub53(_G53(0, 3)).startswith("삼성"), _sub53(_G53(0, 3)))
+
+
 print("\n2. 결과 — 조건이 아니면 만들지 않는다")
 # ═════════════════════════════════════════════════════════════
 _close = [_G("KT", "HH", 3, 2), _G("LG", "OB", 1, 0), _G("SS", "LT", 4, 3)]
@@ -516,10 +585,12 @@ check("★ 강조 기준과 머리말 기준이 같은 값이다",
       f"headline {H.BIG_PERIOD_RUNS} vs cards {_C5.BIG_CELL_MIN}")
 
 _h2 = H.for_single_result(_g1("SS", "LG", 4, 3), League.KBO)
-check("한 점 차를 잡는다", _h2.sub == "한 점 차" and _h2.rule == "G-CLOSE", str(_h2))
+# v1.53 — 한 점 차는 이제 `신승`이라고 부른다. 뺄셈을 되풀이하지 않는다.
+check("한 점 차를 잡는다 (성격으로 말한다)",
+      _h2.sub.endswith("신승") and _h2.rule == "G-VERDICT", str(_h2))
 _h3 = H.for_single_result(_g1("HT", "OB", 15, 2), League.KBO)
 check("대승을 잡는다 (리그별 실측 임계값)",
-      _h3.rule == "G-BLOWOUT1" and "13점 차" == _h3.sub, str(_h3))
+      _h3.rule == "G-VERDICT" and _h3.sub.endswith("완승"), str(_h3))
 _h4 = H.for_single_result(_g1("HT", "OB", 7, 4), League.KBO)
 check("아무 규칙도 안 걸리면 점수만 말한다 (없는 이야기를 짓지 않는다)",
       _h4.rule == "G-SCORE" and _h4.sub == "", str(_h4))
@@ -539,7 +610,7 @@ check("진행 중 경기에는 머리말을 만들지 않는다",
              status=Status.LIVE, score=_S(home=1, away=0, unit=_U.RUNS), meta=_M()),
           League.KBO) is None)
 check("새 규칙이 전부 등록 목록에 있다",
-      {"G-BIGPERIOD", "G-CLOSE", "G-BLOWOUT1", "G-SCORE"} <= H.ALL_RULES)
+      {"G-BIGPERIOD", "G-VERDICT", "G-SCORE"} <= H.ALL_RULES)
 
 
 # ══════════════════════════════════════════════════════════════

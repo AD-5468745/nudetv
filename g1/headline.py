@@ -242,6 +242,49 @@ def for_result(games: list, league: League, *, standings: list | None = None
     return None
 
 
+def _result_verdict(game, league: "League", a: int, h: int, rows: list) -> str:
+    """`두산 역전승` · `바르셀로나 완승` 같은 **한 낱말 성격**. 없으면 빈 문자열.
+
+    차례는 **드문 것부터**다 — 역전은 대승보다 드물고, 그래서 더 할 말이다.
+    세트·맵 종목은 다루지 않는다(BO5의 3-2는 흔해서 뜻이 없다).
+    """
+    unit = SCORE_UNIT_BY_LEAGUE.get(league)
+    if unit not in (ScoreUnit.RUNS, ScoreUnit.POINTS, ScoreUnit.GOALS):
+        return ""
+    if a == h:
+        return ""                          # 무승부는 큰 글씨가 이미 말한다
+    win_away = a > h
+    wname = (TEAM_NAMES.get(league, {}).get(_code(game.away), _code(game.away))
+             if win_away else
+             TEAM_NAMES.get(league, {}).get(_code(game.home), _code(game.home)))
+
+    # ① 역전 — 진 팀이 한 번이라도 앞섰나. 이닝별 표가 있어야 안다.
+    if rows:
+        ah = aa = 0
+        led_loser = False
+        for hv, av in rows:                # 계약: (홈, 원정)
+            ah += int(hv or 0)
+            aa += int(av or 0)
+            if (aa > ah) != win_away and aa != ah:
+                led_loser = True
+        if led_loser:
+            return f"{wname} 역전승"
+
+    # ② 완봉·영봉 — 진 팀이 한 점도 못 냈다
+    if min(a, h) == 0:
+        return f"{wname} 완봉승" if unit is ScoreUnit.RUNS else f"{wname} 무실점 승"
+
+    # ③ 대승 — 리그별 실측 상위 10% 임계값
+    _m = BLOWOUT_MARGIN.get(league)
+    if _m and abs(a - h) >= _m:
+        return f"{wname} 완승"
+
+    # ④ 한 점 차 — 끝까지 갔다
+    if abs(a - h) == 1:
+        return f"{wname} 신승"
+    return ""
+
+
 def for_single_result(game, league: League) -> Optional[Headline]:
     """한 경기짜리 결과 카드의 머리말 (v1.12).
 
@@ -295,23 +338,19 @@ def for_single_result(game, league: League) -> Optional[Headline]:
         return Headline(rule="G-EXTRA", text=text,
                         sub=f"연장 {len(rows)}{_pw}", facts=facts)
 
-    # ③ 한 점 차 — 표 없이도 말할 수 있는 사실
-    #    ⚠️ 세트·맵 종목은 **세지 않는다**(BO5에서 3-2는 흔하다).
-    #    `best_games`가 이미 그렇게 하고 있었는데 여기만 안 그랬다.
-    _unit = SCORE_UNIT_BY_LEAGUE.get(league)
-    if abs(a - h) == 1 and _unit in (ScoreUnit.RUNS, ScoreUnit.POINTS,
-                                     ScoreUnit.GOALS):
-        _w = count_word(league)
-        return Headline(rule="G-CLOSE", text=text,
-                        sub=("한 골 차" if _unit is ScoreUnit.GOALS
-                             else f"한 {_w} 차"), facts=facts)
-
-    # ④ 대승 — 리그별 실측 상위 10% 임계값을 그대로 쓴다
-    margin = BLOWOUT_MARGIN.get(league)
-    if margin and abs(a - h) >= margin:
-        facts["margin"] = abs(a - h)
-        return Headline(rule="G-BLOWOUT1", text=text,
-                        sub=f"{abs(a - h)}{count_word(league)} 차", facts=facts)
+    # ③ **경기의 성격을 한 낱말로** (v1.53).
+    #
+    # 전에는 `한 골 차`·`4골 차`였다 — 큰 글씨가 이미 `라싱 2 : 7 바르셀로나`
+    # 라고 말하는데, 부제가 그 뺄셈을 되풀이한 셈이다. 읽는 사람이 새로 아는
+    # 것이 없다.
+    #
+    # 같은 회사 사이트는 제목에서 `완승`·`역전승`·`완봉승`이라고 **성격**을
+    # 말한다(참고 2026-09-18). 그 한 낱말이 스크롤에서 경기를 고르게 한다.
+    # 우리도 그 판단에 필요한 값을 이미 갖고 있다 — 점수와 이닝별 표다.
+    _verdict = _result_verdict(game, league, a, h, rows)
+    if _verdict:
+        facts["verdict"] = _verdict
+        return Headline(rule="G-VERDICT", text=text, sub=_verdict, facts=facts)
 
     # ④ 아무 규칙도 안 걸리면 **점수만** 말한다. 없는 이야기를 짓지 않는다.
     return Headline(rule="G-SCORE", text=text, sub="", facts=facts)
@@ -1157,5 +1196,9 @@ ALL_RULES = frozenset({
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",
     "N-COUNT",
     "V-EDGE", "V-SPLIT",
-    "G-BIGPERIOD", "G-EXTRA", "G-CLOSE", "G-BLOWOUT1", "G-SCORE",
+    # v1.53 — `G-CLOSE`(한 골 차)·`G-BLOWOUT1`(4골 차)을 `G-VERDICT` 하나로
+    # 합쳤다. 둘 다 큰 글씨의 뺄셈을 되풀이했을 뿐이고, 새 규칙은 같은 자리를
+    # **성격**으로 말한다(신승·완승·역전승·완봉승). 잃은 정보는 없다 —
+    # 한 점 차는 `신승`, 대승은 `완승`으로 그대로 잡힌다.
+    "G-BIGPERIOD", "G-EXTRA", "G-VERDICT", "G-SCORE",
 })
