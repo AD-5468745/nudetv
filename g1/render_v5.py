@@ -1409,6 +1409,78 @@ def _pregame_football(game, league: League, preview: dict, na: str, nh: str):
         tags=_tags("pregame", league, [game])))
 
 
+def _pregame_basketball(game, league: League, preview: dict, na: str, nh: str):
+    """농구 경기 전 정보 (v1.47).
+
+    ⚠️ **KBL은 기록(RecordBook)을 모으지 않는 리그다.** 그래서 분석 카드가
+    아예 안 만들어진다 — 이 장이 그 경기의 유일한 경기 전 콘텐츠다.
+    순위·전적을 여기 싣는 이유가 그것이다(야구는 분석 카드가 이미 싣는다).
+
+    **이 상대 기준 기록**이 이 종목의 값진 칸이다 — 같은 팀이라도 상대에
+    따라 야투율이 크게 갈린다.
+    """
+    from adapters import naver_preview as _NP
+    ta, th = _NP.bb_team_stats(preview, "away"), _NP.bb_team_stats(preview, "home")
+    if not (ta and th):
+        return None
+
+    def _table(title, note, keys, a, h):
+        rows = [(a[k], k, h[k]) for k in keys if k in a and k in h]
+        if not rows:
+            return ""
+        return (f'<div class="anh">{C5.esc(title)}'
+                f'<span>{C5.esc(note)}</span></div>'
+                + "".join(
+                    f'<div class="cmp"><div class="v r">{C5.esc(str(x))}</div>'
+                    f'<div class="k">{C5.esc(k)}</div>'
+                    f'<div class="v">{C5.esc(str(y))}</div></div>'
+                    for x, k, y in rows))
+
+    body = ""
+    _head_rows = []
+    if ta.get("rank") and th.get("rank"):
+        _head_rows.append((f"{ta['rank']}위", "순위", f"{th['rank']}위"))
+    if ta.get("record") and th.get("record"):
+        _head_rows.append((ta["record"], "전적", th["record"]))
+    if _head_rows:
+        body += ('<div class="anh">팀 기록<span>올 시즌</span></div>'
+                 + "".join(
+                     f'<div class="cmp"><div class="v r">{C5.esc(x)}</div>'
+                     f'<div class="k">{C5.esc(k)}</div>'
+                     f'<div class="v">{C5.esc(y)}</div></div>'
+                     for x, k, y in _head_rows))
+    # 제목을 비우면 머리줄 왼쪽이 빈 채로 그려진다 — 이름을 준다.
+    body += _table("경기당 평균", "올 시즌",
+                   ["평균 득점", "평균 실점", "리바운드", "어시스트"], ta, th)
+
+    va, vh = _NP.bb_vs(preview, "away"), _NP.bb_vs(preview, "home")
+    if va and vh:
+        body += _table("이 상대를 만났을 때", "올 시즌",
+                       ["평균 득점", "야투율", "3점율"], va, vh)
+
+    if not body:
+        return None
+
+    kst, _loc = format_kickoff(game)
+    head = H.Headline(rule="P-PREGAME", text=f"{na} vs {nh}",
+                      sub=f"{kst} 시작", facts={"away": na, "home": nh})
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="pregame", league=league, date_label=lab, head=head,
+                    body=body, foot_left=(venue_name(game.venue) or "")
+                    if game.venue else C5.LEAGUE_LABEL.get(league, ""))
+
+    extra: list = []
+    for _side, _nm2 in (("away", na), ("home", nh)):
+        tops = _NP.bb_top_players(preview, _side)
+        if tops:
+            extra.append(f"{_nm2} — " + " · ".join(
+                f"{what} {nm} {val}" for what, nm, val in tops))
+    return html, list(C5.caption(
+        kind="pregame", league=league, head=head, date_label=lab,
+        extra_lines=extra or None, extra_title="팀 내 1위" if extra else "",
+        tags=_tags("pregame", league, [game])))
+
+
 def pregame_card(game, league: League, *, preview: dict | None = None,
                  now: datetime | None = None) -> tuple[str, list[str]] | None:
     """경기 전 정보 — 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜 (v1.44 · 2차).
@@ -1431,9 +1503,11 @@ def pregame_card(game, league: League, *, preview: dict | None = None,
     na = C5._nm(league, game.away)
     nh = C5._nm(league, game.home)
 
-    # ── 축구는 칸이 완전히 다르다 (v1.46) ───────────────────────
+    # ── 종목마다 칸이 완전히 다르다 ─────────────────────────────
     if league in _NP.FOOTBALL_LEAGUES:
         return _pregame_football(game, league, preview, na, nh)
+    if league in _NP.BASKETBALL_LEAGUES:
+        return _pregame_basketball(game, league, preview, na, nh)
 
     body = ""
     _sa = _NP.starter(preview, "away")

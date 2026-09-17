@@ -64,11 +64,15 @@ PREVIEW_LEAGUES: dict = {
     # 득실 · 주목 선수(공격포인트) · BEST5 · 최근 맞대결 3경기.
     # 분류 이름도 `kleague1`이 아니라 **`kleague`**다(그것도 틀렸었다).
     League.KL1: ("kfootball", "kleague"),
+    # 농구도 있다 — 오히려 야구보다 칸이 많다(상대 기준 야투율까지).
+    # **비시즌(4~9월)에는 경기가 없어 아무 일도 안 한다.**
+    League.KBL: ("kbasketball", "kbl"),
 }
 
 # 종목이 다르면 들어 있는 칸이 다르다. **칸 이름을 리그마다 짐작하지 않는다.**
 BASEBALL_LEAGUES = frozenset({League.KBO, League.MLB, League.NPB})
 FOOTBALL_LEAGUES = frozenset({League.KL1})
+BASKETBALL_LEAGUES = frozenset({League.KBL})
 
 _sched: dict = {}                 # (리그, 날짜) → (받은시각, {(원정,홈): [(시각, id)]})
 _cache: dict = {}                 # gameId → (받은시각, 미리보기)
@@ -428,4 +432,63 @@ def fb_recent_vs(pv: dict) -> list:
         if hg is None or ag is None or not (hn and an):
             continue
         out.append((str(g.get("meetYear") or ""), hn, int(hg), int(ag), an))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
+# 농구 미리보기 (v1.47)
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-18 (3월 경기 표본 — KBL은 지금 비시즌이다):
+#   seasonTeamStats  순위 · 승패 · 평균 득점/실점 · 리바운드 · 어시스트 ·
+#                    최근 5경기 승패
+#   teamVsTeam       **이 상대 기준** 평균 득점 · 야투% · 3점% · 자유투%
+#   teamTopPlayer    득점 1위 · 리바운드 1위 · 어시스트 1위
+#
+# ⚠️ **KBL은 기록(RecordBook)을 모으지 않는 리그다.** 그래서 분석 카드가
+# 아예 안 만들어진다 — 이 장이 그 리그의 유일한 경기 전 콘텐츠가 된다.
+# 순위·전적을 여기 싣는 이유가 그것이다(야구는 분석 카드가 이미 싣는다).
+
+_BB_STATS = (("scoreAvg", "평균 득점", True),
+             ("lostScoreAvg", "평균 실점", False),
+             ("reboundAvg", "리바운드", True),
+             ("assistAvg", "어시스트", True))
+
+
+def bb_team_stats(pv: dict, side: str) -> dict:
+    """농구 팀 기록. 없으면 빈 dict."""
+    d = ((pv or {}).get("seasonTeamStats") or {}).get(side) or {}
+    out: dict = {}
+    if d.get("rank") is not None:
+        out["rank"] = d["rank"]
+    if d.get("totalWin") is not None and d.get("totalLose") is not None:
+        out["record"] = f"{d['totalWin']}승 {d['totalLose']}패"
+    for k, label, _ in _BB_STATS:
+        if _num(d.get(k)) is not None:
+            out[label] = str(d[k])
+    return out
+
+
+def bb_vs(pv: dict, side: str) -> dict:
+    """**이 상대를 만났을 때** 평균 득점·야투율·3점율. 없으면 빈 dict."""
+    d = ((pv or {}).get("teamVsTeam") or {}).get(side) or {}
+    out: dict = {}
+    for k, label in (("vsScoreAvg", "평균 득점"), ("vsFieldGoalsPct", "야투율"),
+                     ("vsThreePointsPct", "3점율")):
+        if _num(d.get(k)) is not None:
+            out[label] = str(d[k]) + ("%" if k.endswith("Pct") else "")
+    return out
+
+
+def bb_top_players(pv: dict, side: str) -> list:
+    """`[(무엇, 이름, 값)]` — 득점·리바운드·어시스트 1위."""
+    d = ((pv or {}).get("teamTopPlayer") or {}).get(side) or {}
+    out = []
+    for key, label in (("teamTopScorePlayer", "득점"),
+                       ("teamTopReboundPlayer", "리바운드"),
+                       ("teamTopAssistPlayer", "어시스트")):
+        p = d.get(key) or {}
+        nm = str(p.get("playerName") or "").strip()
+        if nm and _num(p.get("statValue")) is not None:
+            out.append((label, nm, str(p.get("statValue"))))
     return out
