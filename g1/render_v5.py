@@ -147,6 +147,13 @@ def _flow_body(game, league: League) -> str | None:
     return body
 
 
+# 끝난 상태 → 카드 종류. **계약에서 시작한다** — 여기 손으로 적으면 계약이
+# 늘 때(중단 등) 이 파일만 옛 목록을 들고 있다. 표에 없는 종료 상태는
+# `result`로 떨어지는데, 그건 지금까지의 동작이라 새 사고를 만들지 않는다.
+_KIND_BY_STATUS = {Status.CANCELED: "canceled", Status.POSTPONED: "postponed"}
+assert set(_KIND_BY_STATUS) <= set(TERMINAL_STATUSES) - {Status.FINAL}
+
+
 def result_card(games: list, league: League, day: str, *,
                 now: datetime | None = None,
                 extra_body: str = "",
@@ -165,6 +172,22 @@ def result_card(games: list, league: League, day: str, *,
     # 조용히 기본값 0을 쓰기 때문에 실행은 되고 카드만 거짓말을 한다.
     _fin = sum(1 for g in todays if g.status is Status.FINAL)
     _off = len(todays) - _fin
+    # ── **전 경기가 취소된 날도 '결과'가 아니다 (v1.40)** ─────────
+    #
+    # 속보 카드는 상태별로 종류를 고르는데(`flash_card`), 리그 정리판은
+    # 늘 `result`였다. 그래서 그 리그 오늘 경기가 **전부 우천취소**인 날
+    # 카드가 `✅ 경기 결과 / 전 경기 우천취소`로 나간다 — 머리는 치러졌다고
+    # 하고 제목은 안 치렀다고 한다. 한 장 안에서 말이 엇갈린다.
+    if kind == "result" and _fin == 0 and _off:
+        _kinds = {_KIND_BY_STATUS.get(g.status) for g in todays}
+        _kinds.discard(None)
+        # **섞인 날도 '결과'는 아니다.** 한때 `len(_kinds) == 1`만 봐서,
+        # 취소 2건 + 연기 1건인 날이 `✅ 경기 결과 / 전 경기 취소·연기`로
+        # 나갔다 — 고쳤다는 그 사고가 한 칸 옆에 그대로 남아 있었다.
+        # 섞이면 더 무거운 쪽(취소)의 이름을 쓴다. 머리말이 `취소·연기`라고
+        # 이미 둘 다 말하므로 이름은 종류를 가르는 표식이면 된다.
+        if _kinds:
+            kind = "canceled" if "canceled" in _kinds else _kinds.pop()
     # **한 경기짜리 카드는 그 경기의 이야기를 말한다.** "1경기 종료"는
     # 아무것도 알려주지 않는다 — 카드에 경기가 하나뿐인데 개수를 세는 셈이다.
     head = None
@@ -362,7 +385,7 @@ def _after_block(rb, game, league: League) -> str:
                      "l" if sa.rank < sh.rank else ("r" if sh.rank < sa.rank else "")))
         try:
             _pa, _ph = float(sa.pct), float(sh.pct)
-            rows.append((sa.pct, "승점률" if league is League.KL1 else "승률",
+            rows.append((sa.pct, pct_label(league),
                          sh.pct,
                          "l" if _pa > _ph else ("r" if _ph > _pa else "")))
         except (TypeError, ValueError):
@@ -645,7 +668,7 @@ def _analysis_row(rb, game, league: League, no: int,
         # ★ **축구에 '승률'이라 쓰면 거짓이다** — 무승부가 있어 승/(승+패)가
         # 아니다. 어댑터는 승점률(승점 ÷ 최대승점)을 담는다. 라벨을 종목에
         # 맞춘다(약점 95: 낱말 하나가 두 가지로 읽히면 반드시 헷갈린다).
-        _pl = "승점률" if league is League.KL1 else "승률"
+        _pl = pct_label(league)
         _cmp(_pl, float(sa.pct), float(sh.pct), sa.pct, sh.pct, True)
     except (TypeError, ValueError):
         pass
@@ -1285,13 +1308,6 @@ def goal_card(game, league: League, goal_id: str, *,
     return html, list(C5.caption(kind="goal", league=league, head=head,
                                  date_label=lab,
                                  tags=_tags("goal", league, [game])))
-
-
-# 끝난 상태 → 카드 종류. **계약에서 시작한다** — 여기 손으로 적으면 계약이
-# 늘 때(중단 등) 이 파일만 옛 목록을 들고 있다. 표에 없는 종료 상태는
-# `result`로 떨어지는데, 그건 지금까지의 동작이라 새 사고를 만들지 않는다.
-_KIND_BY_STATUS = {Status.CANCELED: "canceled", Status.POSTPONED: "postponed"}
-assert set(_KIND_BY_STATUS) <= set(TERMINAL_STATUSES) - {Status.FINAL}
 
 
 def flash_card(game, league: League, *, now: datetime | None = None, rb=None

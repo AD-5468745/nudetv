@@ -1286,5 +1286,63 @@ check("★★ 취소 경기를 '시작'했다고 쓰지 않는다",
       "시작" not in _c_txt, _c_txt[-200:])
 check("  ↳ 대신 '예정'이라고 쓴다", "예정" in _c_txt, _c_txt[-200:])
 
+# **정리판도 마찬가지다.** 속보만 고치고 정리판을 두면, 그 리그 오늘 경기가
+# 전부 우천취소인 날 `✅ 경기 결과 / 전 경기 우천취소`가 나간다 —
+# 머리는 치러졌다고 하고 제목은 안 치렀다고 한다.
+_all_off = _R5c.result_card(
+    [_CG(Status.CANCELED, "우천취소"), _CG(Status.CANCELED, "우천취소")],
+    KBO, "2026-09-04", now=_dtc.now(_tzc.utc))
+check("★★★ 전 경기 취소인 날의 정리판도 '결과'가 아니다",
+      bool(_all_off) and "경기 결과" not in _all_off[1][0],
+      _all_off[1][0] if _all_off else "카드 없음")
+# 한 경기라도 치렀으면 그날은 '결과'다 — 취소가 섞였다고 결과가 사라지면 안 된다.
+class _FinG(_G):
+    """치른 경기 대역 — `result_card`가 `is_terminal`을 본다."""
+
+    def __init__(self):
+        super().__init__("OB", "SS", 3, 1, venue="잠실")
+        self.meta = _CM(None)
+        self.is_terminal = True
+        self.league = KBO
+        self.start_local = self.start_kst
+
+
+_mixed = _R5c.result_card([_FinG(), _CG(Status.CANCELED, "우천취소")],
+                          KBO, "2026-09-04", now=_dtc.now(_tzc.utc))
+check("★★ 한 경기라도 치렀으면 정리판은 '결과'다",
+      bool(_mixed) and "경기 결과" in _mixed[1][0],
+      _mixed[1][0] if _mixed else "카드 없음")
+
+# 처음엔 `len(종류) == 1`만 봤다 — 취소 2건 + 연기 1건인 날이 그대로
+# `✅ 경기 결과 / 전 경기 취소·연기`로 나갔다(적대적 검토 2026-09-17).
+_mix_off = _R5c.result_card(
+    [_CG(Status.CANCELED, "우천취소"), _CG(Status.CANCELED, "우천취소"),
+     _CG(Status.POSTPONED, None)],
+    KBO, "2026-09-04", now=_dtc.now(_tzc.utc))
+check("★★★ 취소와 연기가 **섞인** 날도 '결과'가 아니다",
+      bool(_mix_off) and "경기 결과" not in _mix_off[1][0],
+      _mix_off[1][0] if _mix_off else "카드 없음")
+
+# ── 축구 카드가 승점률을 '승률'이라 부르던 문제 ─────────────────
+#
+# 12승 4무 2패 팀의 **승률**은 0.857이고 **승점률**은 0.741이다. 카드에
+# `승률 0.741`이라 적으면 그 숫자를 승률로 읽는 사람이 전부 잘못 안다.
+from contract import pct_label as _pl                            # noqa: E402
+check("★★★ 축구 카드는 '승점률'이라고 쓴다",
+      _pl(League.KL1) == "승점률" and _pl(League.EPL) == "승점률")
+check("  ↳ 야구는 '승률' 그대로", _pl(KBO) == "승률" and _pl(League.MLB) == "승률")
+
+_kl_rows = [Standing(league=League.KL1, season="2026", team_code=f"K0{i}",
+                     rank=i, games=18,
+                     record=WLD(14 - i, i, 4),
+                     pct=f"{((14 - i) * 3 + 4) / 54:.3f}",
+                     games_behind=f"{(i - 1) * 3}", last10=None,
+                     streak_kind=StreakKind.WIN, streak_len=1, group=None)
+            for i in (1, 2, 3)]
+_kl_html = C5.body_standings(_kl_rows, League.KL1)
+check("★★★ K리그 순위표 카드 머리글도 '승점률'이다 (한 곳만 고치면 어긋난다)",
+      "승점률" in _kl_html and "승률" not in _kl_html.replace("승점률", ""),
+      plain(_kl_html)[:120])
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

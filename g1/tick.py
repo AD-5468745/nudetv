@@ -899,6 +899,16 @@ def _save_record_archive(name: str, rb) -> None:
         pass
 
 
+# 보관본을 되살리지 못한 이유들. 틱이 매번 거둬 운영 알림에 싣는다.
+_archive_rejects: list = []
+
+
+def take_archive_rejects() -> list:
+    out = list(_archive_rejects)
+    _archive_rejects.clear()
+    return out
+
+
 def _load_record_archive(name: str, now: datetime):
     """되살린 RecordBook 또는 None.
 
@@ -913,9 +923,18 @@ def _load_record_archive(name: str, now: datetime):
         from contract import assert_recordbook
         assert_recordbook(rb, now_utc=now)
         if _units_missing(rb):
+            _archive_rejects.append(f"{name}: 순위 단위(지구·리그)가 없는 옛 보관본")
             return None
         return rb
-    except Exception:                                        # noqa: BLE001
+    except Exception as e:                                   # noqa: BLE001
+        # ★ **조용한 폐기가 이 사고의 본체였다** (2026-09-17).
+        #
+        # MLB·K리그 보관본이 **매번** 게이트에 걸려 버려지고 있었는데 로그도
+        # 알림도 한 줄 없었다. 수집이 제동에 걸린 시간(30분 중 29분) 동안
+        # 그 두 리그의 분석·순위표가 통째로 사라졌고, 그 사실을 아무도 몰랐다.
+        # 원인 두 개는 고쳤지만 **조용하다는 구조**가 더 위험하다 —
+        # 다음에 다른 이유로 걸리면 똑같이 안 보인다. 그래서 남긴다.
+        _archive_rejects.append(f"{name}: {type(e).__name__} {str(e)[:90]}")
         return None
 
 
@@ -2329,13 +2348,21 @@ def _answer_questions(transport, disc, asks, snaps, records) -> None:
                 a.get("text", ""), games_by_league=by_league,
                 records=records or {}, now=_now(),
                 name_of=lambda lg, t: _C5._nm(lg, t))
-            transport.call("sendMessage", {
+            _pay = {
                 "chat_id": a.get("chat_id"), "text": text,
                 "parse_mode": _PARSE_MODE,
                 "disable_web_page_preview": True,
                 "reply_parameters": {
                     "message_id": int(a["message_id"]),
-                    "allow_sending_without_reply": True}})
+                    "allow_sending_without_reply": True}}
+            # ★ **실타래를 명시한다** (v1.40). 답장만으로도 대개 그 경기
+            # 댓글창에 남지만, `allow_sending_without_reply`가 켜져 있어
+            # 원글이 지워진 순간 답이 **실타래 밖 그룹 본문으로 새어 나간다** —
+            # 대표님이 이미 한 번 겪으신 종류의 사고다(그때는 개인 메시지로
+            # 갔다). 실타래 번호를 함께 주면 어느 쪽이든 제자리에 남는다.
+            if a.get("thread_id"):
+                _pay["message_thread_id"] = int(a["thread_id"])
+            transport.call("sendMessage", _pay)
         except Exception:                                # noqa: BLE001
             # 답 하나를 못 보냈다고 틱을 죽이지 않는다.
             continue
@@ -3323,6 +3350,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines += [f"카드를 못 만들어 이번에 거름 — {n}" for n in _fb[:3]]
         if len(_fb) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_fb)}건")
+    # ── 기록 보관본을 못 되살린 것 (v1.40) ──────────────────────
+    #
+    # 이것이 조용해서 MLB·K리그의 분석·순위표가 **몇 주 동안** 절반의 시간
+    # 사라져 있었다(2026-09-17 발견). 되살리기 실패는 그 리그 카드 세 종류가
+    # 함께 죽는다는 뜻이므로 반드시 사람에게 닿아야 한다.
+    _ar = take_archive_rejects()
+    if _ar:
+        _seen: list = []
+        for n in _ar:
+            if n not in _seen:
+                _seen.append(n)
+        lines += [f"기록 보관본을 못 씀 — {n}" for n in _seen[:3]]
     # ── 표에 적었는데 오래 못 만난 한국 선수 (v1.17d) ────────────
     #
     # **'안 뛰는 것'과 '표기가 달라 못 잡는 것'을 구분할 수 없다** — 소스에

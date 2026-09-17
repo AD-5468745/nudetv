@@ -30,7 +30,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from contract import (fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
+from contract import (pct_label, fix_team_name,KST, League, SCORE_UNIT_BY_LEAGUE, SOURCE_CREDIT, ScoreUnit,
                       Status, StreakKind, TEAM_NAMES, card_theme, league_accent,
                       venue_name, cancel_reason_text, is_readable_ko,
                       goal_clock, goal_sort_key, team_accent)
@@ -869,7 +869,7 @@ def body_standings(rows: list, league: League) -> str:
     out = [f'<div class="li" style="grid-template-columns:{cols}">'
            f'<span class="t3">#</span><span class="t3">팀</span>'
            f'<span class="t3" style="text-align:right">승-패-무</span>'
-           f'<span class="t3" style="text-align:right">승률</span>'
+           f'<span class="t3" style="text-align:right">{esc(pct_label(league))}</span>'
            f'<span class="t3" style="text-align:right">승차</span>'
            + ('<span class="t3" style="text-align:right">최근10</span>' if has10 else "")
            + ('<span class="t3" style="text-align:right">연속</span>' if has_st else "")

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from contract import (CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
+from contract import (pct_label, CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       ContentType, Game, GateError, League, LEAGUE_COLORS,
                       TELEGRAM_TEXT_MAX,
                       QueueItem, SEND_JPEG_QUALITY, SEND_JPEG_SUBSAMPLING,
@@ -2265,7 +2265,7 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     v3.0: 9열 → 7열. 승·패·무를 한 열로 묶어 여백을 벌었다.
     정보는 그대로이고 읽기는 편해진다.
     """
-    assert_recordbook(rb, require_h2h=bool(rb.h2h))
+    assert_recordbook(rb)
     order = _std_order(rb.standings)
     units = _std_units(rb.standings)
     _lead = [x for x in order if not units or x.group == units[0]]
@@ -2296,7 +2296,7 @@ def render_standings(rb: RecordBook, day: str, highlight: str | None = None,
     _uni = len(units) > 1
     head = (f'<tr><th class="pad">순위</th>'
             + ('<th>리그</th>' if _uni else "")
-            + f'<th>팀</th><th>{wl}</th><th>승률</th>'
+            + f'<th>팀</th><th>{wl}</th><th>{pct_label(rb.league)}</th>'
             + f'<th{_gb_at}>승차</th>'
             + (f'<th{_l10_at}>최근10</th>' if show_l10 else "")
             + ('<th class="padr">연속</th>' if show_streak else "")
@@ -2426,7 +2426,7 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
     리그마다 있는 부문이 다르다. 없는 부문을 요구하면 카드가 아예 안 나가므로,
     그 리그가 실제로 가진 부문 중에서 세트를 채운다. 순서는 세트 정의를 따른다.
     """
-    assert_recordbook(rb, require_h2h=bool(rb.h2h))
+    assert_recordbook(rb)
     title, cats = leader_set(rb, set_idx)
     if not cats:
         raise GateError(f"리더보드: {rb.league.value}에 쓸 부문이 없다")
@@ -2490,7 +2490,7 @@ def render_leaders(rb: RecordBook, day: str, set_idx: int = 0, top_n: int = 5) -
 
 def render_matchup(rb: RecordBook, game: Game, day: str) -> str:
     """경기 전 맞대결 분석 카드. 두 팀 순위 + 시즌 상대전적."""
-    assert_recordbook(rb, require_h2h=bool(rb.h2h))
+    assert_recordbook(rb)
     a, h = game.away.team_code, game.home.team_code
     sa, sh = rb.team(a), rb.team(h)
     if not sa or not sh:
@@ -2813,7 +2813,8 @@ def caption_standings(rb: RecordBook, *, as_parts: bool = False):
     head = (f"📋 <b>{esc(LEAGUE_LABEL.get(rb.league, rb.league.value))} "
             f"전체 순위 {len(rb.standings)}팀</b>\n")
     # 값에 라벨이 없으면 '0.579'가 승률인지 승차인지 알 수 없다.
-    tail = f"순위. 팀 {'승-패-무' if three else '승-패'} · 승률"
+    tail = (f"순위. 팀 {'승-패-무' if three else '승-패'} · "
+            + pct_label(rb.league))
     return (_clip_parts(head, lines, tail, unit="팀") if as_parts
             else _clip(head, lines, tail, unit="팀"))
 
@@ -2879,7 +2880,7 @@ def caption_matchup(rb: RecordBook, game: Game, *, as_parts: bool = False):
     for s, nm in ((sa, na), (sh, nh)):
         _other = sh if s is sa else sa
         bits = [_rk(s, _other), _wld(s.record, three),
-                f"승률 {esc(pct_text(s.pct))}"]
+                f"{pct_label(s.league)} {esc(pct_text(s.pct))}"]
         if s.last10:
             bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
@@ -3902,7 +3903,7 @@ def render_analysis(rb: RecordBook, game: Game, day: str, *,
     · `history`    — 최근 5경기를 뽑을 경기 스냅샷(그 리그 전체). 없으면 ③ 생략.
                      주면 `assert_asof_aligned()`가 기록과 기준 시각을 대조한다.
     """
-    assert_recordbook(rb, require_h2h=bool(rb.h2h), now_utc=now)
+    assert_recordbook(rb, now_utc=now)
     if game.league is not rb.league:
         raise GateError(f"분석 카드: 리그 불일치 {game.league.value} vs {rb.league.value}")
     a, h = game.away.team_code, game.home.team_code
@@ -3980,7 +3981,8 @@ def caption_analysis(rb: RecordBook, game: Game, day: str, *,
 
     lines: list[str] = []
     for s, nm in ((sa, na), (sh, nh)):
-        bits = [f"{s.rank}위", _wld(s.record, three), f"승률 {pct_text(s.pct)}"]
+        bits = [f"{s.rank}위", _wld(s.record, three),
+                f"{pct_label(s.league)} {pct_text(s.pct)}"]
         if s.last10:
             bits.append(f"최근10 {_wld(s.last10, three10)}")
         if s.streak_kind is not StreakKind.NONE and s.streak_len:
@@ -4935,7 +4937,8 @@ def _eff_sentence(nm_a: str, nm_h: str, hits: tuple, runs: tuple) -> str:
             f"{nm_h}{_josa(nm_h, '은', '는')} {hh}개로 {rh}점을 냈다")
 
 
-def _goal_story(game, *, away_name: str, home_name: str) -> str:
+def _goal_story(game, league: League, *, away_name: str,
+                home_name: str) -> str:
     """골 목록으로 쓰는 **경기 내용 한 문단** (v1.40). 재료가 없으면 빈 문자열.
 
     대표님 지시(2026-09-17): *"야구뿐만 아니라 모든 스포츠 경기에 재미있고
@@ -4950,6 +4953,10 @@ def _goal_story(game, *, away_name: str, home_name: str) -> str:
     그래서 **골을 세어 점수와 맞을 때만** 이 문단을 쓴다. 안 맞으면 침묵한다 —
     틀린 경기 내용을 말하는 것보다 아무 말도 안 하는 편이 낫다.
     """
+    # ★ **골로 점수를 내는 종목에서만 쓴다.** 야구 0:0 강우콜드에
+    # "골문을 열지 못했다"가 나간 적이 있다(적대적 검토 2026-09-17).
+    if SCORE_UNIT_BY_LEAGUE.get(league) is not ScoreUnit.GOALS:
+        return ""
     meta = getattr(game, "meta", None)
     sc = getattr(game, "score", None)
     goals = list((getattr(meta, "goals", ()) if meta else ()) or ())
@@ -4964,7 +4971,11 @@ def _goal_story(game, *, away_name: str, home_name: str) -> str:
         return ""
     # 자책골은 **넣은 쪽이 아니라 이득을 본 쪽**의 점수다. 어댑터가 어느 편으로
     # 묶는지 실측한 적이 없으므로(표본 0건), 자책골이 섞인 경기는 세지 않는다.
-    if any(getattr(g, "own_goal", False) for g in goals):
+    #
+    # ★ **칸이 없는 것도 자책골일 수 있다.** `getattr(..., False)`로만 보면
+    # 어댑터가 그 칸을 빼는 날 가드가 조용히 사라진다 — 가드가 사라진 것을
+    # 아무도 모른다. 칸 자체가 없으면 침묵한다.
+    if any(not hasattr(g, "own_goal") or g.own_goal for g in goals):
         return ""
     hs = sum(1 for g in goals if getattr(g, "side", None) == "home")
     as_ = sum(1 for g in goals if getattr(g, "side", None) == "away")
@@ -4976,19 +4987,34 @@ def _goal_story(game, *, away_name: str, home_name: str) -> str:
     nm = {"home": home_name, "away": away_name}
 
     def _min(g) -> str:
-        m, ad = getattr(g, "minute", 0) or 0, getattr(g, "added", 0) or 0
-        return f"{m}+{ad}분" if ad else f"{m}분"
+        """그 골의 **공식 표기**. 모르면 빈 문자열.
+
+        ★ **속보·흐름글과 같은 함수를 쓴다**(`goal_clock`). 여기서 분을 직접
+        찍었더니 같은 캡션 안에서 흐름글은 `전반 3분`, 총평은 `2분`이 됐다 —
+        소스가 '경과 분'을 주는 리그는 +1을 해야 공식 표기가 된다(v1.34에서
+        한 번 고친 병이다). 두 번째로 같은 자리에서 났다.
+        """
+        m = getattr(g, "minute", 0) or 0
+        if m <= 0:
+            return ""                      # 소스가 분을 안 줬다 — 지어내지 않는다
+        half, num = goal_clock(m, getattr(g, "added", 0) or 0, league)
+        return f"{half} {num}분"
+
+    def _who(g) -> str:
+        return (getattr(g, "name", "") or "").strip()
 
     sents: list[str] = []
 
     # ① 선제골 — 누가 먼저 열었나
     first = goals[0]
-    _who = (getattr(first, "name", "") or "").strip()
     _side = nm.get(getattr(first, "side", ""), "")
     if _side:
-        _op = f"{_who}의 골로 " if _who else ""
-        sents.append(f"{_side}{_josa(_side, '이', '가')} {_min(first)} "
-                     f"{_op}먼저 앞서 나갔다")
+        _fm = _min(first)
+        _fn = _who(first)
+        _lead = f"{_fm} " if _fm else ""
+        _by = f"{_fn}의 골로 " if _fn else ""
+        sents.append(f"{_side}{_josa(_side, '이', '가')} {_lead}{_by}"
+                     f"먼저 앞서 나갔다".replace("  ", " "))
 
     # ② 어떻게 갈렸나 — 무승부 · 완봉 · 결승골 시점
     if sc.home == sc.away:
@@ -5023,35 +5049,46 @@ def _goal_story(game, *, away_name: str, home_name: str) -> str:
             sents.append(f"{lname}{_josa(lname, '은', '는')} 끝내 한 골도 "
                          f"만회하지 못했다")
         else:
-            # 결승골 = 진 팀의 마지막 득점 뒤, 이긴 팀이 처음 앞선 골
-            hh = aa = 0
+            # ★ **결승골은 '진 팀의 최종 득점 + 1번째' 골이다.**
+            #    2-1이면 이긴 팀의 **두 번째** 골이 결승골이다. 전에는
+            #    "처음 앞선 골"로 잡아서, H12·H30·A70 (2-1)에서 선제골과
+            #    결승골이 **같은 골**로 나왔다(적대적 검토 2026-09-17).
+            _need = min(hs, as_) + 1
+            _cnt = 0
             decider = None
             for g in goals:
-                if getattr(g, "side", None) == "home":
-                    hh += 1
-                else:
-                    aa += 1
-                lead = (hh - aa) if win == "home" else (aa - hh)
-                if lead == 1 and getattr(g, "side", None) == win:
+                if getattr(g, "side", None) != win:
+                    continue
+                _cnt += 1
+                if _cnt == _need:
                     decider = g
+                    break
             if decider is not None:
-                _dn = (getattr(decider, "name", "") or "").strip()
+                _dn = _who(decider)
                 _dm = _min(decider)
                 _late = (getattr(decider, "minute", 0) or 0) >= 80
-                _tail = "경기 막판 " if _late else ""
-                sents.append(f"{_tail}{_dm}에 나온 "
+                _head = ("경기 막판 " if _late else "") + (f"{_dm}에 " if _dm else "")
+                sents.append(f"{_head}나온 "
                              + (f"{_dn}의 골이 " if _dn else "골이 ")
                              + f"{wname}의 결승골이 됐다")
 
     # ③ 멀티골 — 한 사람이 두 번 이상
+    #    ★ **이름만 세면 동명이인이 한 사람이 된다.** 양 팀에 김진수가
+    #    한 골씩이면 "김진수 2골"이 된다 — 팀까지 함께 센다.
     names: dict = {}
     for g in goals:
-        _n = (getattr(g, "name", "") or "").strip()
+        _n = _who(g)
         if _n:
-            names[_n] = names.get(_n, 0) + 1
-    multi = [f"{n} {c}골" for n, c in names.items() if c >= 2]
+            _k = (getattr(g, "side", ""), _n)
+            names[_k] = names.get(_k, 0) + 1
+    multi = [f"{n} {c}골" for (_sd, n), c in names.items() if c >= 2]
     if multi:
-        sents.append(" · ".join(multi[:2]) + "이 눈에 띄었다")
+        # 셋 이상이면 **말없이 자르지 않고** 몇 명인지 밝힌다.
+        if len(multi) > 2:
+            sents.append(" · ".join(multi[:2])
+                         + f" 등 {len(multi)}명이 멀티골을 넣었다")
+        else:
+            sents.append(" · ".join(multi) + "이 눈에 띄었다")
 
     return ". ".join(sents) + "." if sents else ""
 
@@ -5106,7 +5143,8 @@ def game_review(game, league: League, *, away_name: str, home_name: str,
         # 안타·실책이 없는 종목(축구 등)은 **골 목록으로 경기 내용을 쓴다.**
         # 이게 없으면 축구 총평은 순위·맞대결 두 문단뿐이라 정작 "경기가
         # 어떻게 흘렀나"가 빠진다 — 대표님이 가장 먼저 지적하신 대목이다.
-        _gs = _goal_story(game, away_name=away_name, home_name=home_name)
+        _gs = _goal_story(game, league, away_name=away_name,
+                          home_name=home_name)
         if _gs:
             out.append(_gs)
 

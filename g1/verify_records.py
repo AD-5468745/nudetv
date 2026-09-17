@@ -340,5 +340,24 @@ check("★★★ MLB 보관본이 상대전적 0건으로 버려지지 않는다
 expect_gate("★★ 모으는 리그(KBO)에서는 여전히 0건을 막는다",
             lambda: assert_recordbook(_empty_book(League.KBO)))
 
+# **부르는 쪽이 판단하면 곳마다 답이 달라진다.** 한때 산문 쪽은
+# `require_h2h=bool(rb.h2h)`(있으면 검사), 보관본 쪽은 기본 True(늘 요구)라
+# 같은 자료가 한쪽에선 통과하고 다른 쪽에선 버려졌다.
+import inspect as _insp                                          # noqa: E402
+import pathlib as _pl2                                           # noqa: E402
+_src = "".join(_pl2.Path(__file__).resolve().parents[0].joinpath(f).read_text(
+    encoding="utf-8") for f in ("pipeline.py", "tick.py"))
+check("★★★ 부르는 쪽이 상대전적 요구를 손으로 정하지 않는다 (리그가 정한다)",
+      "require_h2h=bool(" not in _src,
+      "require_h2h=bool(...) 가 아직 남아 있습니다")
+check("  ↳ 기본값은 '리그가 정한다'(None)이다",
+      _insp.signature(assert_recordbook).parameters["require_h2h"].default is None)
+
+# **조용한 폐기가 이 사고의 본체였다.** 이유를 남기지 않으면 다음에 다른
+# 이유로 걸릴 때 똑같이 안 보인다.
+import tick as _T2                                               # noqa: E402
+check("★★★ 보관본을 못 되살리면 이유를 남긴다 (조용히 버리지 않는다)",
+      hasattr(_T2, "take_archive_rejects") and "_archive_rejects" in dir(_T2))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

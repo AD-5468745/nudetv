@@ -541,6 +541,17 @@ check("★★★ 앵커가 나간 경기는 기다린다",
 check("★★★ 앵커가 없는 경기는 기다리지 않는다 (조용한 소실 방지)",
       not T._anchor_is_up(_It(), _Led(None), "ch"))
 
+# 답이 **그 경기 댓글창 안**에 남아야 다른 손님도 본다. 대표님 지적:
+# *"봇이 그 주제 안에서 바로 대답해줘야, 다른 손님들도 볼 수 있지"*.
+import inspect as _insp2                                         # noqa: E402
+_src_answer = _insp2.getsource(T._answer_questions)
+check("★★★ 봇 답은 개인 메시지가 아니라 **그 대화방**으로 간다",
+      'a.get("chat_id")' in _src_answer and '"chat_id": a["user"]' not in _src_answer)
+check("★★★ 답을 그 경기 실타래에 못 박는다 (원글이 지워져도 새지 않게)",
+      "message_thread_id" in _src_answer, "실타래 번호를 안 넘깁니다")
+check("  ↳ 받아올 때부터 실타래 번호를 들고 온다",
+      '"thread_id"' in _insp2.getsource(D.poll))
+
 
 print()
 print("=" * 64)

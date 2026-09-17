@@ -663,6 +663,60 @@ check("★ 조사를 받침에 맞춘다",
           for x in ("토트넘가", "리버풀가", "토트넘은 ", "리버풀는")),
       _late)
 
+# ── 적대적 검토가 잡은 것들 (2026-09-17) ──────────────────────
+#
+# 아래는 전부 **실제로 틀린 말이 채널에 나가는** 자리였다.
+
+
+class _NoOG:
+    """`own_goal` 칸이 **없는** 골. 어댑터가 칸을 빼는 날을 흉내 낸다."""
+
+    def __init__(self, minute, side, name):
+        self.minute, self.side, self.name = minute, side, name
+
+
+def _kl(hs, as_, goals):
+    """K리그 — 소스가 **경과 분**을 주므로 공식 표기는 +1이 된다."""
+    g = _FG(hs, as_, goals)
+    g.score = C.Score(hs, as_, C.ScoreUnit.GOALS)
+    out = P.game_review(g, C.League.KL1, away_name="서울", home_name="전북")
+    return out[0] if out else ""
+
+
+_clock = _kl(2, 1, [_GL(2, "home", "클리말라"), _GL(25, "home", "A"),
+                    _GL(70, "away", "B")])
+check("★★★ 분 표기를 속보·흐름글과 같은 함수로 뽑는다 (한 캡션에 3분과 2분)",
+      "전반 3분" in _clock and "2분 " not in _clock, _clock)
+
+_dec = _fr(2, 1, [_GL(12, "home", "김민준"), _GL(30, "home", "이강인"),
+                  _GL(70, "away", "손")])
+check("★★ 2-1의 결승골은 이긴 팀의 **두 번째** 골이다 (선제골과 같으면 안 된다)",
+      "이강인의 골이" in _dec and "김민준의 골이" not in _dec, _dec)
+
+_same = _fr(1, 1, [_GL(20, "home", "김진수"), _GL(80, "away", "김진수")])
+check("★★ 동명이인을 한 사람으로 세지 않는다 (양 팀 김진수 → '2골' 아님)",
+      "2골" not in _same, _same)
+
+check("★★ 분을 모르면 지어내지 않는다 ('0분'이 나가면 안 된다)",
+      "0분" not in _fr(1, 0, [_GL(0, "home", "손")]),
+      _fr(1, 0, [_GL(0, "home", "손")]))
+
+check("★★★ 자책골 칸이 **없어도** 침묵한다 (가드가 조용히 사라지면 안 된다)",
+      _fr(1, 0, [_NoOG(20, "home", "A")]) == "")
+
+# 골로 점수를 내지 않는 종목에 '골문'이 나갔다.
+_bb = _RG(_MT(), 0, 0)
+check("★★★ 야구 0:0에 '골문을 열지 못했다'가 나가지 않는다",
+      P.game_review(_bb, C.League.KBO,
+                    away_name="삼성", home_name="두산") == [],
+      str(P.game_review(_bb, C.League.KBO, away_name="삼성", home_name="두산")))
+
+_many = _fr(6, 0, [_GL(10, "home", "A"), _GL(20, "home", "A"),
+                   _GL(30, "home", "B"), _GL(40, "home", "B"),
+                   _GL(50, "home", "C"), _GL(60, "home", "C")])
+check("★ 멀티골이 셋 이상이면 말없이 자르지 않고 몇 명인지 밝힌다",
+      "3명" in _many, _many)
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {FAIL} FAIL")
