@@ -2134,17 +2134,21 @@ def _index_links(day: str) -> dict:
     return dict((_index_load().get(day) or {}).get("links") or {})
 
 
-def _message_link(chat_id: str, message_id: int) -> str:
+def _message_link(chat_id: str, message_id: int, *, username: str = "") -> str:
     """그 글로 바로 가는 주소.
 
     채널이 **공개**면 `t.me/<아이디>/<글번호>`, **비공개**면
     `t.me/c/<내부번호>/<글번호>`다. 두 꼴은 서로 통하지 않는다 —
-    비공개 주소를 공개 채널에 쓰면 아무 데도 안 열린다.
+    비공개 주소는 아직 채널에 안 들어온 사람에게 아무 데도 안 열린다.
 
-    무엇으로 판별하나 — 비밀값에 `@아이디`가 들어 있으면 공개다.
-    텔레그램 API가 `@아이디`를 chat_id로 그대로 받아 주므로, 공개 채널은
-    숫자 번호를 알아낼 필요 자체가 없다.
+    ★ **비밀값 생김새로 판단하지 않는다** (2026-09-17).
+    전에는 비밀값이 `@아이디`면 공개로 봤다. 그런데 채널을 공개로 바꿔도
+    **비밀값은 숫자 그대로**라, 공개가 된 뒤에도 계속 `t.me/c/…`를 만들었다.
+    이제 `username`을 받는다 — 부르는 쪽이 소스에 직접 물어서 넘긴다.
     """
+    u = str(username or "").lstrip("@").strip()
+    if u:
+        return f"https://t.me/{u}/{int(message_id)}"
     cid = str(chat_id or "").strip()
     if cid.startswith("@"):
         return f"https://t.me/{cid[1:]}/{int(message_id)}"
@@ -2174,7 +2178,9 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
             return
 
         if item.content_type is ContentType.ANCHOR and item.game_id:
-            rec["links"][item.game_id] = _message_link(channel, message_ids[0])
+            rec["links"][item.game_id] = _message_link(
+                channel, message_ids[0],
+                username=_DS.public_username(transport, channel))
             _index_save(state)
             # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.
             mid = rec.get("message_id")
@@ -2235,20 +2241,34 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
     anchors = _anchor_message_ids(ledger)
     if not anchors:
         return
+    # ★ **공개 아이디를 소스에 묻는다.** `?comment=`는 `t.me/<아이디>/…`
+    # 에서만 동작한다 — 비공개 꼴(`t.me/c/…`)에 붙이면 텔레그램이 말없이
+    # 무시하고 채널 글만 연다. 채널을 공개로 바꿔도 비밀값은 숫자 그대로라,
+    # 생김새로 짐작하면 공개가 된 것을 영영 모른다(2026-09-17 실채널).
+    _uname = _DS2.public_username(transport, channel)
+    if not _uname:
+        print("    ⚠️ [토론방] 채널이 비공개입니다 — 버튼을 눌러도 그 경기 "
+              "댓글창이 안 열립니다(텔레그램이 `?comment=`를 무시합니다)")
     for ch_id, th_id in list(disc.map.items())[-200:]:
         try:
             cid = int(ch_id)
         except (TypeError, ValueError):
             continue
-        if cid not in anchors or disc.buttoned.get(str(ch_id)):
+        # ★ **어떤 주소 꼴로 달았는지 기억한다** (2026-09-17).
+        # 전에는 `True`만 적어서, 채널이 공개로 바뀐 뒤에도 이미 달린 버튼은
+        # **비공개 주소 그대로 남았다** — 눌러도 안 열리는 버튼이 영영 남는다.
+        # 지금 쓸 주소 꼴과 다르면 **다시 단다.** 스스로 고쳐진다.
+        _mark = _uname or "c"
+        if cid not in anchors or disc.buttoned.get(str(ch_id)) == _mark:
             continue
         rows = [[{"text": DISCUSSION_BUTTON_TEXT,
-                  "url": _DS2.comment_link(channel, cid, th_id)}]]
+                  "url": _DS2.comment_link(channel, cid, th_id,
+                                           username=_uname)}]]
         if BRAND_URL:
             rows.append([{"text": BRAND_BUTTON_TEXT, "url": BRAND_URL}])
         _url = rows[0][0]["url"]
         if _DS2.set_buttons(transport, channel, cid, rows):
-            disc.buttoned[str(ch_id)] = True
+            disc.buttoned[str(ch_id)] = _mark
             # **주소를 로그에 남긴다.** 버튼이 어디로 가는지는 채널에서 눌러 봐야
             # 아는데, 눌러 보기 전에 로그로 확인할 수 있어야 고치는 속도가 붙는다.
             print(f"    🔗 앵커 {cid} 버튼 → {_url}")

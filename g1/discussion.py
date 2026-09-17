@@ -104,6 +104,37 @@ class DiscussionState:
 _probed = False
 
 
+_username_cache: dict = {}
+
+
+def public_username(transport, chat_id) -> str:
+    """그 채널의 **공개 아이디**(`@` 없이). 비공개면 빈 문자열. 실행당 한 번.
+
+    ★ **왜 물어보는가** (2026-09-17).
+    주소 꼴을 비밀값 생김새로 판단하고 있었다 — `@아이디`면 공개,
+    숫자면 비공개. 그런데 대표님이 채널을 **공개로 바꾸셔도 비밀값은
+    숫자 그대로**다. 그러면 코드는 계속 `t.me/c/<내부번호>/…`를 만들고,
+    거기 붙인 `?comment=`를 텔레그램이 **말없이 무시한다** — 버튼을 눌러도
+    그 경기 댓글창이 안 열린다. 실제로 그렇게 막혀 있었다.
+
+    **생김새로 짐작하지 말고 소스에 묻는다.** 채널이 공개가 되든 다시
+    비공개가 되든, 이름이 바뀌든, 다음 실행이 알아서 따라간다.
+
+    실패하면 빈 문자열이다 — 그때는 지금까지처럼 `t.me/c/…`로 떨어진다.
+    """
+    key = str(chat_id or "")
+    if key in _username_cache:
+        return _username_cache[key]
+    name = ""
+    try:
+        chat = transport.call("getChat", {"chat_id": chat_id}) or {}
+        name = str(chat.get("username") or "").lstrip("@")
+    except Exception:                                    # noqa: BLE001
+        name = ""
+    _username_cache[key] = name
+    return name
+
+
 def probe(transport) -> str:
     """받아오기가 왜 막히는지 **스스로 확인한다** (v1.40). 실행당 한 번.
 
@@ -255,7 +286,7 @@ def thread_link(discussion_chat_id: str, thread_message_id: int) -> str:
 
 
 def comment_link(channel_chat_id: str, post_id: int,
-                 thread_message_id: int) -> str:
+                 thread_message_id: int, *, username: str = "") -> str:
     """그 **채널 글의 댓글창**으로 바로 가는 주소 (v1.39).
 
     ⚠️ **토론 그룹 주소를 쓰면 안 된다.** `t.me/<그룹>/<번호>`는 그룹을 여는
@@ -265,12 +296,25 @@ def comment_link(channel_chat_id: str, post_id: int,
     채널 글에 `?comment=` 를 붙이면 텔레그램이 **그 글의 댓글창**을 연다.
     앵커를 눌렀을 때와 똑같은 자리다.
     """
+    return f"{post_link(channel_chat_id, post_id, username=username)}" \
+           f"?comment={int(thread_message_id)}"
+
+
+def post_link(channel_chat_id: str, post_id: int, *, username: str = "") -> str:
+    """그 채널 글로 가는 주소.
+
+    **공개 아이디가 있으면 그것을 쓴다.** `t.me/<아이디>/<번호>`는 아직 채널에
+    안 들어온 사람에게도 열리고, `?comment=`도 여기서만 동작한다.
+    없으면 `t.me/c/<내부번호>/<번호>` — 이미 들어온 사람에게만 열린다.
+    """
+    u = str(username or "").lstrip("@").strip()
+    if u:
+        return f"https://t.me/{u}/{int(post_id)}"
     cid = str(channel_chat_id or "").strip()
-    base = (f"https://t.me/{cid[1:]}/{int(post_id)}" if cid.startswith("@")
-            else f"https://t.me/c/"
-                 f"{cid[4:] if cid.startswith('-100') else cid.lstrip('-')}"
-                 f"/{int(post_id)}")
-    return f"{base}?comment={int(thread_message_id)}"
+    if cid.startswith("@"):
+        return f"https://t.me/{cid[1:]}/{int(post_id)}"
+    inner = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+    return f"https://t.me/c/{inner}/{int(post_id)}"
 
 
 def pin(transport, chat_id, message_id, *, notify: bool = False) -> bool:
