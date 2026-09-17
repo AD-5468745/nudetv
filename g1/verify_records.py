@@ -249,5 +249,96 @@ check("이닝 '140 2/3' → 140.67", abs(leader_value_num("140 2/3") - 140.6667)
 check("'0.362' → 0.362", leader_value_num("0.362") == 0.362)
 expect_gate("해석 불가 값", lambda: leader_value_num("N/A"))
 
+# ══════════════════════════════════════════════════════════════
+print("\n★ '승률'과 '상대전적'은 리그마다 뜻이 다르다 (v1.40)")
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-17 — MLB·K리그1 기록 **보관본이 늘 버려지고 있었다.**
+# 오류는 한 줄도 안 났고, 수집이 제동에 걸린 29분 동안 그 두 리그의
+# 분석·순위표가 통째로 사라졌다. 원인 둘 다 "야구 규칙을 축구/미국야구에
+# 그대로 들이댄 것"이었다.
+from contract import (H2H_LEAGUES, League, PCT_RULE,  # noqa: E402
+                      RecordBook)
+from datetime import datetime as _dt2, timezone as _tz2   # noqa: E402
+
+# ① 축구 순위표의 '승률' 칸은 **승점률**이다 — (3승+무)/(3×경기).
+#    실측: K리그1 선두 19승 5무 5패(29경기) → 소스 0.713 / 야구식 0.792
+_kl = Standing(league=League.KL1, season="2026", team_code="K09", rank=1,
+               games=29, record=WLD(19, 5, 5), pct="0.713",
+               games_behind="0", last10=None,
+               streak_kind=StreakKind.WIN, streak_len=1, group=None)
+try:
+    _kl.validate()
+    _ok_kl = True
+except Exception as e:                                    # noqa: BLE001
+    _ok_kl = False
+    _why = str(e)
+check("★★★ 축구 승률을 승점률로 본다 (야구 공식이면 전부 어긋난다)",
+      _ok_kl, "" if _ok_kl else _why)
+check("  ↳ 축구 리그는 승점률 규칙으로 등록돼 있다",
+      PCT_RULE.get(League.KL1) == "points"
+      and PCT_RULE.get(League.EPL) == "points")
+check("★★ 야구는 지금까지대로 승/(승+패)다 (규칙이 뒤바뀌면 안 된다)",
+      PCT_RULE.get(League.KBO) != "points"
+      and PCT_RULE.get(League.MLB) != "points")
+_kl_bad = Standing(league=League.KL1, season="2026", team_code="K09", rank=1,
+                   games=29, record=WLD(19, 5, 5), pct="0.500",
+                   games_behind="0", last10=None,
+                   streak_kind=StreakKind.WIN, streak_len=1, group=None)
+expect_gate("★★ 축구도 승률이 정말 틀리면 막는다 (검사를 끈 게 아니다)",
+            _kl_bad.validate)
+
+# ② 상대전적을 **모으지 않는 리그**에서 0건은 정상이다.
+check("★★★ 상대전적을 모으는 리그만 0건을 의심한다",
+      League.KBO in H2H_LEAGUES and League.NPB in H2H_LEAGUES
+      and League.MLB not in H2H_LEAGUES and League.KL1 not in H2H_LEAGUES,
+      str(sorted(x.value for x in H2H_LEAGUES)))
+
+
+def _empty_book(lg):
+    """상대전적이 **빈** 기록 묶음. 나머지는 게이트를 온전히 통과하게 만든다.
+
+    팀 수·지구·승차까지 실제 리그 모양으로 채운다 — 대충 두 팀만 넣으면
+    "팀 2개 (기대 30개)"에 먼저 걸려서 **정작 보려던 상대전적 검사에
+    닿지도 못한다**(처음에 그렇게 짰다가 엉뚱한 이유로 통과했다).
+    """
+    from contract import GROUP_NOUN, TEAM_NAMES
+    codes = sorted(TEAM_NAMES.get(lg, {}))
+    groups = (["AL 동부", "AL 서부", "AL 중부", "NL 동부", "NL 서부", "NL 중부"]
+              if lg in GROUP_NOUN else [None])
+    rows, per = [], max(1, len(codes) // len(groups))
+    for i, code in enumerate(codes):
+        grp = groups[min(i // per, len(groups) - 1)] if groups[0] else None
+        rank = 1 + sum(1 for j, c in enumerate(codes)
+                       if j < i and (groups[min(j // per, len(groups) - 1)]
+                                     if groups[0] else None) == grp)
+        # **정규시즌 경기 수를 넘기지 않는다.** 넘기면 그 게이트에 먼저 걸려
+        # 상대전적 검사까지 가지도 못한다(두 번째로 같은 함정에 빠졌다).
+        from contract import REGULAR_SEASON_GAMES
+        _played = int((REGULAR_SEASON_GAMES.get(lg) or 162) * 0.9)
+        loss = _played // 2 + rank * 3
+        win = _played - loss
+        rows.append(Standing(
+            league=lg, season="2026", team_code=code, rank=rank,
+            games=win + loss, record=WLD(win, loss, 0),
+            pct=f"{win / (win + loss):.3f}",
+            games_behind=("0" if rank == 1 else f"{(rank - 1) * 5}"),
+            last10=None, streak_kind=StreakKind.WIN, streak_len=1, group=grp))
+    return RecordBook(
+        league=lg, season="2026",
+        collected_utc=_dt2.now(_tz2.utc), source_url="https://example.invalid",
+        standings=rows, h2h={}, leaders={})
+
+
+try:
+    assert_recordbook(_empty_book(League.MLB))
+    _mlb_ok = True
+except Exception as e:                                    # noqa: BLE001
+    _mlb_ok, _why2 = False, str(e)
+check("★★★ MLB 보관본이 상대전적 0건으로 버려지지 않는다",
+      _mlb_ok, "" if _mlb_ok else _why2)
+expect_gate("★★ 모으는 리그(KBO)에서는 여전히 0건을 막는다",
+            lambda: assert_recordbook(_empty_book(League.KBO)))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

@@ -28,7 +28,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from contract import KST, League, Status, TEAM_NAMES, fix_team_name
+from contract import (KST, League, Status, TEAM_NAMES, fix_team_name,
+                      pct_label)
 
 # ── AI 자리 (v1.39 — 뼈대만) ────────────────────────────────────
 #
@@ -198,7 +199,7 @@ def answer(question: str, *, games_by_league: dict, records: dict,
         rec = f"{st.record.win}승 {st.record.loss}패"
         if st.record.draw:
             rec += f" {st.record.draw}무"
-        bits.append(f"{rec} · 승률 {st.pct}")
+        bits.append(f"{rec} · {pct_label(team[0])} {st.pct}")
         if st.last10 and st.last10.total:
             bits.append(f"최근 10경기 {st.last10.win}승 {st.last10.loss}패")
         return " · ".join(bits) + "."

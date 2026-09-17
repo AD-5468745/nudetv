@@ -591,6 +591,78 @@ check("★★ 안 끝난 경기에는 총평을 쓰지 않는다",
                         st=C.Status.SCHEDULED),
                     C.League.KBO, away_name="삼성", home_name="두산") == [], "")
 
+# ══════════════════════════════════════════════════════════════
+# 축구 총평 — 골 목록으로 쓰는 경기 내용 (v1.40)
+# ══════════════════════════════════════════════════════════════
+#
+# 여태 총평 첫 문단은 **안타·실책**으로만 썼다 — 야구에만 있는 값이다.
+# 그래서 축구 총평은 순위·맞대결 두 문단뿐이었고, 사람들이 가장 궁금해하는
+# "경기가 어떻게 흘렀나"가 통째로 빠져 있었다.
+
+
+class _GL:
+    def __init__(self, minute, side, name, own_goal=False, added=0):
+        self.minute, self.side, self.name = minute, side, name
+        self.own_goal, self.added = own_goal, added
+
+
+class _FG(_RG):
+    """축구 경기 — 점수 단위가 골이고, 이닝 대신 골 목록이 있다."""
+
+    def __init__(self, hs, as_, goals):
+        super().__init__(_MT(), hs, as_)
+        self.score = C.Score(hs, as_, C.ScoreUnit.GOALS)
+        self.meta.goals = tuple(goals)
+
+
+def _fr(hs, as_, goals):
+    out = P.game_review(_FG(hs, as_, goals), C.League.EPL,
+                        away_name="토트넘", home_name="리버풀")
+    return out[0] if out else ""
+
+
+_late = _fr(2, 1, [_GL(12, "away", "손흥민"), _GL(55, "home", "살라"),
+                   _GL(88, "home", "살라")])
+check("★★★ 축구 총평이 경기 내용을 쓴다 (전에는 순위·맞대결뿐이었다)",
+      bool(_late), _late)
+check("  ↳ 선제골을 누가 언제 넣었는지 말한다",
+      "토트넘" in _late and "12분" in _late, _late)
+check("  ↳ 결승골을 짚는다", "결승골" in _late, _late)
+check("  ↳ 막판 골은 막판이라고 말한다", "막판" in _late, _late)
+check("  ↳ 멀티골을 센다", "살라 2골" in _late, _late)
+check("★ 겹말이 없다 ('경기 막판에 88분에')", "막판에 88분" not in _late, _late)
+
+check("★★ 완봉은 만회하지 못했다고 쓴다",
+      "만회하지 못했다" in _fr(3, 0, [_GL(9, "home", "홀란"),
+                                      _GL(40, "home", "홀란"),
+                                      _GL(77, "home", "포든")]))
+
+# ★★★ 여기가 핵심이다 — **안 세고 쓰면 틀린 말이 채널에 나간다.**
+# 1-0, 1-1, 1-2, 2-2 는 홈이 한 번도 앞선 적이 없다. 골 수만 보고
+# "두 팀 다 앞서 봤다"고 쓰면 거짓이다.
+_one = _fr(2, 2, [_GL(5, "away", "케인"), _GL(30, "home", "사카"),
+                  _GL(61, "away", "케인"), _GL(90, "home", "사카", added=4)])
+check("★★★ 앞선 적 없는 팀을 '앞서 봤다'고 쓰지 않는다",
+      "두 팀 다 앞서" not in _one, _one)
+check("  ↳ 대신 따라붙었다고 쓴다", "따라붙어" in _one, _one)
+_both = _fr(2, 2, [_GL(5, "home", "사카"), _GL(30, "away", "케인"),
+                   _GL(61, "away", "케인"), _GL(80, "home", "사카")])
+check("★★ 진짜로 둘 다 앞섰으면 그렇게 쓴다",
+      "두 팀 다 앞서" in _both, _both)
+
+check("★★★ 골 목록이 점수와 안 맞으면 침묵한다 (틀린 내용보다 침묵)",
+      _fr(3, 0, [_GL(20, "home", "A")]) == "")
+check("★★★ 자책골이 섞이면 침묵한다 (어느 편으로 묶이는지 실측 못 했다)",
+      _fr(1, 0, [_GL(20, "home", "자책", own_goal=True)]) == "")
+check("★★ 0:0은 빈 목록이 점수와 맞는 유일한 경우 — 그때만 말한다",
+      "골문을 열지 못했다" in _fr(0, 0, []))
+check("★★★ 0:0이 아닌데 목록이 비면 침묵한다 ('골이 없었다'와 '못 받았다'를 못 가른다)",
+      _fr(2, 1, []) == "")
+check("★ 조사를 받침에 맞춘다",
+      all(x not in _late + _one + _both
+          for x in ("토트넘가", "리버풀가", "토트넘은 ", "리버풀는")),
+      _late)
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {FAIL} FAIL")

@@ -33,17 +33,20 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import cards_v5 as C5
 import headline as H
 from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
-                      Status, assert_card_geometry, format_kickoff,
+                      Status, TERMINAL_STATUSES, assert_card_geometry,
+                      format_kickoff,
                       kst_day_label, morning_label, venue_name,
                       cancel_reason_text, foreign_script_chars,
                       LINEUP_ENABLED, is_upcoming, record_asof_note,
                       GOAL_FLASH_ENABLED, goal_flash_enabled_for,
-                      rank_comparable, rank_word,
+                      rank_comparable, rank_word, name_accent,
+                      PCT_RULE, pct_label,
                       goal_key, goal_sort_key, team_accent, card_theme)
 
 # ── 되돌리는 스위치 ────────────────────────────────────────────
 #
-# **여기 하나를 False로 두면 그 종류는 즉시 옛 카드로 돌아간다.**
+# **여기 하나를 False로 두면 그 종류는 즉시 안 나간다 (v1.40).**
+# 예전에는 옛 카드로 떨어졌지만 옛 카드 경로는 2026-09-17에 전부 걷어냈다.
 # 새 카드가 실서비스에서 무엇을 할지는 켜 봐야 알고, 되돌리는 길이 짧아야
 # 켜 볼 수 있다. 종류별로 나눈 이유도 같다 — 하나가 잘못돼도 나머지는 산다.
 USE_V5 = {
@@ -147,6 +150,7 @@ def _flow_body(game, league: League) -> str | None:
 def result_card(games: list, league: League, day: str, *,
                 now: datetime | None = None,
                 extra_body: str = "",
+                kind: str = "result",
                 rb=None) -> tuple[str, list[str]] | None:
     """경기 결과 카드 (HTML, 캡션 파트들). 못 만들면 None.
 
@@ -195,9 +199,22 @@ def result_card(games: list, league: League, day: str, *,
             # 원문이 아니라 번역표를 거친 문구를 쓴다(일본어 유출 방지).
             _ex.append(("상태", cancel_reason_text(
                 _g.meta.cancel_reason if _g.meta else None, _g.status)))
+        _venue = (venue_name(_g.venue) or "") if _g.venue else ""
+        # ── **머리말이 한 말은 본문에서 뺀다 (v1.40)** ───────────────
+        #
+        # 취소 카드가 실제로 이렇게 나갔다(2026-09-17 실렌더):
+        #   머리말 `삼성 vs 두산 우천취소` / 부제 `잠실`
+        #   본문   `시작 18:30` · `상태 우천취소` · `경기장 잠실`
+        # 세 줄 중 둘이 머리말을 그대로 되풀이한다. 대표님이 캡션에 대해
+        # 지적하신 "카드를 되풀이하지 않는다"가 카드 **안**에서 깨진 자리다.
+        _said = f"{getattr(head, 'text', '')} {getattr(head, 'sub', '')}"
+        _ex = [(k, v) for k, v in _ex if v and v not in _said]
+        if _venue and _venue in _said:
+            _venue = ""
         body = C5.body_gameinfo(
-            kst=_k, local=_loc or "",
-            venue=(venue_name(_g.venue) or "") if _g.venue else "", extra=_ex)
+            kst=_k, local=_loc or "", venue=_venue, extra=_ex,
+            time_label=("예정" if _g.status in (Status.CANCELED,
+                                                Status.POSTPONED) else "시작"))
         # ── v1.36 — **두 줄짜리 카드를 없앤다** (2026-09-17 대표님) ────
         #
         # 흐름 데이터가 없는 리그(KBO는 이닝을 안 준다)의 종료 속보는 본문이
@@ -234,7 +251,7 @@ def result_card(games: list, league: League, day: str, *,
     body += extra_body
 
     foot = _foot(todays, league)
-    html = C5.shell(kind="result", league=league, date_label=date_label,
+    html = C5.shell(kind=kind, league=league, date_label=date_label,
                     head=head, body=body, foot_left=foot)
     # `C5.caption()`은 **이미 리스트**를 돌려준다([0]=사진 캡션, [1:]=이어 보낼 텍스트).
     # 한 번 더 감쌌더니 캡션이 리스트 안의 리스트가 됐다 — 검증이 잡았다.
@@ -287,13 +304,13 @@ def result_card(games: list, league: League, day: str, *,
             _title = "오늘의 하루"
     except Exception:                              # noqa: BLE001
         _extra = []                                # 문장 하나 때문에 카드를 잃지 않는다
-    parts = C5.caption(kind="result", league=league, head=head,
+    parts = C5.caption(kind=kind, league=league, head=head,
                        date_label=date_label,
                        extra_lines=_extra or None,
                        extra_title=_title if _extra else "",
                        note=(record_asof_note(rb) if (_used_rb and rb is not None)
                              else ""),
-                       tags=_tags("result", league, todays))
+                       tags=_tags(kind, league, todays))
     return html, list(parts)
 
 
@@ -306,7 +323,7 @@ def result_card(games: list, league: League, day: str, *,
 # 디자인이 아니라 발송 방식의 변경이라 이 작업의 범위가 아니다.
 #
 # 다섯 함수의 규칙은 같다:
-#   · 만들 재료가 없으면 **None** — 부르는 쪽이 옛 카드로 떨어진다
+#   · 만들 재료가 없으면 **None** — 부르는 쪽이 이번 틱을 거른다
 #   · 헤드라인은 `headline.py`가 만든다. **여기서 문장을 짓지 않는다**
 #   · 캡션은 `C5.caption()`이 만든다. 카드에 없는 것만 덧붙인다
 
@@ -769,7 +786,7 @@ def analysis_card(rb, game, league: League, day: str, *,
     add("순위", -sa.rank, -sh.rank, rank_word(sa, sh, always=True),
         rank_word(sh, sa, always=True), True, compare=False)
     try:
-        add("승점률" if league is League.KL1 else "승률",
+        add(pct_label(league),
             float(sa.pct), float(sh.pct), sa.pct, sh.pct, True)
     except (TypeError, ValueError):
         pass
@@ -777,6 +794,20 @@ def analysis_card(rb, game, league: League, day: str, *,
         add("최근10", sa.last10.win, sh.last10.win,
             f"{sa.last10.win}-{sa.last10.loss}", f"{sh.last10.win}-{sh.last10.loss}",
             True)
+    # ── **승점 · 전적** (v1.40) — 축구가 비교표 세 줄을 못 채우는 문제 ──
+    #
+    # K리그 순위표에는 최근10도 홈·원정 분리도 없다(소스가 안 준다). 팀 기록도
+    # KBO 전용이라 축구는 **순위·승률 두 줄**뿐이고, 그래서 비교표가 한 블록으로
+    # 안 세어져 분석 카드가 통째로 `None`이 됐다 — 실측 2026-09-17 K리그.
+    # 셋째 줄은 **새 자료 없이** 만들 수 있다: 승점과 승-무-패는 순위표에
+    # 이미 들어 있는 값이다. 지어낸 수가 아니다.
+    if PCT_RULE.get(league) == "points":
+        _pa = sa.record.win * 3 + sa.record.draw
+        _ph = sh.record.win * 3 + sh.record.draw
+        add("승점", _pa, _ph, f"{_pa}점", f"{_ph}점", True)
+        # **전적 줄은 넣지 않는다.** 이름 아래 작은 글씨가 이미 `4-7-18`로
+        # 그것을 말한다 — 한 카드에서 같은 사실을 두 번, 그것도 다른 차례로
+        # (`승-패-무` vs `승-무-패`) 쓰면 읽는 사람이 둘을 대조하게 된다.
     import pipeline as P                       # 팀 기록 표기는 옛 파일이 단일 진실 원천이다
     for key, label, higher in P.team_stat_labels(league):
         ta = (team_stats or {}).get(a) or {}
@@ -882,7 +913,10 @@ def analysis_card(rb, game, league: League, day: str, *,
     # 한 카드가 같은 사실을 두 번 말하면 그만큼 자리가 낭비된다(실렌더에서 잡음).
     def _wld(rec):
         return f"{rec.win}-{rec.loss}" + (f"-{rec.draw}" if rec.draw else "")
-    body = C5.body_compare(rows, na, nh, _wld(sa.record), _wld(sh.record))
+    body = C5.body_compare(
+        rows, na, nh, _wld(sa.record), _wld(sh.record),
+        away_dot=C5.team_dot(league, game.away, side="l", big=True),
+        home_dot=C5.team_dot(league, game.home, side="r", big=True))
     if form_rows:
         body += C5.body_form(form_rows, title=form_title)
     _w2 = rb.between(a, h)
@@ -1072,8 +1106,14 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
     except Exception:                                    # noqa: BLE001
         la = lh = ""
 
-    ca = team_accent(league, game.away.team_code, card_theme(league)) or ""
-    ch = team_accent(league, game.home.team_code, card_theme(league)) or ""
+    # 구단색이 없으면 **이름에서 뽑은 색**을 쓴다. 안 그러면 로고까지 없는
+    # 경기가 **똑같은 회색 원 두 개**로 나가 카드가 고장 난 것처럼 보인다
+    # (실렌더로 확인). 구단색이라고 주장하지 않는다 — 두 팀을 가르는 표식이다.
+    _th = card_theme(league)
+    ca = (team_accent(league, game.away.team_code, _th)
+          or (name_accent(na, _th) if not la else "") or "")
+    ch = (team_accent(league, game.home.team_code, _th)
+          or (name_accent(nh, _th, avoid=ca) if not lh else "") or "")
 
     # 비교 줄 — 기록이 있을 때만. 없으면 그림과 시각만으로도 문패가 선다.
     rows: list = []
@@ -1247,6 +1287,13 @@ def goal_card(game, league: League, goal_id: str, *,
                                  tags=_tags("goal", league, [game])))
 
 
+# 끝난 상태 → 카드 종류. **계약에서 시작한다** — 여기 손으로 적으면 계약이
+# 늘 때(중단 등) 이 파일만 옛 목록을 들고 있다. 표에 없는 종료 상태는
+# `result`로 떨어지는데, 그건 지금까지의 동작이라 새 사고를 만들지 않는다.
+_KIND_BY_STATUS = {Status.CANCELED: "canceled", Status.POSTPONED: "postponed"}
+assert set(_KIND_BY_STATUS) <= set(TERMINAL_STATUSES) - {Status.FINAL}
+
+
 def flash_card(game, league: League, *, now: datetime | None = None, rb=None
                ) -> tuple[str, list[str]] | None:
     """경기 종료 직후 결과 속보. 경기 하나당 한 장.
@@ -1260,9 +1307,15 @@ def flash_card(game, league: League, *, now: datetime | None = None, rb=None
     """
     if not game.is_terminal:
         return None
+    # ── **취소는 결과가 아니다 (v1.40)** ─────────────────────────
+    #
+    # 우천취소 경기가 `✅ KBO 경기 결과`라는 머리로 나갔다(2026-09-17 실측).
+    # 체크 표시와 '결과'는 **치러졌다**로 읽힌다 — 구독자가 사실을 잘못 안다.
+    # 대표님 설계에도 취소·우천취소는 따로 알리는 항목이다.
+    _kind = _KIND_BY_STATUS.get(getattr(game, "status", None), "result")
     extra = _lineup_body(game, league, with_goals=True) if LINEUP_ENABLED else None
     return result_card([game], league, game.sports_day, now=now,
-                       extra_body=extra or "", rb=rb)
+                       extra_body=extra or "", kind=_kind, rb=rb)
 
 
 def _date_label(game, now: datetime | None) -> str:
@@ -1292,27 +1345,29 @@ def _foot(games: list, league: League) -> str:
 # 옛 함수는 앞에 옛 CSS를 붙이는데 v5 HTML은 이미 완결형이라 이중으로 감싼다.
 #
 # 골격이 다르면 검사도 다르다. 그래서 여기에 v5 전용 경로를 둔다.
-# **검사에 걸리면 None을 돌려준다** — 부르는 쪽이 옛 카드로 떨어지고,
-# 깨진 카드는 나가지 않는다(대표님이 두부 카드를 받은 적이 있다).
+# **검사에 걸리면 None을 돌려준다** — 그 틱에 그 카드는 안 나가고 다음 틱에
+# 다시 만든다(v1.40: 옛 카드 경로 없음). 깨진 카드는 나가지 않는다
+# (대표님이 두부 카드를 받은 적이 있다).
 
 SEND_JPEG_QUALITY = 88
 
-# ── v5가 옛 카드로 떨어진 기록 (v1.17b, 2026-09-08) ──────────────
+# ── 카드를 못 만든 기록 (v1.17b, 2026-09-08 · v1.40에서 뜻이 바뀜) ──
 #
 # **이 사고의 본질은 결함이 아니라 그 결함이 조용했다는 것이다.**
-# 게이트에 걸린 v5 카드는 오류를 내지 않고 옛 v4 카드로 **조용히** 대체된다.
-# 그래서 검증 1,450건이 전부 통과하는 동안에도 채널에는 옛 디자인이 나갔고,
-# 그것을 잡은 것은 우리 감시가 아니라 **대표님 눈**이었다
-# (2026-09-08: *"디자인 변경이 아직 안된 것 같던데"*).
+# 게이트에 걸린 카드는 오류를 내지 않는다. 2026-09-08에는 그 자리를 옛 v4
+# 카드가 **조용히** 메웠고, 그래서 검증 1,450건이 전부 통과하는 동안 채널에는
+# 옛 디자인이 나갔다. 그것을 잡은 것은 우리 감시가 아니라 **대표님 눈**이었다
+# (*"디자인 변경이 아직 안된 것 같던데"*).
 #
-# 폴백은 **있어야 하는 장치다** — 깨진 카드를 내보내는 것보다 낫다. 다만
-# 그것이 일어났다는 사실은 반드시 사람에게 닿아야 한다. 여기 쌓아 두면
-# 틱이 매번 거둬 운영 알림에 싣는다(`tick._drain_v5_fallbacks`).
+# **v1.40부터는 옛 카드가 없다**(2026-09-17 지시: *"예전 버전의 이미지들은
+# 넣지말고 모두 새롭게 개편하자"*). 그래서 게이트에 걸리면 그 카드는 이번 틱에
+# **안 나간다** — 다음 틱에 다시 만든다. 조용함의 위험은 그대로이므로 기록은
+# 남긴다. 여기 쌓아 두면 틱이 매번 거둬 운영 알림에 싣는다.
 _FALLBACKS: list = []
 
 
 def note_fallback(why: str) -> None:
-    """v5 → 옛 카드 대체를 기록한다. 화면 출력은 로그에만 남고 아무도 안 본다."""
+    """카드를 못 만들어 이번 틱을 거른 것을 기록한다. 로그만으로는 아무도 안 본다."""
     _FALLBACKS.append(why)
 
 
@@ -1335,7 +1390,7 @@ def render_png(card_html: str, out: pathlib.Path,
     그대로 두면 **정보가 가장 많은 날에만 새 디자인이 사라진다** — 정확히
     반대로 동작한다. 그래서 높이 게이트에 걸리면 밀도를 한 단계만 내려
     (`cards_v5.relax`) 다시 그린다. 골격도 정보도 그대로고 간격만 좁아진다.
-    그래도 안 되면 그때 옛 카드로 떨어진다.
+    그래도 안 되면 그 틱은 거른다 (v1.40 — 옛 카드 경로 없음).
 
     **여백을 다 줄여도 안 되면 내용을 한 단 줄인다 (2026-09-07).**
     `shorter_html`은 같은 카드의 **더 짧은 판**이다(부르는 쪽이 만든다).

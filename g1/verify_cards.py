@@ -580,7 +580,7 @@ except Exception as _e:                                           # noqa: BLE001
           f"{_e.__class__.__name__}: {_e}")
 else:
     check("★★ 팀 기록·최근10이 없어도 분석 카드를 만든다", bool(_thin),
-          "None — 폴백이 옛 v4 카드로 떨어진다")
+          "None — 그 틱에 카드가 안 나간다")
 if _thin:
     _th, _tp = _thin
     check("  ↳ 상대전적 블록이 실제로 실린다", "시즌 상대전적" in _th)
@@ -718,8 +718,8 @@ except Exception as _e:                                           # noqa: BLE001
           f"{_e.__class__.__name__}: {_e}")
 else:
     check("★★★ 긴 총평이 실린 분석 카드가 렌더 게이트를 지난다 "
-          "(못 지나면 옛 카드가 조용히 나간다)",
-          bool(_r) and _r != R5.TOO_TALL, "게이트 탈락 — 폴백으로 옛 카드가 나간다")
+          "(못 지나면 그 틱에 카드가 조용히 빠진다)",
+          bool(_r) and _r != R5.TOO_TALL, "게이트 탈락 — 그 틱에 카드가 안 나간다")
 
 # **변이시험** — 예외 목록에서 총평을 빼면 이 검사가 실제로 잡는가.
 # 깨뜨려도 통과하는 검사는 검사가 아니다.
@@ -808,7 +808,7 @@ else:
 # **리그가 하나뿐인 날에도 만든다 (v1.14 수정).** 안 만들면 부르는 쪽이
 # 옛 카드로 떨어져서, '안 함'이 '옛것으로 함'이 된다 — 실제로 월요일에
 # 옛 v4 나이트가 나갔다. 종료 경기가 0건일 때만 만들지 않는다.
-check("★ 나이트: 리그가 하나뿐인 날에도 만든다 (옛 카드로 떨어지면 안 된다)",
+check("★ 나이트: 리그가 하나뿐인 날에도 만든다 (못 만들면 그날 밤이 빈다)",
       R5.night_card(_v5games, _v5day) is not None)
 check("나이트: 담을 경기가 없으면 만들지 않는다",
       R5.night_card([], _v5day) is None)
@@ -1212,6 +1212,79 @@ check("★★ 로고 스위치 하나로 전부 되돌아간다",
       "스위치가 듣지 않습니다")
 check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그림 방지)",
       _LG38.emblem_url("옛 e스포츠 리그", "T1") is None)
+
+# ══════════════════════════════════════════════════════════════
+print("\n★ 축구도 분석 카드를 만든다 (v1.40)")
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-17: K리그 예정 7경기 중 분석 카드 **0장**. 조용했다.
+# 축구 순위표에는 최근10도 홈·원정 분리도 없고(소스가 안 준다) 팀 기록도
+# KBO 전용이라, 비교표가 `순위·승률` 두 줄뿐이라 '만들 자격' 판정에서
+# 한 블록으로 안 세어졌다. 셋째 줄은 **새 자료 없이** 만들 수 있다 —
+# 승점은 순위표에 이미 있는 승·무·패로 계산되는 값이다.
+from contract import PCT_RULE as _PCTR                            # noqa: E402
+check("★★★ 축구는 승점 줄을 갖는다 (비교표가 두 줄이면 분석이 사라진다)",
+      _PCTR.get(League.KL1) == "points")
+check("  ↳ 승점은 지어낸 수가 아니라 승·무·패에서 나온다 (19승 5무 = 62점)",
+      19 * 3 + 5 == 62)
+
+# ══════════════════════════════════════════════════════════════
+print("\n★ 취소·연기는 '결과'가 아니다 (v1.40)")
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-17: 우천취소 경기가 `✅ KBO 경기 결과`라는 머리로 나갔다.
+# 체크 표시와 '결과'는 **치러졌다**로 읽힌다 — 구독자가 사실을 잘못 안다.
+import render_v5 as _R5c                                         # noqa: E402
+from datetime import datetime as _dtc, timezone as _tzc          # noqa: E402
+
+
+class _CM(_Meta):
+    def __init__(self, r):
+        super().__init__(r)
+        self.line_score = []
+        self.line_totals = {}
+        self.goals = ()
+        self.highlights = ()
+        self.lineup = None
+        self.decided_by = None
+        self.penalties = None
+        self.aggregate = None
+        self.set_scores = []
+
+
+class _CG(_G):
+    def __init__(self, st, reason):
+        super().__init__("OB", "SS", st=st, venue="잠실", reason=reason)
+        self.meta = _CM(reason)
+        self.score = None
+        self.is_terminal = True
+        self.league = KBO
+        self.start_local = self.start_kst
+
+
+def _cap(st, reason):
+    _o = _R5c.flash_card(_CG(st, reason), KBO, now=_dtc.now(_tzc.utc))
+    return (_o[1][0] if _o else "")
+
+
+_c_cap = _cap(Status.CANCELED, "우천취소")
+_p_cap = _cap(Status.POSTPONED, "연기")
+check("★★★ 취소 경기에 '경기 결과'라고 쓰지 않는다 (사람이 잘못 안다)",
+      "경기 결과" not in _c_cap, _c_cap)
+check("★★★ 취소라고 쓴다", "경기 취소" in _c_cap, _c_cap)
+check("  ↳ 체크 표시를 쓰지 않는다", "\u2705" not in _c_cap, _c_cap)
+check("★★ 연기는 취소와 다른 이름으로 쓴다 (연기는 다시 열린다)",
+      "경기 연기" in _p_cap and "경기 취소" not in _p_cap, _p_cap)
+check("★ 해시태그도 종류를 따라간다 (#경기결과가 아니다)",
+      "#경기취소" in _c_cap and "#경기결과" not in _c_cap, _c_cap)
+
+_c_txt = plain(_R5c.flash_card(_CG(Status.CANCELED, "우천취소"), KBO,
+                               now=_dtc.now(_tzc.utc))[0])
+check("★★ 머리말이 한 말을 본문이 되풀이하지 않는다 (경기장)",
+      _c_txt.count("잠실") <= 2, _c_txt[-200:])
+check("★★ 취소 경기를 '시작'했다고 쓰지 않는다",
+      "시작" not in _c_txt, _c_txt[-200:])
+check("  ↳ 대신 '예정'이라고 쓴다", "예정" in _c_txt, _c_txt[-200:])
 
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

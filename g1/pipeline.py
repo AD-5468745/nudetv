@@ -939,19 +939,34 @@ def build_queue(games: list[Game], now: datetime, channel: str,
             # 야구는 대부분 동시 시작이라(실측 KBO 80%) 그 '첫 경기'를 사실상
             # 팀 코드 알파벳 순이 정했다 — 한화가 두산의 8배로 뽑혔다(약점 136).
             # 이제 전 경기를 담고, 예약 시각은 **그 묶음 첫 경기 −3시간**이다.
-            for _bi, _bg in enumerate(analysis_batches(gs)):
-                an_at = _bg[0].start_utc - timedelta(hours=ANALYSIS_LEAD_HOURS)
-                if an_at > hi:
+            # ── **경기마다 한 장** (v1.40, 2026-09-17 대표님 지시) ──────
+            #
+            # 대표님: *"각 경기마다 앵커, 그리고 각 경기마다 하나의 주제 안으로
+            # 모든 컨텐츠가 나와야 하는데"*.
+            #
+            # 전에는 그날 경기를 **묶음**으로 한 장에 담았다(`3경기 분석 (3/4)`).
+            # 그러면 그 한 장이 어느 경기의 댓글로도 들어갈 수 없다 — 세 경기의
+            # 이야기가 한 장에 있기 때문이다. 앵커+댓글 구조에서는 **분석도
+            # 경기 단위**여야 그 경기 토론방에 들어간다.
+            #
+            # 예약 시각은 앵커(−3시간) **바로 뒤**다. 앵커가 문패를 세우고
+            # 분석이 첫 댓글로 붙는 순서가 되어야 읽는 사람이 흐름을 따라간다.
+            for _g in gs:
+                if _g.is_terminal:
+                    continue
+                an_at = _g.start_utc - timedelta(hours=ANALYSIS_LEAD_HOURS)
+                an_at = max(an_at, now)
+                if an_at >= _g.start_utc or an_at > hi:
                     continue
                 if not keep_in_queue(an_at, now, ContentType.ANALYSIS):
                     continue
-                scope = f"{league.value}:{day}#{_bi}"
+                scope = f"{league.value}:{_g.sports_day}:{_g.game_id}"
                 items.append(QueueItem(
                     idem_key=idem_key(channel, ContentType.ANALYSIS, scope),
                     content_type=ContentType.ANALYSIS, scope=scope,
-                    scheduled_utc=an_at, league=league, sports_day=day,
-                    game_id=_bg[0].game_id,
-                    render_at_utc=an_at - timedelta(minutes=15)))
+                    scheduled_utc=an_at, league=league, sports_day=_g.sports_day,
+                    game_id=_g.game_id,
+                    render_at_utc=an_at))
 
     # ── 나이트 브리핑 — 매일 23:00 KST, **전 리그 통합 1건** ──────
     #
@@ -4920,6 +4935,127 @@ def _eff_sentence(nm_a: str, nm_h: str, hits: tuple, runs: tuple) -> str:
             f"{nm_h}{_josa(nm_h, '은', '는')} {hh}개로 {rh}점을 냈다")
 
 
+def _goal_story(game, *, away_name: str, home_name: str) -> str:
+    """골 목록으로 쓰는 **경기 내용 한 문단** (v1.40). 재료가 없으면 빈 문자열.
+
+    대표님 지시(2026-09-17): *"야구뿐만 아니라 모든 스포츠 경기에 재미있고
+    다양한 컨텐츠"*.
+
+    여태 총평의 첫 문단은 **안타·실책**으로만 썼다 — 야구에만 있는 값이다.
+    그래서 축구 경기 총평은 순위와 맞대결 두 문단뿐이었고, 정작 사람들이
+    궁금해하는 **경기가 어떻게 흘렀나**가 통째로 빠져 있었다.
+
+    ⚠️ **골 목록은 완전하다는 보장이 없다**(득점 속보가 이미 당한 병이다:
+    어댑터의 한 틱 조회 상한, 점수와 득점자가 서로 다른 응답에서 오는 것).
+    그래서 **골을 세어 점수와 맞을 때만** 이 문단을 쓴다. 안 맞으면 침묵한다 —
+    틀린 경기 내용을 말하는 것보다 아무 말도 안 하는 편이 낫다.
+    """
+    meta = getattr(game, "meta", None)
+    sc = getattr(game, "score", None)
+    goals = list((getattr(meta, "goals", ()) if meta else ()) or ())
+    if sc is None or sc.home is None or sc.away is None:
+        return ""
+    if not goals:
+        # **빈 목록이 점수와 맞는 경우는 0:0 하나뿐이다.** 그때만 말한다 —
+        # 다른 점수에서 목록이 비었다면 그건 '골이 없었다'가 아니라
+        # '우리가 못 받았다'이고, 그 둘을 구분할 방법이 없다.
+        if sc.home == 0 and sc.away == 0:
+            return "양 팀 다 끝내 골문을 열지 못했다."
+        return ""
+    # 자책골은 **넣은 쪽이 아니라 이득을 본 쪽**의 점수다. 어댑터가 어느 편으로
+    # 묶는지 실측한 적이 없으므로(표본 0건), 자책골이 섞인 경기는 세지 않는다.
+    if any(getattr(g, "own_goal", False) for g in goals):
+        return ""
+    hs = sum(1 for g in goals if getattr(g, "side", None) == "home")
+    as_ = sum(1 for g in goals if getattr(g, "side", None) == "away")
+    if (hs, as_) != (sc.home, sc.away):
+        return ""                          # 목록이 점수와 안 맞는다 — 침묵
+
+    goals.sort(key=lambda g: goal_sort_key(getattr(g, "minute", 0),
+                                           getattr(g, "added", 0)))
+    nm = {"home": home_name, "away": away_name}
+
+    def _min(g) -> str:
+        m, ad = getattr(g, "minute", 0) or 0, getattr(g, "added", 0) or 0
+        return f"{m}+{ad}분" if ad else f"{m}분"
+
+    sents: list[str] = []
+
+    # ① 선제골 — 누가 먼저 열었나
+    first = goals[0]
+    _who = (getattr(first, "name", "") or "").strip()
+    _side = nm.get(getattr(first, "side", ""), "")
+    if _side:
+        _op = f"{_who}의 골로 " if _who else ""
+        sents.append(f"{_side}{_josa(_side, '이', '가')} {_min(first)} "
+                     f"{_op}먼저 앞서 나갔다")
+
+    # ② 어떻게 갈렸나 — 무승부 · 완봉 · 결승골 시점
+    if sc.home == sc.away:
+        # **'두 팀 다 앞서 봤다'는 세어서 확인한다.** 골이 셋 이상이라고
+        # 앞선 적이 있는 것이 아니다 — 1-0, 1-1, 1-2, 2-2 는 홈이 한 번도
+        # 앞선 적이 없다. 안 세고 쓰면 채널에 **틀린 말**이 나간다.
+        _h = _a = 0
+        _led = set()
+        for _g in goals:
+            if getattr(_g, "side", None) == "home":
+                _h += 1
+            else:
+                _a += 1
+            if _h > _a:
+                _led.add("home")
+            elif _a > _h:
+                _led.add("away")
+        if len(_led) == 2:
+            sents.append("두 팀 다 앞서 보고도 승부를 가르지 못했다")
+        elif _led:
+            # 앞선 적이 한쪽뿐이면 **따라붙은 쪽을 말한다.** 앞선 쪽은 이미
+            # 첫 문장이 말했다 — 같은 말을 두 번 하면 글이 얇아 보인다.
+            _chase = nm["away"] if "home" in _led else nm["home"]
+            sents.append(f"{_chase}{_josa(_chase, '이', '가')} 따라붙어 "
+                         f"승부를 원점으로 돌렸다")
+        else:
+            sents.append("승부는 갈리지 않았다")
+    else:
+        win = "home" if sc.home > sc.away else "away"
+        wname, lname = nm[win], nm["away" if win == "home" else "home"]
+        if min(hs, as_) == 0:
+            sents.append(f"{lname}{_josa(lname, '은', '는')} 끝내 한 골도 "
+                         f"만회하지 못했다")
+        else:
+            # 결승골 = 진 팀의 마지막 득점 뒤, 이긴 팀이 처음 앞선 골
+            hh = aa = 0
+            decider = None
+            for g in goals:
+                if getattr(g, "side", None) == "home":
+                    hh += 1
+                else:
+                    aa += 1
+                lead = (hh - aa) if win == "home" else (aa - hh)
+                if lead == 1 and getattr(g, "side", None) == win:
+                    decider = g
+            if decider is not None:
+                _dn = (getattr(decider, "name", "") or "").strip()
+                _dm = _min(decider)
+                _late = (getattr(decider, "minute", 0) or 0) >= 80
+                _tail = "경기 막판 " if _late else ""
+                sents.append(f"{_tail}{_dm}에 나온 "
+                             + (f"{_dn}의 골이 " if _dn else "골이 ")
+                             + f"{wname}의 결승골이 됐다")
+
+    # ③ 멀티골 — 한 사람이 두 번 이상
+    names: dict = {}
+    for g in goals:
+        _n = (getattr(g, "name", "") or "").strip()
+        if _n:
+            names[_n] = names.get(_n, 0) + 1
+    multi = [f"{n} {c}골" for n, c in names.items() if c >= 2]
+    if multi:
+        sents.append(" · ".join(multi[:2]) + "이 눈에 띄었다")
+
+    return ". ".join(sents) + "." if sents else ""
+
+
 def game_review(game, league: League, *, away_name: str, home_name: str,
                 rb=None) -> list[str]:
     """종료 경기의 총평 문단들. **말할 재료가 없으면 빈 목록.**
@@ -4966,6 +5102,13 @@ def game_review(game, league: League, *, away_name: str, home_name: str,
         sents.append("양 팀 다 실책은 없었다")
     if sents:
         out.append(". ".join(sents) + ".")
+    else:
+        # 안타·실책이 없는 종목(축구 등)은 **골 목록으로 경기 내용을 쓴다.**
+        # 이게 없으면 축구 총평은 순위·맞대결 두 문단뿐이라 정작 "경기가
+        # 어떻게 흘렀나"가 빠진다 — 대표님이 가장 먼저 지적하신 대목이다.
+        _gs = _goal_story(game, away_name=away_name, home_name=home_name)
+        if _gs:
+            out.append(_gs)
 
     # ── ② 순위에 미친 자리 ────────────────────────────────────
     #

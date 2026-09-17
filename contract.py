@@ -78,6 +78,51 @@ SCORE_UNIT_BY_LEAGUE: dict[League, ScoreUnit] = {
     League.MLS: ScoreUnit.GOALS,
 }
 
+# ── 순위표의 '승률' 칸이 무엇인가 (v1.40) ──────────────────────
+#
+# 낱말은 하나인데 뜻이 둘이다:
+#   `wl`     야구 — 승/(승+패). 무승부는 분모에서 뺀다.
+#   `points` 축구 — 승점률 (3승+무)/(3×경기). 소스가 이 값을 준다.
+#
+# **표에 없는 리그는 `wl`로 본다.** 지금까지의 동작이라 새 사고를 안 만든다.
+PCT_RULE: dict[League, str] = {
+    lg: "points" for lg, unit in SCORE_UNIT_BY_LEAGUE.items()
+    if unit is ScoreUnit.GOALS
+}
+
+
+def pct_label(league: "Optional[League]") -> str:
+    """그 리그 순위표의 '승률' 칸을 부르는 이름. 축구는 **승점률**이다.
+
+    낱말이 한 곳에만 있어야 한다 — 카드는 `승점률`, 봇 답변은 `승률`이라고
+    부르면 같은 수가 두 이름을 갖는다.
+    """
+    return "승점률" if PCT_RULE.get(league) == "points" else "승률"
+
+
+def _pct_of(league: "League", record, games: int) -> Optional[float]:
+    """그 리그 규칙으로 다시 계산한 승률. 계산할 수 없으면 None."""
+    if PCT_RULE.get(league) == "points":
+        return (record.win * 3 + record.draw) / (games * 3) if games else None
+    denom = record.win + record.loss
+    return record.win / denom if denom else None
+
+
+# ── 상대전적을 실제로 모으는 리그 (v1.40) ──────────────────────
+#
+# 실측 2026-09-17 — 보관본에 들어 있는 상대전적 건수:
+#   KBO 90 · NPB 132 · **MLB 0 · K리그1 0**
+# 수집기가 그렇게 만들어져 있다(`mlb.py`·`naver_stats.py`가 `h2h={}`를 넘긴다).
+#
+# 그런데 보관본을 되살릴 때는 `require_h2h`가 기본 True라 **MLB·K리그
+# 보관본이 늘 게이트에 걸려 버려졌다.** 수집이 제동에 걸린 29분 동안
+# 그 두 리그의 분석·순위표가 통째로 사라졌고, 오류는 한 줄도 안 났다.
+#
+# "0건은 항상 의심"은 **모으는 리그에서만** 참이다. 안 모으는 리그에서
+# 0건은 정상이다. 그래서 의심의 대상을 리그로 좁힌다.
+H2H_LEAGUES: frozenset = frozenset({League.KBO, League.NPB})
+
+
 # 스코어 상한 — 파싱 오류가 그대로 카드에 인쇄되는 것을 막는다
 SCORE_MAX_BY_UNIT: dict[ScoreUnit, int] = {
     ScoreUnit.RUNS: 50, ScoreUnit.GOALS: 20, ScoreUnit.POINTS: 250,
@@ -2991,6 +3036,62 @@ def team_accent(league: "Optional[League]", team_code: str,
     return _TEAM_ACCENT_CACHE[key]
 
 
+_NAME_ACCENT_CACHE: dict = {}
+
+
+def name_accent(name: str, theme: str, *, avoid: str = "") -> Optional[str]:
+    """**로고도 구단색도 없을 때** 대결 그림의 원판에 쓸 색 (v1.40).
+
+    `team_accent`와 쓰임이 다르다 — 저쪽은 *그 구단의 색*이라 모르면 주지
+    않는 것이 옳다(아무 색이나 주면 엉뚱한 색을 뒤집어쓴 채 나간다).
+    여기는 **점이 아니라 원판**이다. 원판은 반드시 그려지고, 색이 없으면 두
+    팀이 **똑같은 회색 원 두 개**로 나간다 — 실렌더로 확인했다. 그건 구단색이
+    틀린 것보다 나쁘다: 카드가 고장 난 것처럼 보이고, 어느 쪽이 어느 팀인지
+    그림만으로는 못 가린다.
+
+    그래서 **이름에서 뽑아낸 색**을 쓴다. 구단색이라고 주장하지 않는다 —
+    같은 이름이면 늘 같은 색이 나오는 표식일 뿐이다. 밝기는
+    `_fit_contrast`가 맞추므로 첫 글자는 어느 테마에서도 읽힌다.
+    """
+    import colorsys
+    import hashlib
+    nm = (name or "").strip()
+    if not nm:
+        return None
+    bg = THEME_BG.get(theme)
+    if not bg:
+        return None
+    # 이름 → 색상환 한 자리. **`hash()`를 쓰지 않는다** — 파이썬 문자열
+    # 해시는 실행마다 달라서 같은 팀이 어제와 다른 색으로 나온다.
+    hue = hashlib.sha1(nm.encode("utf-8")).digest()[0] / 255
+    # `avoid`는 **상대 팀 색**이다. 256자리 중 하나를 뽑으므로 두 팀이 같은
+    # 자리에 떨어지는 날이 온다(400경기에 한 번꼴). 그날 그 앵커는 똑같은 원
+    # 두 개가 되어 색으로는 두 팀을 못 가린다 — 색을 쓰는 이유가 사라진다.
+    # 겹치면 색상환에서 **가장 먼 자리**로 돌린다.
+    _av = _hue_of(avoid) if avoid else None
+    if _av is not None and min(abs(hue - _av), 1 - abs(hue - _av)) < 1 / 12:
+        hue = (hue + 0.5) % 1.0
+    key = (round(hue, 4), theme)
+    if key not in _NAME_ACCENT_CACHE:
+        r, g, b = colorsys.hls_to_rgb(hue, 0.42, 0.45)
+        base = "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))
+        _NAME_ACCENT_CACHE[key] = _fit_contrast(base, bg, TEAM_COLOR_MIN_CONTRAST)
+    return _NAME_ACCENT_CACHE[key]
+
+
+def _hue_of(color: str) -> Optional[float]:
+    """`#RRGGBB`의 색상환 자리(0~1). 못 읽으면 None."""
+    import colorsys
+    h = (color or "").lstrip("#")
+    if len(h) != 6:
+        return None
+    try:
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return None
+    return colorsys.rgb_to_hls(r, g, b)[0]
+
+
 def assert_team_colors() -> None:
     """구단색 표가 실제로 쓸 수 있는가 — **두 테마 모두**에서 대비를 맞추는가.
 
@@ -4497,17 +4598,26 @@ class Standing:
             raise GateError(f"{self.team_code}: 최근10경기 합계 {self.last10.total}")
         if self.streak_len < 0:
             raise GateError(f"{self.team_code}: 연속 음수")
-        # 승률 재계산 대조 — 무승부는 KBO/NPB 규칙대로 분모에서 뺀다
-        denom = self.record.win + self.record.loss
-        if denom and self.pct:
-            calc = self.record.win / denom
+        # ── 승률 재계산 대조 ──────────────────────────────────
+        #
+        # ⚠️ **'승률'이라는 한 낱말이 종목마다 다른 수를 가리킨다.**
+        # 야구는 무승부를 분모에서 빼고 `승/(승+패)`를 쓴다. 축구 표의
+        # 그 칸은 **승점률** `(3승+무)/(3×경기)`다 — 전혀 다른 수다.
+        #
+        # 야구 공식을 축구에 들이대면 전부 어긋난다(실측 2026-09-17:
+        # K리그 선두 K09 소스 0.713 / 야구식 재계산 0.792). 그래서 K리그
+        # 기록 보관본이 **되살아나지 못했고**, 수집이 제동에 걸린 29분 동안
+        # K리그 분석·순위표가 통째로 사라졌다. 오류는 한 줄도 안 났다.
+        calc = _pct_of(self.league, self.record, self.games)
+        if calc is not None and self.pct:
             try:
                 given = float(self.pct)
             except ValueError:
                 raise GateError(f"{self.team_code}: 승률 파싱 불가 {self.pct!r}")
             if abs(calc - given) > 0.0015:
                 raise GateError(
-                    f"{self.team_code}: 승률 불일치 소스={given} 재계산={calc:.3f}")
+                    f"{self.team_code}: 승률 불일치 소스={given} "
+                    f"재계산={calc:.3f} ({PCT_RULE.get(self.league, 'wl')} 기준)")
         total = REGULAR_SEASON_GAMES.get(self.league)
         if total is not None and self.games > total:
             raise GateError(f"{self.team_code}: 경기수 {self.games} > 정규시즌 {total}")
@@ -4643,7 +4753,7 @@ def assert_leader_order(category: str, entries: list["LeaderEntry"]) -> None:
                     f"({prev_r}위 {entries[i-1].value} → {cur_r}위 {entries[i].value})")
 
 
-def assert_recordbook(rb: RecordBook, *, require_h2h: bool = True,
+def assert_recordbook(rb: RecordBook, *, require_h2h: Optional[bool] = None,
                       now_utc: Optional[datetime] = None) -> None:
     """기록 스냅샷 게이트. 하나라도 어긋나면 렌더를 막는다.
 
@@ -4734,9 +4844,18 @@ def assert_recordbook(rb: RecordBook, *, require_h2h: bool = True,
                         f"— 소화 경기 수 차이로 설명되지 않습니다")
             prev = (s, gb)
 
-    if require_h2h:
+    # **None이면 리그가 정한다.** 부르는 쪽이 일일이 판단하면 곳마다 답이
+    # 달라진다 — 실제로 그랬다: 산문 쪽은 `bool(rb.h2h)`(있으면 검사),
+    # 보관본 쪽은 기본 True(늘 요구)라 같은 자료가 한쪽에선 통과하고
+    # 다른 쪽에선 버려졌다.
+    _need_h2h = (rb.league in H2H_LEAGUES if require_h2h is None
+                 else bool(require_h2h))
+    if _need_h2h:
         if not rb.h2h:
             raise GateError(f"{rb.league.value}: 상대전적 0건 (0건은 항상 의심)")
+    if rb.h2h:
+        # **있으면 내용은 언제나 검사한다.** 요구하지 않는 리그라도 들어 있는
+        # 값이 틀린 것은 다른 문제다.
         for (a, b), wld in rb.h2h.items():
             if a == b:
                 raise GateError(f"상대전적에 자기 자신 {a}")

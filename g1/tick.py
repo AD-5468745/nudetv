@@ -66,6 +66,9 @@ from sender import (Ledger, Payload, Pacer, SKIP_REASON_LABEL, Secret, Sender,
 _SKIP_LABEL_LOCAL = {
     "scoreref_mismatch": "점수 외부 대조 불일치",
     "stale_data": "묵은 데이터",
+    # v1.40 — 토론방 자리(앵커↔댓글 짝)가 아직 없어서 미룬 것.
+    # 사라진 게 아니라 **기다리는 중**이라는 뜻이라 이름을 따로 둔다.
+    "thread_not_ready": "토론방 자리 기다림",
 }
 
 ROOT = pathlib.Path(os.environ.get("NUDETV_STATE", "state")).resolve()
@@ -324,8 +327,14 @@ def _collect_records(now: datetime, notes: list) -> dict:
             rb = make()
             out[name] = rb
             log[key] = {"at": _iso(now)}      # 성공 — failed_at을 지운다
-            # **게이트를 통과한 것만 보관한다** (fix53). 다음에 수집이 막히면
-            # 여기서 되살려, 순위표·부문 순위·분석 세 종류가 함께 죽는 것을 막는다.
+            # 보관해 둔다 (fix53). 다음에 수집이 막히면 여기서 되살려,
+            # 순위표·부문 순위·분석 세 종류가 함께 죽는 것을 막는다.
+            #
+            # ⚠️ **게이트는 넣을 때가 아니라 꺼낼 때 건다**(`_load_record_archive`).
+            # 예전 주석은 "게이트를 통과한 것만 보관한다"고 적혀 있었는데
+            # 여기에는 검사가 없다 — 그 거짓 주석 때문에, 꺼낼 때만 걸리는
+            # 게이트가 MLB·K리그 보관본을 **매번 통째로 버리고 있다는 것**을
+            # 아무도 의심하지 않았다(2026-09-17 실측으로 발견).
             _save_record_archive(name, rb)
         except Exception as e:                               # noqa: BLE001
             log[key] = {"at": log.get(key, {}).get("at"), "failed_at": _iso(now),
@@ -2232,6 +2241,15 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
 
 # 앵커 댓글로 내려보낼 종류. **앵커 자신과 채널에 남길 것은 뺀다.**
 # 여기 없는 종류는 지금까지처럼 채널로 간다 — 표를 늘리는 것이 곧 이관이다.
+# 토론방 자리가 생길 때까지 **기다리는** 종류 (v1.40).
+#
+# 경기마다 한 장씩 나오는 무거운 콘텐츠만 넣는다. 창이 좁은 것(킥오프 29분·
+# 득점 속보 30분)은 기다리면 그냥 사라지므로 **채널로라도 보낸다** —
+# 늦은 속보는 쓸모없지만, 안 나간 속보는 더 쓸모없다.
+WAIT_FOR_THREAD_TYPES = frozenset({
+    ContentType.ANALYSIS, ContentType.LINEUP,
+})
+
 THREADED_CONTENT_TYPES = frozenset({
     ContentType.ANALYSIS, ContentType.LINEUP, ContentType.KICKOFF,
     ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
@@ -2263,6 +2281,26 @@ def _thread_for(item, ledger, disc, channel: str):
     if rec is None or not rec.message_ids:
         return None
     return disc.thread_of(rec.message_ids[0])
+
+
+def _anchor_is_up(item, ledger, channel: str) -> bool:
+    """이 경기의 **앵커가 채널에 나갔는가** (v1.40).
+
+    기다림의 전제는 *집이 곧 생긴다*는 것이다. 앵커가 아예 안 나간 경기는
+    집이 생길 일이 없으므로, 기다리면 그 경기 분석은 **아무 데도 안 나오고
+    조용히 만료된다** — 눈에 안 보이는 손실이라 더 나쁘다.
+
+    그래서 기다림은 **앵커가 이미 나간 경기에만** 건다. 앵커가 없으면
+    지금까지처럼 채널로 보낸다 — 시끄러운 편이 없는 편보다 낫다.
+    """
+    if not item.game_id or item.league is None:
+        return False
+    try:
+        scope = f"{item.league.value}:{item.sports_day}:{item.game_id}"
+        rec = ledger.get(idem_key(channel, ContentType.ANCHOR, scope))
+    except Exception:                                    # noqa: BLE001
+        return False
+    return bool(rec is not None and rec.message_ids)
 
 
 def _answer_questions(transport, disc, asks, snaps, records) -> None:
@@ -2337,7 +2375,7 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     tag = item.idem_key.replace("|", "_").replace(":", "-")[:80]
 
     def _try_v5(kind: str, build):
-        """v5 카드를 먼저 시도한다. 못 만들면 None — 부르는 쪽이 옛 카드로 떨어진다.
+        """v5 카드를 만든다. 못 만들면 None — 부르는 쪽이 이번 틱을 거른다.
 
         **한 곳에만 둔다 (2026-09-06).** 종류마다 같은 여덟 줄을 베끼면 그중
         하나에서 폴백을 빠뜨리고, 그 종류만 조용히 발송이 멈춘다. 실제로 결과
@@ -2394,10 +2432,11 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         _r5 = (_try_v5("morning",
                        lambda R: R.morning_card(todays, _lg, day, now=_now()))
                if _lg is not None else None)
-        if _r5:
-            return _r5
-        html = P.render_morning(todays, day, now=_now())
-        parts = P.caption_morning(todays, day, as_parts=True, now=_now())
+        # v1.40 — **옛 카드로 떨어지지 않는다** (2026-09-17 대표님 지시:
+        # *"예전 버전의 이미지들은 넣지말고 모두 새롭게 개편하자"*).
+        # 못 만들면 안 보낸다 — 다음 틱에 다시 시도하고, 놓친 것은 그 리그
+        # 정리판이 담는다. 옛 디자인이 섞여 나가는 것보다 낫다.
+        return _r5
     elif item.content_type is ContentType.LEAGUE_RESULT:
         # **전 경기 취소된 날도 알려야 한다 (v1.11h).**
         # 전에는 FINAL이 0건이면 조용히 건너뛰었고, 큐 항목은 유예가 지나
@@ -2406,8 +2445,10 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # 실측: KBO 2026-08-05·06·07·09·28 — 5경기 전 경기 폭염취소.
         if not any(g.is_terminal for g in todays):
             return None                     # 아직 아무것도 안 끝났다 — 다음 틱에 다시 본다
-        # **새 카드를 먼저 시도하고, 안 되면 옛 카드로 떨어진다 (v1.12).**
-        # `render_v5.USE_V5['result'] = False` 하나로 즉시 옛 카드로 돌아간다.
+        # **못 만들면 안 보낸다 (v1.40).** 예전에는 `USE_V5['result']=False`로
+        # 옛 카드에 떨어졌지만, 옛 카드 경로는 2026-09-17 지시로 전부 걷어냈다
+        # (*"예전 버전의 이미지들은 넣지말고 모두 새롭게 개편하자"*).
+        # 이제 저 스위치를 끄면 결과 카드는 **그냥 안 나간다.**
         #
         # **리그가 없으면 새 카드를 시도조차 하지 않는다.** 결과 카드는 늘
         # 리그가 있지만, 없는 항목이 흘러들어오면 거기서 터져 그 리그의
@@ -2418,10 +2459,7 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                            todays, _lg, day, now=_now(),
                            rb=(records or {}).get(_lg.value if _lg else "")))
                if _lg is not None else None)
-        if _r5:
-            return _r5
-        html = P.render_result(todays, day)
-        parts = P.caption_result(todays, day, as_parts=True)
+        return _r5                       # v1.40 — 옛 카드로 떨어지지 않는다
     # ── 경기별 2종 (v1.14) ──────────────────────────────────────
     #
     # **경기 하나를 game_id로 집는다.** 리그·날짜만으로 고르면 같은 대진이
@@ -2534,20 +2572,14 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         if not nights:
             return None
         _r5 = _try_v5("night", lambda R: R.night_card(nights, day))
-        if _r5:
-            return _r5
-        html = P.render_night_brief(nights, day)
-        parts = P.caption_night_brief(nights, day, as_parts=True)
+        return _r5                       # v1.40 — 옛 카드로 떨어지지 않는다
     elif item.content_type is ContentType.STANDINGS:
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
             return None                     # 기록이 없다 — 빈 카드를 내보내지 않는다
         _r5 = _try_v5("standings",
                       lambda R: R.standings_card(rb, item.league, day))
-        if _r5:
-            return _r5
-        html = P.render_standings(rb, day)
-        parts = P.caption_standings(rb, as_parts=True)
+        return _r5                       # v1.40 — 옛 카드로 떨어지지 않는다
     elif item.content_type is ContentType.LEADERBOARD:
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
@@ -2556,45 +2588,26 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         set_idx = datetime.strptime(day, "%Y-%m-%d").timetuple().tm_yday
         _r5 = _try_v5("leaders",
                       lambda R: R.leaders_card(rb, item.league, day, set_idx))
-        if _r5:
-            return _r5
-        html = P.render_leaders(rb, day, set_idx)
-        parts = P.caption_leaders(rb, set_idx, as_parts=True)
+        return _r5                       # v1.40 — 옛 카드로 떨어지지 않는다
     elif item.content_type is ContentType.ANALYSIS:
+        # ── **경기마다 한 장** (v1.40) ──────────────────────────────
+        # 묶음 카드를 버렸다 — 세 경기가 한 장에 있으면 어느 경기의 댓글로도
+        # 들어갈 수 없다. 이제 그 경기의 문패(앵커) 아래에 첫 댓글로 붙는다.
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
+            return None                     # 기록이 없다 — 빈 분석을 내지 않는다
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _one is None or item.league is None:
             return None
-        # ── **묶음 번호는 scope가 갖는다** (v1.15f) ──────────────
-        # 큐가 `{리그}:{날짜}#{묶음}`으로 올리고 여기서 그 묶음만 그린다.
-        # 큐와 렌더가 **같은 함수**(`P.analysis_batches`)로 나누므로 어긋날 수 없다.
-        _bi = 0
-        if "#" in item.scope:
-            try:
-                _bi = int(item.scope.rsplit("#", 1)[1])
-            except ValueError:
-                _bi = 0
-        _r5 = _try_v5("analysis",
-                      lambda R: R.analysis_cards(rb, todays, item.league, day,
-                                                 batch=_bi, team_stats=team_stats,
-                                                 history=games, now=_now()))
-        if _r5:
-            return _r5
-        # **옛 카드는 한 경기짜리다.** 묶음의 첫 경기로 떨어진다 —
-        # 전 경기를 담지는 못하지만 아무것도 안 나가는 것보다 낫다.
-        _bt = P.analysis_batches(todays)
-        target = _bt[_bi][0] if _bi < len(_bt) and _bt[_bi] else None
-        if target is None:
-            return None
-        html = P.render_analysis(rb, target, day, team_stats=team_stats,
-                                 history=games, now=_now())
-        parts = P.caption_analysis(rb, target, day, team_stats=team_stats,
-                                   history=games, as_parts=True)
+        return _try_v5("analysis", lambda R: R.analysis_card(
+            rb, _one, item.league, day, team_stats=team_stats,
+            history=games, now=_now()))
+
     else:
         return None
-
-    path = out / f"{tag}.png"
-    w, h, b = P.render_png(html, path)
-    return [(path.name, path.read_bytes(), w, h)], parts
+    # v1.40 — **옛 카드를 그리던 꼬리를 걷어냈다.** 모든 가지가 v5 카드를
+    # 그대로 돌려주므로 여기로 내려오는 길이 없다. 남겨 두면 지워진 옛
+    # 경로가 되살아날 자리가 된다(약점 132: 새 경로가 옛 경로를 되살린다).
 
 
 # ── 드라이런 렌더 시험 ────────────────────────────────────────
@@ -2976,6 +2989,27 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 payload.reply_to_message_id = _thread
                 # 앨범에는 버튼을 못 단다. 댓글에는 버튼이 필요 없으므로 뗀다.
                 payload.buttons = []
+            elif (DISCUSSION_CHAT_ID
+                  and item.content_type in WAIT_FOR_THREAD_TYPES
+                  and _anchor_is_up(item, led, channel)):
+                # ── **집이 생길 때까지 기다린다** (v1.40) ─────────────
+                #
+                # 분석은 v1.40에서 **경기마다 한 장**이 됐다. 토론방이 켜져
+                # 있는데 아직 짝을 못 찾았다고 채널로 보내면, 그날 경기 수만큼
+                # (실측 최대 62장) 채널에 쏟아진다 — 채널을 조용하게 만들려던
+                # 변경이 정반대 결과를 낸다.
+                #
+                # 그래서 **이번 틱만 미룬다.** 유예(분석 3시간) 안에 짝이
+                # 생기면 그때 댓글로 들어간다.
+                #
+                # ⚠️ **기다림은 앵커가 이미 나간 경기에만 건다**
+                # (`_anchor_is_up`). 앵커가 없는 경기까지 기다리게 하면 그
+                # 분석은 채널에도 토론방에도 안 나오고 조용히 만료된다 —
+                # 안 보이는 손실이 시끄러움보다 나쁘다.
+                _skip("thread_not_ready")
+                print(f"    ⏳ 토론방 자리 기다림 {item.content_type.value} "
+                      f"{item.scope}")
+                continue
 
             # ── 점수 외부 대조 (v1.11j — 대표님 승인) ────────────────
             # **한 소스만 믿는 구조가 09-01 사고의 뿌리다.** KBO 일정 페이지 하나를
@@ -3274,19 +3308,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines += [f"묵은 데이터 — {n}" for n in stale_notes[:3]]
     if adapter_notes:
         lines += [f"어댑터가 버림 — {n}" for n in adapter_notes[:3]]
-    # ── 새 카드가 옛 카드로 떨어진 것 (v1.17b, 2026-09-08) ──────────
+    # ── 카드를 못 만들어 거른 것 (v1.17b · v1.40에서 뜻이 바뀜) ──────
     #
-    # **폴백은 조용해서 위험하다.** 카드가 게이트에 걸리면 오류 없이 옛 v4
-    # 디자인으로 대체된다 — 검증 1,450건이 다 통과하는 동안 채널에는 옛
-    # 디자인이 나갔고, 그것을 잡은 것은 우리 감시가 아니라 대표님 눈이었다.
-    # 폴백 자체는 옳은 장치이므로 막지 않고, **일어났다는 사실을 알린다.**
+    # **못 만든 것은 조용해서 위험하다.** 카드가 게이트에 걸려도 오류가 안 난다.
+    # 2026-09-08에는 그 자리를 옛 v4 디자인이 메웠고(대표님이 눈으로 잡으셨다),
+    # v1.40부터는 옛 카드가 없어 **그 틱에 안 나간다**. 어느 쪽이든 사람이
+    # 알아야 하므로 **일어났다는 사실을 알린다.**
     try:
         import render_v5 as _R5v
         _fb = _R5v.take_fallbacks()
     except Exception:                                        # noqa: BLE001
         _fb = []
     if _fb:
-        lines += [f"새 디자인 대신 옛 카드가 나갔습니다 — {n}" for n in _fb[:3]]
+        lines += [f"카드를 못 만들어 이번에 거름 — {n}" for n in _fb[:3]]
         if len(_fb) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_fb)}건")
     # ── 표에 적었는데 오래 못 만난 한국 선수 (v1.17d) ────────────

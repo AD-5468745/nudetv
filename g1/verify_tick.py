@@ -971,21 +971,26 @@ _an = [i for i in _items if i.content_type is ContentType.ANALYSIS]
 # 전에는 `pick_analysis_game`(그날 첫 경기) 하나만 봤다. 야구는 대부분
 # 동시 시작이라 그 검사는 새 동작에서도 우연히 통과한다 — 그래서 여기를
 # **묶음 기준으로 다시 쓴다**(약점 98: 낡은 검증이 버그를 정상이라 보증한다).
+# v1.40 — **분석은 경기마다 한 장이다.** 묶음 카드를 버렸다(2026-09-17
+# 대표님 지시). 세 경기가 한 장에 있으면 어느 경기의 댓글로도 못 들어간다.
+# 검사도 묶음 기준에서 **경기 기준**으로 다시 쓴다 —
+# 낡은 검증을 남겨 두면 옛 동작을 정상이라 보증한다(약점 98).
 _an_bad = []
 for _it in _an:
-    _bi = int(_it.scope.rsplit("#", 1)[1]) if "#" in _it.scope else -1
-    _bt = P.analysis_batches([g for g in _full[_it.league.value]
-                              if g.sports_day == _it.sports_day])
-    if _bi < 0 or _bi >= len(_bt):
-        _an_bad.append(f"{_it.scope} 묶음번호 없음/범위밖"); continue
-    if _it.scheduled_utc != _bt[_bi][0].start_utc - timedelta(hours=_AN_LEAD_H):
+    _gs = [g for g in _full[_it.league.value]
+           if g.sports_day == _it.sports_day and g.game_id == _it.game_id]
+    if not _gs:
+        _an_bad.append(f"{_it.scope} 경기를 못 찾음"); continue
+    _want = _gs[0].start_utc - timedelta(hours=_AN_LEAD_H)
+    # 지난 시각이면 '지금'으로 당긴다(앵커와 같은 규칙) — 그때는 범위로 본다.
+    if not (_want <= _it.scheduled_utc < _gs[0].start_utc):
         _an_bad.append(f"{_it.scope} {_it.scheduled_utc:%H:%M}")
-check(f"분석 카드는 **그 묶음 첫 경기** 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
+check(f"분석 카드는 **그 경기** 시작 -{_AN_LEAD_H}시간 ({len(_an)}건)",
       bool(_an) and not _an_bad, str(_an_bad[:3]))
-check("★★ scope에 묶음 번호가 있다 (없으면 여러 장이 서로를 덮어쓴다)",
-      bool(_an) and all("#" in i.scope for i in _an),
-      str([i.scope for i in _an[:3]]))
-check("★ 멱등키가 묶음마다 다르다",
+check("★★ scope가 경기 단위다 (그래야 그 경기 토론방에 들어간다)",
+      bool(_an) and all(i.game_id and i.game_id in i.scope for i in _an),
+      str([i.scope for i in _an[:2]]))
+check("★ 멱등키가 경기마다 다르다 (하나가 나가면 나머지가 버려지면 안 된다)",
       len({i.idem_key for i in _an}) == len(_an))
 # ★★ 그날 전 경기가 빠짐없이 어느 한 묶음에 들어간다
 _cov_bad = []

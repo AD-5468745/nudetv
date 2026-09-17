@@ -101,6 +101,42 @@ class DiscussionState:
         self.map[str(channel_message_id)] = int(group_message_id)
 
 
+_probed = False
+
+
+def probe(transport) -> str:
+    """받아오기가 왜 막히는지 **스스로 확인한다** (v1.40). 실행당 한 번.
+
+    실측(2026-09-17): 지도가 계속 비어 있는데 로그에 아무것도 안 남아
+    원인을 좁히는 데 몇 시간이 걸렸다. 가장 흔한 두 가지를 코드가 직접 묻는다.
+
+      ① **웹훅이 걸려 있으면** `getUpdates`는 409로 막힌다. 둘은 함께 못 쓴다.
+      ② **밀린 소식 수**가 0이면 봇이 그룹 글을 아예 못 보고 있다는 뜻이다
+         (그룹 프라이버시가 켜져 있거나, 켠 뒤 봇을 다시 안 넣었을 때).
+
+    돌려주는 것은 사람이 읽을 한 줄. 실패해도 발송을 막지 않는다.
+    """
+    global _probed
+    if _probed:
+        return ""
+    _probed = True
+    try:
+        me = transport.call("getMe", {})
+        wh = transport.call("getWebhookInfo", {})
+    except Exception as e:                               # noqa: BLE001
+        return f"⚠️ [토론방] 상태 확인 실패 — {e.__class__.__name__}: {str(e)[:80]}"
+    url = (wh or {}).get("url") or ""
+    pend = (wh or {}).get("pending_update_count")
+    out = [f"ⓘ [토론방] 봇 @{(me or {}).get('username','?')}",
+           f"밀린 소식 {pend}건"]
+    if url:
+        out.append("⚠️ **웹훅이 걸려 있어 받아오기가 막힙니다** — "
+                   "웹훅을 끄거나(deleteWebhook) 받아오기를 포기해야 합니다")
+    else:
+        out.append("웹훅 없음(받아오기 가능)")
+    return " · ".join(out)
+
+
 def poll(transport, state: DiscussionState, *, limit: int = UPDATE_LIMIT) -> list:
     """새 소식을 받아 **자동 전달 짝**을 적고, 사람이 쓴 글만 돌려준다.
 
@@ -111,6 +147,9 @@ def poll(transport, state: DiscussionState, *, limit: int = UPDATE_LIMIT) -> lis
     """
     if not DISCUSSION_ENABLED:
         return []
+    _p = probe(transport)
+    if _p:
+        print(f"    {_p}")
     try:
         res = transport.call("getUpdates", {
             "offset": state.offset, "limit": int(limit),

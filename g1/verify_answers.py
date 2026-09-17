@@ -462,6 +462,86 @@ finally:
     T.DISCUSSION_CHAT_ID = _saved_dc
 
 
+# ══════════════════════════════════════════════════════════════
+print("\n9. 받아오기 자가 진단 (v1.40)")
+# ══════════════════════════════════════════════════════════════
+# 실측: 지도가 계속 비어 있는데 로그에 아무것도 안 남아 원인을 몇 시간 못 찾았다.
+
+
+class _ProbeTr:
+    def __init__(self, url="", pend=0): self.url, self.pend = url, pend
+    def call(self, m, p, files=None):
+        if m == "getMe":
+            return {"username": "b"}
+        if m == "getWebhookInfo":
+            return {"url": self.url, "pending_update_count": self.pend}
+        return []
+
+
+D._probed = False
+_m = D.probe(_ProbeTr(url="https://x/hook"))
+check("★★★ 웹훅이 걸려 있으면 그 사실을 말한다 (받아오기가 막히는 1순위 원인)",
+      "웹훅이 걸려 있어" in _m, _m)
+D._probed = False
+_m2 = D.probe(_ProbeTr(pend=7))
+check("★★ 웹훅이 없으면 없다고 말한다", "웹훅 없음" in _m2, _m2)
+check("  ↳ 밀린 소식 수를 함께 말한다 (0이면 봇이 그룹 글을 못 보는 것)",
+      "밀린 소식 7건" in _m2, _m2)
+check("★ 실행당 한 번만 묻는다 (매 틱 두 번씩 부르지 않는다)",
+      D.probe(_ProbeTr(pend=9)) == "")
+
+
+class _ProbeBoom:
+    def call(self, *a, **k): raise RuntimeError("막힘")
+
+
+D._probed = False
+check("★★ 진단이 실패해도 한 줄로 알린다 (조용히 넘어가지 않는다)",
+      "상태 확인 실패" in D.probe(_ProbeBoom()))
+D._probed = False
+
+
+# ══════════════════════════════════════════════════════════════
+print("\n10. 토론방 자리가 없을 때 (v1.40)")
+# ══════════════════════════════════════════════════════════════
+# 분석이 **경기마다 한 장**이 되면서 생긴 위험: 토론방 짝을 못 찾은 채
+# 채널로 보내면 그날 경기 수만큼(실측 최대 62장) 채널에 쏟아진다.
+check("★★★ 무거운 경기별 콘텐츠는 자리가 생길 때까지 기다린다",
+      ContentType.ANALYSIS in T.WAIT_FOR_THREAD_TYPES
+      and ContentType.LINEUP in T.WAIT_FOR_THREAD_TYPES,
+      str(sorted(x.value for x in T.WAIT_FOR_THREAD_TYPES)))
+check("★★★ 창이 좁은 속보는 기다리지 않는다 (기다리면 그냥 사라진다)",
+      ContentType.GOAL_FLASH not in T.WAIT_FOR_THREAD_TYPES
+      and ContentType.KICKOFF not in T.WAIT_FOR_THREAD_TYPES)
+check("  ↳ 기다림은 '사라짐'과 다른 이름으로 기록된다",
+      "thread_not_ready" in T._SKIP_LABEL_LOCAL
+      and "기다림" in T._SKIP_LABEL_LOCAL["thread_not_ready"])
+check("★★ 기다리는 종류는 모두 댓글로 갈 종류다 (안 그러면 영영 안 나간다)",
+      T.WAIT_FOR_THREAD_TYPES <= T.THREADED_CONTENT_TYPES)
+
+# 기다림의 전제는 "집이 곧 생긴다"는 것이다. 앵커가 없는 경기까지 기다리면
+# 그 분석은 채널에도 토론방에도 안 나오고 조용히 만료된다.
+class _Rec:
+    def __init__(self, ids): self.message_ids = ids
+
+
+class _Led:
+    def __init__(self, ids): self._ids = ids
+    def get(self, key): return _Rec(self._ids) if self._ids else None
+
+
+class _It:
+    league = list(League)[0]
+    sports_day = "2026-09-17"
+    game_id = "g1"
+
+
+check("★★★ 앵커가 나간 경기는 기다린다",
+      T._anchor_is_up(_It(), _Led([1234]), "ch"))
+check("★★★ 앵커가 없는 경기는 기다리지 않는다 (조용한 소실 방지)",
+      not T._anchor_is_up(_It(), _Led(None), "ch"))
+
+
 print()
 print("=" * 64)
 print(f"결과: {PASS} PASS / {len(FAIL)} FAIL")
