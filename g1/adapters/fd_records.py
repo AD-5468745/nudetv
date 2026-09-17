@@ -56,8 +56,16 @@ REQUEST_GAP_SECONDS = 6.5         # 무료 등급 분당 10회 — 넉넉히 띄
 
 # 대조표를 만들 때 몇 날짜치 경기를 보나. 넓을수록 잘 맞는다.
 MATCH_WINDOW_DAYS = 21
-# 이만큼은 짝이 맞아야 그 리그 순위를 쓴다(표의 팀 수 대비).
-MIN_MAPPED_RATIO = 0.8
+# ★ **전부 맞아야 쓴다** (v1.50 · 대표님: *"발송누락도 절대 없어야해"*).
+#
+# 전에는 80%였다. 그런데 **반쪽 순위표는 순위가 틀린 표**다 — 빠진 팀 위에
+# 있던 팀들이 한 계단씩 올라가 보인다. 80%로 내보내는 것은 누락을 막는 게
+# 아니라 **틀린 것을 내보내는** 것이다.
+#
+# 대신 **짝짓기가 스스로 끝까지 풀리게** 만들었다(`build_mapping`의 되풀이).
+# 그래도 못 맞춘 팀이 남으면 **그 이름을 알림에 찍는다** — 몇 팀만 손으로
+# 채우면 되도록.
+MIN_MAPPED_RATIO = 1.0
 
 _last_call = [0.0]
 _notes: list = []                 # 사람이 읽을 진단. 틱이 거둬 알림에 싣는다.
@@ -135,32 +143,58 @@ def build_mapping(code: str, token: str, our_games: list) -> dict:
         ours.setdefault(at, []).append(
             (g.home.team_code, g.away.team_code))
 
-    pairs: dict = {}                       # TLA → {우리코드: 본 횟수}
-    for at, rows in ours.items():
-        srows = src.get(at) or []
-        # **같은 시각에 경기가 여럿이면 자리로 못 가른다** — 건너뛴다.
-        # 유럽 대회는 단독 경기(월·화·금)가 꾸준히 있어 표가 결국 찬다.
-        if len(rows) != 1 or len(srows) != 1:
-            continue
-        (oh, oa), (sh, sa) = rows[0], srows[0]
-        for tla, ours_code in ((sh, oh), (sa, oa)):
-            pairs.setdefault(tla, {})
-            pairs[tla][ours_code] = pairs[tla].get(ours_code, 0) + 1
+    # ── 짝짓기 — **모르는 것을 아는 것으로 푼다** (v1.50) ──────────
+    #
+    # 처음엔 "한 시각에 경기가 하나인 날"만 썼다. 그러면 표가 아주 천천히
+    # 차고, 다 차기 전까지 그 리그는 **아무것도 안 나간다**.
+    # 대표님 지시(2026-09-18): *"발송누락도 절대 없어야해"*.
+    #
+    # 그래서 **풀어 나간다**: 한 시각에 경기가 여럿이어도, 그중 한 팀을
+    # 이미 알고 있으면 같은 경기의 나머지 한 팀이 정해진다. 그것을 더는
+    # 새로 정해지는 것이 없을 때까지 되풀이한다. 스무 팀짜리 리그는
+    # 보통 한두 라운드면 전부 찬다.
+    #
+    # ⚠️ **추측은 한 걸음도 하지 않는다.** 정해지는 것은 언제나
+    # "이 경기의 이 자리"가 한 쪽으로만 확정될 때뿐이다.
+    known: dict = {}                       # TLA → 우리코드
+    rev: dict = {}                         # 우리코드 → TLA
+    slots = [(at, rows, src.get(at) or []) for at, rows in ours.items()]
 
-    # **한 TLA에 우리 코드가 둘 이상 붙으면 버린다.**
-    out: dict = {}
-    for tla, counts in pairs.items():
-        if len(counts) == 1:
-            out[tla] = next(iter(counts))
-    # **거꾸로도 하나여야 한다** — 우리 코드 하나에 TLA가 둘이면 둘 다 버린다.
-    rev: dict = {}
-    for tla, ours_code in out.items():
-        rev.setdefault(ours_code, []).append(tla)
-    for ours_code, tlas in rev.items():
-        if len(tlas) > 1:
-            for t in tlas:
-                out.pop(t, None)
-    return out
+    def _learn(tla, code) -> bool:
+        """새로 알게 됐으면 True. **어긋나면 둘 다 버리고** False."""
+        if tla in known or code in rev:
+            if known.get(tla) != code or rev.get(code) != tla:
+                # 이미 다른 짝이 있다 — 둘 중 하나는 거짓이다. 둘 다 지운다.
+                _notes.append(f"{code}: 팀 짝짓기가 어긋나 버립니다")
+                rev.pop(known.pop(tla, None), None)
+                known.pop(rev.pop(code, None), None)
+            return False
+        known[tla] = code
+        rev[code] = tla
+        return True
+
+    for _ in range(12):                    # 되풀이 상한 — 안 끝나면 그만둔다
+        moved = False
+        for at, rows, srows in slots:
+            if not rows or len(rows) != len(srows):
+                continue                   # 양쪽 경기 수가 다르면 못 믿는다
+            if len(rows) == 1:
+                (oh, oa), (sh, sa) = rows[0], srows[0]
+                moved |= _learn(sh, oh)
+                moved |= _learn(sa, oa)
+                continue
+            # 여럿이면 **이미 아는 팀으로 그 경기를 집어낸다.**
+            for oh, oa in rows:
+                cand = [(sh, sa) for sh, sa in srows
+                        if rev.get(oh) in (None, sh) and rev.get(oa) in (None, sa)
+                        and (rev.get(oh) == sh or rev.get(oa) == sa)]
+                if len(cand) == 1:
+                    sh, sa = cand[0]
+                    moved |= _learn(sh, oh)
+                    moved |= _learn(sa, oa)
+        if not moved:
+            break
+    return dict(known)
 
 
 def _streak_of(form: str) -> tuple:
@@ -204,11 +238,16 @@ def fetch(league: League, code: str, our_games: list,
         return None
 
     mapping = build_mapping(code, token, our_games)
-    need = int(len(rows) * MIN_MAPPED_RATIO)
-    if len(mapping) < need:
+    _missing = [str((r.get("team") or {}).get("tla") or "?") for r in rows
+                if (r.get("team") or {}).get("tla") not in mapping]
+    if _missing:
+        # **이름을 찍는다.** "3/20밖에 안 됩니다"로는 무엇을 고쳐야 할지 모른다.
         _notes.append(
-            f"{code}: 팀 이름 대조가 {len(mapping)}/{len(rows)}밖에 안 돼 "
-            f"순위를 안 만듭니다 (필요 {need}). 단독 경기가 쌓이면 채워집니다")
+            f"{code}: 아직 못 맞춘 팀 {len(_missing)}개 — "
+            + ", ".join(sorted(_missing)[:8])
+            + (" 외" if len(_missing) > 8 else "")
+            + ". 그 리그 순위는 전부 맞을 때까지 안 내보냅니다"
+              " (반쪽 표는 순위가 틀립니다)")
         return None
 
     season = str((d.get("season") or {}).get("startDate") or "")[:4] or "2026"

@@ -41,14 +41,9 @@ from headline import Headline
 # 높이는 내용에 맞춰 늘어나게 두고, 폭만 고정한다.
 CARD_W = 1080
 
-LEAGUE_LABEL = {
-    League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
-    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1",
-    League.MLB: "MLB", League.NPB: "NPB",
-    League.EPL: "프리미어리그", League.LALIGA: "라리가", League.SERIEA: "세리에A",
-    League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "챔피언스리그",
-    League.UEL: "유로파리그", League.MLS: "MLS",
-}
+# 리그 이름은 **계약 한 곳**이 정한다 (v1.50).
+# 여기 따로 두었더니 카드는 `프리미어리그`, 산문은 `EPL`로 갈렸다.
+from contract import LEAGUE_LABEL  # noqa: E402,F401
 
 # 콘텐츠 종류마다 **고유한 아이콘 + 라벨**. 색이 아니라 이 둘이 종류를 가른다 —
 # 색은 테마(리그)가 이미 쓰고 있어서 종류까지 색으로 나누면 둘이 충돌한다.

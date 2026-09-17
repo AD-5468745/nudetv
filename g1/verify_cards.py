@@ -1214,6 +1214,29 @@ check("  ↳ 표에 없는 리그는 로고를 찾지 않는다 (엉뚱한 그�
       _LG38.emblem_url("옛 e스포츠 리그", "T1") is None)
 
 # ══════════════════════════════════════════════════════════════
+print("\n★ 리그 이름은 한 곳이 정한다 (v1.50)")
+# ══════════════════════════════════════════════════════════════
+#
+# 실측 2026-09-18: 같은 대회가 카드에는 `프리미어리그`, 산문에는 `EPL`로
+# 나가고 있었다(UCL도 `챔피언스리그` vs `UCL`). 표가 두 곳에 있었기 때문이다.
+# 한 채널에서 같은 리그를 두 이름으로 부르면 읽는 사람이 다른 대회로 안다.
+import pipeline as _P50                                        # noqa: E402
+from contract import LEAGUE_LABEL as _LL                       # noqa: E402
+check("★★★ 카드와 산문이 같은 이름을 쓴다",
+      all(C5.LEAGUE_LABEL[l] == _P50.LEAGUE_LABEL[l] for l in League),
+      str([l.value for l in League
+           if C5.LEAGUE_LABEL[l] != _P50.LEAGUE_LABEL[l]]))
+check("  ↳ 둘 다 계약의 표를 그대로 쓴다",
+      C5.LEAGUE_LABEL is _LL and _P50.LEAGUE_LABEL is _LL)
+check("★★★ 빠진 리그가 없다 (빠지면 카드에 내부 값이 찍힌다)",
+      set(_LL) == set(League))
+check("★★★ 유럽 축구는 전부 한글 이름이다 (대표님 지시)",
+      all(any("가" <= c <= "힣" for c in _LL[l])
+          for l in (League.EPL, League.LALIGA, League.SERIEA,
+                    League.BUNDESLIGA, League.LIGUE1, League.UCL, League.UEL)),
+      str({l.value: _LL[l] for l in (League.EPL, League.UCL, League.UEL)}))
+
+# ══════════════════════════════════════════════════════════════
 print("\n★ 하이라이트 표시 (v1.49)")
 # ══════════════════════════════════════════════════════════════
 #

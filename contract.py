@@ -100,6 +100,41 @@ def pct_label(league: "Optional[League]") -> str:
     return "승점률" if PCT_RULE.get(league) == "points" else "승률"
 
 
+# ── 리그 이름 (v1.50) ─────────────────────────────────────────
+#
+# ★ **한 곳에만 둔다.** 전에는 `cards_v5`와 `pipeline`에 각각 있었고 값이
+# 달랐다 — 같은 대회가 카드에는 `프리미어리그`, 산문에는 `EPL`로 나갔다
+# (실측 2026-09-18: EPL·UCL 두 대회가 그랬다). 한 채널 안에서 같은 리그를
+# 두 이름으로 부르면 읽는 사람이 다른 대회로 안다.
+#
+# 대표님 지시(2026-09-18): *"진행하는 모든 유럽축구 리그를 한글로 정확히
+# 표기"*. 국내에서 그대로 쓰는 약자(KBO·MLB·NPB·MLS)는 약자가 정확한
+# 표기다 — 억지로 풀어 쓰면 오히려 낯설어진다.
+LEAGUE_LABEL: dict = {
+    League.KBO: "KBO",
+    League.KBL: "KBL",
+    League.VLEAGUE_M: "V리그 남자부",
+    League.VLEAGUE_W: "V리그 여자부",
+    League.KL1: "K리그1",
+    League.MLB: "MLB",
+    League.NPB: "NPB",
+    # ── 유럽 축구는 **전부 한글 이름으로** ──────────────────────
+    League.EPL: "프리미어리그",
+    League.LALIGA: "라리가",
+    League.SERIEA: "세리에A",
+    League.BUNDESLIGA: "분데스리가",
+    League.LIGUE1: "리그1",
+    League.UCL: "챔피언스리그",
+    League.UEL: "유로파리그",
+    League.MLS: "MLS",
+}
+
+# **빠진 리그가 없어야 한다.** 빠지면 카드에 `epl` 같은 내부 값이 찍힌다.
+assert set(LEAGUE_LABEL) == set(League), (
+    "리그 이름표에 빠진 리그: "
+    + ", ".join(sorted(l.value for l in League if l not in LEAGUE_LABEL)))
+
+
 def gap_label(league: "Optional[League]") -> str:
     """순위표의 `games_behind` 칸을 부르는 말.
 

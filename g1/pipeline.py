@@ -1188,20 +1188,9 @@ CARD_ROWS_MAX = 8
 # **줄임말을 더 줄이면 리그 이름이 아니게 된다 (v1.11i).**
 # "V리그 남"·"LoL 국제"는 자리를 아끼려고 낱말을 중간에서 끊은 것인데,
 # 정식 명칭은 '남자부'·'국제대회'다. 카드 폭은 실렌더로 확인했고 남는다.
-LEAGUE_LABEL = {
-    League.KBO: "KBO", League.KBL: "KBL", League.VLEAGUE_M: "V리그 남자부",
-    League.VLEAGUE_W: "V리그 여자부", League.KL1: "K리그1",
-    League.MLB: "MLB", League.NPB: "NPB",
-    League.EPL: "EPL", League.LALIGA: "라리가", League.SERIEA: "세리에A",
-    League.BUNDESLIGA: "분데스리가", League.LIGUE1: "리그1", League.UCL: "UCL",
-    # UCL은 국내에서 그대로 쓰는 약자지만 **UEL은 아니다.** 약자로 맞추면
-    # 대칭은 예뻐도 읽는 사람이 무슨 대회인지 모른다 — 이름을 쓴다.
-    League.UEL: "유로파리그",
-    # 리그 전체가 아니라 **한국 선수 경기만** 실린다 — 그래도 리그 이름은
-    # 리그 이름이다. 카드 머리에 '손흥민'을 적으면 그날 김기희가 뛴 경기가
-    # 이상해진다(약점 90: 소스가 말하지 않은 것을 이름에 넣지 않는다).
-    League.MLS: "MLS",
-}
+# 리그 이름은 **계약 한 곳**이 정한다 (v1.50).
+# 여기 따로 두었더니 카드는 `프리미어리그`, 산문은 `EPL`로 갈렸다.
+from contract import LEAGUE_LABEL  # noqa: E402,F401
 
 
 # ── 포스트시즌 표기 (v1.11i) ─────────────────────────────────
