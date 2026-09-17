@@ -27,7 +27,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import contract as C
 from contract import (GRACE_SECONDS, ContentType, GameMeta, Game, GateError, KST, League, Score,
-                      ScoreUnit, SendRecord, SendState, Status, TeamRef, is_late)
+                      QueueItem, ScoreUnit, SendRecord, SendState, Status,
+                      TeamRef, is_late)
 import pipeline as P
 
 ok = fail = 0
@@ -2941,6 +2942,43 @@ check("★★★ 공개로 바꾸면 **이미 적힌 것까지** 공개 주소�
 check("  ↳ 옛 파일에 주소로 적혀 있어도 글 번호를 꺼내 쓴다",
       _pub.get("옛 파일에 남은 비공개 주소", "").endswith("/1091"),
       str(_pub))
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★★ 리그가 없는 통합 카드가 문지기에 걸리지 않는다 (v1.57)")
+# ══════════════════════════════════════════════════════════════
+#
+# **같은 사고가 두 번 났다.**
+#   · v1.11m — 나이트 브리핑이 처음부터 한 장도 안 만들어지고 있었다
+#   · v1.57  — '오늘의 경기'가 **태어난 날부터** 한 장도 안 만들어졌다
+#              (실측: daily_index.json의 message_id가 사흘 내내 전부 null)
+#
+# 원인이 같다. `render_for` 머리에 "그 리그 오늘 경기가 없으면 만들지 않는다"는
+# 문지기가 있는데, 리그가 없는 통합 카드는 **부르는 쪽이 리그로 스냅샷을
+# 고르므로 games가 언제나 빈다.** 예외를 이름으로 적어 두면 통합 카드를
+# 하나 더 만들 때마다 그 이름을 빠뜨린다.
+#
+# 그래서 **이름이 아니라 성질로** 가른다(`item.league is None`). 이 시험은
+# 그 성질이 실제로 지켜지는지를 **리그 없는 콘텐츠 전부**에 대해 확인한다.
+_LEAGUE_FREE = [ContentType.NIGHT_BRIEF, ContentType.DAILY_INDEX]
+_LF_NOW = datetime(2026, 9, 18, 6, 0, tzinfo=timezone.utc)
+_lf_day = "2026-09-18"
+_lf_game = mkgame(day=_lf_day)
+for _ct in _LEAGUE_FREE:
+    _it = QueueItem(
+        idem_key=f"ch|{_ct.value}|{_lf_day}|s0|r0", content_type=_ct,
+        scope=_lf_day, scheduled_utc=_LF_NOW, league=None, sports_day=_lf_day,
+        render_at_utc=_LF_NOW)
+    # 부르는 쪽이 넘기는 것과 똑같이 — **games는 비어 있고 all_games에만 있다.**
+    _got = T.render_for(_it, [], records={}, team_stats=None,
+                        all_games=[_lf_game])
+    check(f"★★★ {_ct.value} — games가 비어도 문지기를 통과한다",
+          _got is not None, "render_for가 None을 돌려줬습니다 (그 카드는 영영 안 나갑니다)")
+check("  ↳ 리그가 있는 카드는 그대로 막힌다 (문지기를 푼 게 아니라 대상을 맞춘 것)",
+      T.render_for(QueueItem(
+          idem_key="ch|morning|KBO:2026-09-18|s0|r0",
+          content_type=ContentType.MORNING, scope="KBO:2026-09-18",
+          scheduled_utc=_LF_NOW, league=League.KBO, sports_day=_lf_day,
+          render_at_utc=_LF_NOW), [], all_games=[_lf_game]) is None)
 
 # ══════════════════════════════════════════════════════════════
 print("\n★★ 토론방 연결을 시계가 스스로 잰다 (v1.57)")

@@ -2624,7 +2624,21 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # 한 장도 못 만들고 있었다.** 게다가 날짜 기준도 다르다: 이 카드는
     # 한국 날짜(night_brief_day)로 묶고 g.sports_day는 리그 현지 날짜다.
     # 아래 전용 분기가 all_games로 알아서 고른다.
-    if not todays and item.content_type is not ContentType.NIGHT_BRIEF:
+    #
+    # ★★ **v1.57에서 같은 병이 또 잡혔다 — 이번엔 '오늘의 경기'다.**
+    #
+    # 위 문단이 경고한 바로 그 실수를 한 번 더 했다. `DAILY_INDEX`도
+    # 리그가 없는 통합 카드인데(대표님 지시로 v1.39에 새로 만든 것),
+    # 예외 목록에 `NIGHT_BRIEF` 하나만 적혀 있어서 **태어난 날부터 단 한
+    # 장도 만들어진 적이 없다**(실측: daily_index.json의 message_id가
+    # 사흘 내내 전부 null). 채널에는 "시각을 놓쳐 취소"만 보였다.
+    #
+    # **그래서 목록을 버린다.** 리그가 없는 카드는 `item.league is None`으로
+    # 저절로 알아볼 수 있다 — 그러면 다음에 통합 카드를 하나 더 만들어도
+    # 여기 손댈 일이 없고, 세 번째로 같은 사고가 나지 않는다.
+    # (`cards_v5._MEASURE_JS`가 검사 목록을 버리고 '전체 − 예외'로 바꾼 것과
+    #  같은 이유다.)
+    if not todays and item.league is not None:
         return None
 
     out = ROOT / "render"
