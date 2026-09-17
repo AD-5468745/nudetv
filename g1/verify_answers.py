@@ -525,6 +525,126 @@ check("★★★ 속보도 채널로 새지 않는다 (경기별 콘텐츠는 �
       and ContentType.KICKOFF in T.WAIT_FOR_THREAD_TYPES
       and ContentType.FINAL_FLASH in T.WAIT_FOR_THREAD_TYPES)
 # ══════════════════════════════════════════════════════════════
+print("\n11. ★★★ 각 경기 정보는 **그 경기 토론방으로만** 간다")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-18): *"각 경기 토론방 연결이 정확히 되는지, 해당경기에
+# 대한 정보가 연결된 토론방으로만 업데이트가 잘 되는지, 본채널과 섞이지는
+# 않는지"*.
+#
+# 세 경기를 나란히 세우고 **엇갈리는지**를 직접 본다. 한 경기짜리로
+# 시험하면 엇갈릴 자리가 없어서 늘 통과한다.
+from contract import idem_key as _ik11                          # noqa: E402
+
+
+class _Rec11:
+    def __init__(self, ids):
+        self.message_ids = list(ids)
+        self.state = None
+
+
+class _Led11:
+    """앵커 기록만 들고 있는 대장 대역."""
+
+    def __init__(self, table):
+        self._t = dict(table)
+
+    def get(self, key):
+        return self._t.get(key)
+
+
+class _It11:
+    def __init__(self, lg, day, gid, ct):
+        self.league, self.sports_day, self.game_id = lg, day, gid
+        self.content_type = ct
+
+
+_CH11 = "-100777"
+_DAY11 = "2026-09-18"
+_GAMES11 = ("g-알파", "g-베타", "g-감마")
+# 세 경기의 앵커가 각각 채널 글 1101·1102·1103으로 나갔고,
+# 텔레그램이 그것을 토론방 글 51·52·53으로 전달했다.
+_LED11 = _Led11({
+    _ik11(_CH11, ContentType.ANCHOR, f"KBO:{_DAY11}:{g}"): _Rec11([1101 + i])
+    for i, g in enumerate(_GAMES11)})
+
+
+class _Disc11:
+    map = {"1101": 51, "1102": 52, "1103": 53}
+    buttoned: dict = {}
+
+    def thread_of(self, mid):
+        v = self.map.get(str(mid))
+        return int(v) if v else None
+
+
+_D11 = _Disc11()
+_saved_dc = T.DISCUSSION_CHAT_ID
+T.DISCUSSION_CHAT_ID = _CH11
+try:
+    _got = {}
+    for i, g in enumerate(_GAMES11):
+        for _ct in sorted(T.THREADED_CONTENT_TYPES, key=lambda c: c.value):
+            _got[(g, _ct)] = T._thread_for(
+                _It11(League.KBO, _DAY11, g, _ct), _LED11, _D11, _CH11)
+    check("★★★ 경기마다 **자기** 토론방 번호로 간다 (엇갈리지 않는다)",
+          all(_got[(g, ct)] == 51 + i
+              for i, g in enumerate(_GAMES11)
+              for ct in T.THREADED_CONTENT_TYPES),
+          str({k[0]: v for k, v in _got.items()}))
+    check("  ↳ 종류가 달라도 같은 경기면 같은 방이다",
+          len({_got[(_GAMES11[0], ct)] for ct in T.THREADED_CONTENT_TYPES}) == 1)
+    check("★★★ 그 경기 앵커가 없으면 **아무 방에도 안 보낸다**",
+          T._thread_for(_It11(League.KBO, _DAY11, "g-없는경기",
+                              ContentType.ANALYSIS),
+                        _LED11, _D11, _CH11) is None)
+    check("★★★ 날짜가 다르면 남의 방으로 안 간다 (같은 경기번호라도)",
+          T._thread_for(_It11(League.KBO, "2026-09-19", _GAMES11[0],
+                              ContentType.ANALYSIS),
+                        _LED11, _D11, _CH11) is None)
+    check("★★★ 리그가 다르면 남의 방으로 안 간다",
+          T._thread_for(_It11(League.MLB, _DAY11, _GAMES11[0],
+                              ContentType.ANALYSIS),
+                        _LED11, _D11, _CH11) is None)
+    check("★★★ 채널로 갈 종류는 토론방을 찾지 않는다 (섞이지 않는다)",
+          all(T._thread_for(_It11(League.KBO, _DAY11, _GAMES11[0], ct),
+                            _LED11, _D11, _CH11) is None
+              for ct in (ContentType.ANCHOR, ContentType.DAILY_INDEX,
+                         ContentType.LEAGUE_RESULT, ContentType.STANDINGS,
+                         ContentType.MORNING)))
+    check("★★ 전달이 아직 안 된 앵커는 기다린다 (엉뚱한 방으로 보내지 않는다)",
+          T._thread_for(_It11(League.KBO, _DAY11, _GAMES11[0],
+                              ContentType.ANALYSIS),
+                        _Led11({_ik11(_CH11, ContentType.ANCHOR,
+                                      f"KBO:{_DAY11}:{_GAMES11[0]}"):
+                                _Rec11([1999])}), _D11, _CH11) is None)
+finally:
+    T.DISCUSSION_CHAT_ID = _saved_dc
+
+# ── 배선 — 찾은 방으로 **실제로 보내는가** ─────────────────────
+#
+# 위 검사는 "어느 방인지 옳게 고르는가"만 본다. 고르고도 안 쓰면 소용없다.
+import inspect as _insp11                                       # noqa: E402
+_send_src = _insp11.getsource(T.tick)
+check("★★★ 방을 찾으면 **그 방으로 보낸다** (대화방을 바꿔 끼운다)",
+      "chat_id_override = DISCUSSION_CHAT_ID" in _send_src)
+check("  ↳ 그 방의 **그 글에 답글로** 단다 (방 본문에 흘리지 않는다)",
+      "reply_to_message_id = _thread" in _send_src)
+check("★★★ 방을 못 찾으면 **채널로 보내지 않는다** (기다린다)",
+      "thread_not_ready" in _send_src and "WAIT_FOR_THREAD_TYPES" in _send_src)
+check("★★ 댓글에는 버튼을 떼고 보낸다 (앨범에 버튼을 못 달고 댓글엔 필요 없다)",
+      "payload.buttons = []" in _send_src)
+
+# 발송기 — 바꿔 끼운 대화방이 **사진·앨범·글 모두**에 적용되는가.
+# 사진만 바뀌고 글은 채널로 가면 한 경기가 두 곳으로 갈린다.
+import sender as _SD11                                          # noqa: E402
+_disp11 = _insp11.getsource(_SD11)
+check("★★★ 바꿔 끼운 대화방을 **한 곳에서** 풀어 세 가지 보내기에 다 쓴다",
+      "p.chat_id_override or self.chat_id" in _disp11,
+      "sender가 override를 푸는 자리를 못 찾았습니다")
+
+
+# ══════════════════════════════════════════════════════════════
 # 본채널 경기 목록 버튼 (v1.50)
 # ══════════════════════════════════════════════════════════════
 #
