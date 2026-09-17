@@ -3000,6 +3000,23 @@ check("  ↳ 방금 올라간 앵커는 아직 경보가 아니다 (유예 15분
       not any("옮겨지지" in x for x in T._thread_health(
           _FakeLed(_fresh), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch", _TH_NOW)))
 
+# ②-b 지워진 글은 고장이 아니다 — 대표님이 채널을 비우시면 전달 짝도 사라진다
+_del = {}
+for i in range(2):                       # 옛 앵커 둘 (지워졌다고 치자)
+    r = _rec(ContentType.ANCHOR, f"L:d:old{i}", 10 + i, _TH_NOW - timedelta(hours=20))
+    _del[r.idem_key] = r
+for i in range(2):                       # 그 뒤에 선 앵커 둘 (정상 전달)
+    r = _rec(ContentType.ANCHOR, f"L:d:new{i}", 200 + i, _TH_NOW - timedelta(hours=1))
+    _del[r.idem_key] = r
+check("★★★ 지워진 옛 글은 '연결 끊김'으로 세지 않는다 (경보가 거짓말이 되면 안 믿게 된다)",
+      not any("옮겨지지" in x for x in T._thread_health(
+          _FakeLed(_del), _FakeDisc({200: 21, 201: 22}), "ch", _TH_NOW)),
+      str(T._thread_health(_FakeLed(_del), _FakeDisc({200: 21, 201: 22}), "ch", _TH_NOW)))
+check("  ↳ **그보다 뒤인** 앵커가 안 옮겨지면 그건 진짜 고장이다",
+      any("옮겨지지" in x for x in T._thread_health(
+          _FakeLed(_del), _FakeDisc({200: 21}), "ch", _TH_NOW)),
+      str(T._thread_health(_FakeLed(_del), _FakeDisc({200: 21}), "ch", _TH_NOW)))
+
 # ③ 경기별 글이 본채널로 샜다
 _leak = dict(_rows)
 _l = _rec(ContentType.GOAL_FLASH, "L:d:g1#1", 7, _TH_NOW - timedelta(minutes=10),

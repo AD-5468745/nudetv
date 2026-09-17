@@ -2484,22 +2484,45 @@ def _thread_health(ledger, disc, channel: str, now) -> list:
     oldest = None
     in_thread = leaked = 0
     leak_ex: list = []
+    # ── ★ **지워진 글을 고장으로 세지 않는다** ────────────────────
+    #
+    # 대표님이 채널 글을 지우시면 그 전달 짝도 함께 사라진다(실측
+    # 2026-09-17: 채널을 비우시기 전 앵커 9건이 그렇게 남았다). 그걸 고장으로
+    # 세면 "연결을 확인하세요"가 거짓말이 되고, 다음에 진짜 끊겼을 때
+    # 대표님이 그 경보를 안 믿게 된다.
+    #
+    # 텔레그램은 **순서대로** 옮긴다. 그래서 *가장 최근에 옮겨진 앵커*보다
+    # 앞선 것이 안 옮겨져 있으면 그건 지워진 것이고, **그보다 뒤인데도**
+    # 안 옮겨져 있으면 그것만이 지금 손댈 수 있는 고장이다.
+    anchors: list = []
+    newest_linked = None
     for key in ledger.idem_keys():
         rec = ledger.get(key)
         if rec is None or rec.state is not SendState.SENT:
             continue
         if not rec.sent_at_utc or rec.sent_at_utc < cut:
             continue
-        if rec.content_type is ContentType.ANCHOR:
-            if not rec.message_ids:
-                continue
-            if disc.thread_of(rec.message_ids[0]) is not None:
-                linked += 1
-            elif (now - rec.sent_at_utc).total_seconds() > THREAD_LINK_GRACE_SECONDS:
-                broken += 1
-                if oldest is None or rec.sent_at_utc < oldest:
-                    oldest = rec.sent_at_utc
-        elif rec.content_type in THREADED_CONTENT_TYPES:
+        if rec.content_type is ContentType.ANCHOR and rec.message_ids:
+            _ok = disc.thread_of(rec.message_ids[0]) is not None
+            anchors.append((rec.sent_at_utc, _ok))
+            if _ok and (newest_linked is None or rec.sent_at_utc > newest_linked):
+                newest_linked = rec.sent_at_utc
+    for at, _ok in anchors:
+        if _ok:
+            linked += 1
+        elif newest_linked is not None and at < newest_linked:
+            continue                      # 지워진 글 — 고장이 아니다
+        elif (now - at).total_seconds() > THREAD_LINK_GRACE_SECONDS:
+            broken += 1
+            if oldest is None or at < oldest:
+                oldest = at
+    for key in ledger.idem_keys():
+        rec = ledger.get(key)
+        if rec is None or rec.state is not SendState.SENT:
+            continue
+        if not rec.sent_at_utc or rec.sent_at_utc < cut:
+            continue
+        if rec.content_type in THREADED_CONTENT_TYPES:
             # None은 **모름**이다(이 칸이 생기기 전 줄). 누수로 세지 않는다.
             if rec.thread_root is None:
                 continue
