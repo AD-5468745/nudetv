@@ -1549,14 +1549,31 @@ def pregame_card(game, league: League, *, preview: dict | None = None,
                          f'<div class="v">{C5.esc(h)}</div></div>'
                          for a, k, h, _ in _rows))
 
-    body += C5.body_lineup_pair(na, nh, _NP.lineup(preview, "away"),
-                                _NP.lineup(preview, "home"))
+    # ── 주목 타자 — **시즌 성적과 함께** (v1.52) ────────────────
+    #
+    # 최근 5경기만 보면 표본이 너무 작다(9타수 5안타면 타율 0.556이 찍힌다).
+    # 시즌 값을 나란히 둬야 읽는 사람이 그 수를 가늠한다.
+    _pa, _ph = _NP.top_player(preview, "away"), _NP.top_player(preview, "home")
+    if _pa and _ph and _pa.get("season") and _ph.get("season"):
+        _sa2, _sh2 = _pa["season"], _ph["season"]
+        _rows2 = []
+        for _k, _lab, _suf in (("games", "경기", "경기"), ("hra", "타율", ""),
+                               ("hr", "홈런", "개"), ("rbi", "타점", "타점")):
+            if _k in _sa2 and _k in _sh2:
+                _rows2.append((f"{_sa2[_k]}{_suf}", _lab, f"{_sh2[_k]}{_suf}"))
+        if _rows2:
+            body += ('<div class="anh">주목 타자<span>'
+                     f'{C5.esc(_pa["name"])} · {C5.esc(_ph["name"])}</span></div>'
+                     + "".join(
+                         f'<div class="cmp"><div class="v r">{C5.esc(x)}</div>'
+                         f'<div class="k">{C5.esc(k)}</div>'
+                         f'<div class="v">{C5.esc(y)}</div></div>'
+                         for x, k, y in _rows2))
 
-    _ba, _bh = _NP.bullpen_count(preview, "away"), _NP.bullpen_count(preview, "home")
-    if _ba and _bh:
-        body += (f'<div class="bar"><span class="k">불펜</span>'
-                 f'<span class="v">{C5.esc(na)} {_ba}명 · '
-                 f'{C5.esc(nh)} {_bh}명</span></div>')
+    # ⚠️ **예상 라인업과 불펜은 카드에 안 싣는다** (v1.52).
+    # 아홉 줄이 800px를 먹어 카드가 높이 한계를 넘고, 그러면 이 장이 통째로
+    # 사라진다(분석 카드에서 이미 겪었다). 글로 내리면 접어서 볼 수 있고
+    # 길이 제한도 없다.
 
     if not body:
         return None                       # 아무 재료도 없었다 — 빈 장은 안 낸다
@@ -1569,25 +1586,34 @@ def pregame_card(game, league: League, *, preview: dict | None = None,
                     body=body, foot_left=(venue_name(game.venue) or "")
                     if game.venue else C5.LEAGUE_LABEL.get(league, ""))
 
-    # 캡션 — **카드가 말한 것을 되풀이하지 않는다.** 카드에 없는 것만 적는다:
-    # 주목 타자는 카드에 자리가 없어 여기로 내린다.
+    # 캡션 — **카드가 말한 것을 되풀이하지 않는다.** 카드에 자리가 없어
+    # 내려온 것들: 주목 타자의 최근 5경기 · 예상 라인업 · 불펜.
     extra: list = []
     for _side, _nm2 in (("away", na), ("home", nh)):
         _tp = _NP.top_player(preview, _side)
-        if not _tp:
+        if not _tp or not _tp.get("hra"):
             continue
-        _bits = [f"최근 5경기 타율 {_tp['hra']}"] if _tp.get("hra") else []
+        _bits = [f"최근 5경기 타율 {_tp['hra']}"]
         if _tp.get("hit") is not None and _tp.get("ab") is not None:
             _bits.append(f"{_tp['ab']}타수 {_tp['hit']}안타")
-        if _tp.get("hr"):
-            _bits.append(f"홈런 {_tp['hr']}")
-        if _tp.get("rbi"):
-            _bits.append(f"타점 {_tp['rbi']}")
-        if _bits:
-            extra.append(f"{_nm2} {_tp['name']} — " + " · ".join(_bits))
+        extra.append(f"{_nm2} {_tp['name']} — " + " · ".join(_bits))
+
+    _lua, _luh = _NP.lineup(preview, "away"), _NP.lineup(preview, "home")
+    if _lua and _luh:
+        if extra:
+            extra.append("")
+        extra.append("■ 예상 라인업")
+        for i in range(min(len(_lua), len(_luh))):
+            extra.append(f"{i + 1}번  {_lua[i][2]} ({_lua[i][1]})"
+                         f"  ·  {_luh[i][2]} ({_luh[i][1]})")
+    _ba, _bh = _NP.bullpen_count(preview, "away"), _NP.bullpen_count(preview, "home")
+    if _ba and _bh:
+        extra.append("")
+        extra.append(f"■ 불펜  {na} {_ba}명 · {nh} {_bh}명")
     return html, list(C5.caption(
         kind="pregame", league=league, head=head, date_label=lab,
-        extra_lines=extra or None, extra_title="주목 타자" if extra else "",
+        extra_lines=extra or None,
+        extra_title="선수 · 라인업" if extra else "",
         tags=_tags("pregame", league, [game])))
 
 

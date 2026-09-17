@@ -45,6 +45,9 @@ CARD_W = 1080
 # 여기 따로 두었더니 카드는 `프리미어리그`, 산문은 `EPL`로 갈렸다.
 from contract import LEAGUE_LABEL  # noqa: E402,F401
 
+# 이보다 적은 표본은 숫자만 내놓으면 과장이 된다.
+SMALL_SAMPLE_GAMES = 3
+
 # 콘텐츠 종류마다 **고유한 아이콘 + 라벨**. 색이 아니라 이 둘이 종류를 가른다 —
 # 색은 테마(리그)가 이미 쓰고 있어서 종류까지 색으로 나누면 둘이 충돌한다.
 KIND_META = {
@@ -1060,19 +1063,33 @@ def body_starters(away_name: str, home_name: str,
     if not (away and home):
         return ""
 
-    def _season(d: dict) -> str:
+    def _wl(d: dict) -> str:
+        if d.get("w") is None or d.get("l") is None:
+            return ""
+        g = f"{d['games']}경기 " if d.get("games") is not None else ""
+        return f"{g}{d['w']}승 {d['l']}패"
+
+    def _rate(d: dict) -> str:
         bits = []
-        if d.get("w") is not None and d.get("l") is not None:
-            bits.append(f"{d['w']}승 {d['l']}패")
         if d.get("era"):
             bits.append(f"ERA {d['era']}")
+        if d.get("whip"):
+            bits.append(f"WHIP {d['whip']}")
+        return " · ".join(bits)
+
+    def _work(d: dict) -> str:
+        bits = []
+        if d.get("inn"):
+            bits.append(f"{d['inn']}이닝")
+        if d.get("kk") is not None:
+            bits.append(f"{d['kk']}K")
         return " · ".join(bits)
 
     def _vs(d: dict) -> str:
         v = d.get("vs") or {}
         if not v.get("games"):
             return ""
-        out = f"상대 {v['games']}경기"
+        out = f"{v['games']}경기"
         if v.get("era"):
             out += f" ERA {v['era']}"
         return out
@@ -1084,7 +1101,8 @@ def body_starters(away_name: str, home_name: str,
             '<div class="x">VS</div><div>'
             f'<div class="n r"><b class="tn">{esc(home.get("name", ""))}</b></div>'
             f'<div class="p r">{esc(home_name)}</div></div></div>']
-    for label, fn in (("시즌", _season), ("이 상대", _vs)):
+    for label, fn in (("시즌", _wl), ("비율", _rate), ("소화", _work),
+                      ("이 상대", _vs)):
         la, lh = fn(away), fn(home)
         if not (la or lh):
             continue
@@ -1094,6 +1112,17 @@ def body_starters(away_name: str, home_name: str,
         rows.append(f'<div class="cmp"><div class="v r">{esc(la or "—")}</div>'
                     f'<div class="k">{esc(label)}</div>'
                     f'<div class="v">{esc(lh or "—")}</div></div>')
+
+    # ★ **표본이 적으면 그렇다고 적는다** (2026-09-18).
+    # `상대 2경기 ERA 4.09`를 숫자만 내놓으면 실력으로 읽힌다 — 두 경기는
+    # 우연에 가깝다. 같은 회사 사이트도 *"3경기 이하 표본이라 단정하기
+    # 이르다"*라고 밝힌다. **밝히지 않는 수는 과장하는 수다.**
+    _small = [d for d in (away, home)
+              if 0 < int((d.get("vs") or {}).get("games") or 0) <= SMALL_SAMPLE_GAMES]
+    if _small:
+        rows.append('<div class="bar"><span class="k">참고</span>'
+                    '<span class="v">이 상대 표본이 3경기 이하라 '
+                    '단정하기 이릅니다</span></div>')
     return "".join(rows)
 
 

@@ -187,14 +187,27 @@ def starter(pv: dict, side: str) -> Optional[dict]:
     out: dict = {"name": name}
     if ss.get("era") is not None:
         out["era"] = str(ss.get("era"))
+    # WHIP·경기수·이닝·탈삼진도 **이미 오고 있었다**(실측 2026-09-18).
+    # `inn2`는 야구 표기(`114 2/3`)라 그쪽을 먼저 쓴다.
+    if ss.get("whip") is not None:
+        out["whip"] = str(ss.get("whip"))
+    if ss.get("gameCount") is not None:
+        out["games"] = ss.get("gameCount")
     for k, src in (("w", ss.get("w")), ("l", ss.get("l")),
-                   ("inn", ss.get("inn")), ("kk", ss.get("kk"))):
+                   ("inn", ss.get("inn2") or ss.get("inn")),
+                   ("kk", ss.get("kk"))):
         if src is not None:
             out[k] = src
     if vs.get("gameCount"):
         out["vs"] = {"games": vs.get("gameCount"), "era": str(vs.get("era") or ""),
                      "inn": vs.get("inn"), "w": vs.get("w"), "l": vs.get("l")}
     return out
+
+
+# 이보다 적은 표본은 **숫자만 내놓으면 안 된다.** 2경기 평균자책 4.09는
+# 실력이 아니라 우연에 가깝다. 같은 회사 사이트도 이렇게 적는다(참고
+# 2026-09-18): *"두 기록 모두 3경기 이하 표본이라 단정하기 이르다"*.
+SMALL_SAMPLE_GAMES = 3
 
 
 def team_stats(pv: dict, side: str) -> dict:
@@ -255,6 +268,16 @@ def top_player(pv: dict, side: str) -> Optional[dict]:
     for k in ("hit", "hr", "rbi", "ab"):
         if r5.get(k) is not None:
             out[k] = r5.get(k)
+    # 시즌 성적도 온다 — 최근 5경기만 보면 표본이 너무 작다(9타수 5안타로
+    # 타율 0.556 같은 수가 나온다). 시즌 값을 함께 둬야 읽는 사람이 가늠한다.
+    ss = d.get("currentSeasonStats") or {}
+    season: dict = {}
+    for k, ours in (("gameCount", "games"), ("hra", "hra"), ("hr", "hr"),
+                    ("rbi", "rbi"), ("obp", "obp")):
+        if ss.get(k) is not None:
+            season[ours] = str(ss[k]) if ours in ("hra", "obp") else ss[k]
+    if season:
+        out["season"] = season
     return out
 
 
