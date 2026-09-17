@@ -1101,6 +1101,9 @@ class ContentType(str, Enum):
     # 높이 게이트에 걸렸고, 그 순간 분석 카드가 **통째로 안 나갔다**
     # (실측 2026-09-18). 내용을 줄이는 대신 장을 나눈다.
     PREGAME = "pregame"
+    # 경기 기록실 — 오늘의 기록 · 승패세 투수 · 진기록 · 다음 경기 (v1.45 · 3차).
+    # 결과 속보가 '무슨 일이 있었나'를 말하면, 이쪽은 '숫자로 무엇이 남았나'다.
+    BOXSCORE = "boxscore"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
     KOREAN_DAILY = "korean_daily"          # v1.9: 코리안리거 데일리
@@ -1123,6 +1126,8 @@ GRACE_SECONDS: dict[ContentType, int] = {
     ContentType.ANCHOR: 3600,
     # 경기 전 정보는 그 경기 시작까지만 뜻이 있다 — 앵커와 같은 1시간.
     ContentType.PREGAME: 3600,
+    # 기록실은 경기가 끝난 뒤 한참까지 뜻이 있다 — 결과 속보(1시간)보다 넓게.
+    ContentType.BOXSCORE: 6 * 3600,
     ContentType.DAILY_INDEX: 7200,
     ContentType.START_ALERT: 480,        # v1.9: 180 → 480 (감시 임계보다 크게)
     ContentType.POLL_CLOSE: 480,         # v1.9: 1800 → 480 (열린 투표를 오래 두면 안 된다)
@@ -1301,6 +1306,8 @@ PACER_PRIORITY: dict[ContentType, int] = {
     ContentType.ANCHOR: 0,
     # 앵커 바로 다음이다 — 그 경기 댓글의 첫 장이 분석, 그다음이 이것.
     ContentType.PREGAME: 1,
+    # 결과 속보 뒤에 붙는다 — 속보가 먼저 나가야 사람이 결과를 먼저 안다.
+    ContentType.BOXSCORE: 5,
     # 오늘의 경기는 자정 직후 한 통이고, 몇 분 늦어도 뜻이 안 변한다.
     ContentType.DAILY_INDEX: 4,
     ContentType.POLL: 3,
@@ -1615,6 +1622,9 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     ContentType.ANCHOR: 0,
     # 경기 전 정보도 같다 — 예약 시각(경기 3시간 전)에 나간다.
     ContentType.PREGAME: 0,
+    # **일찍 보낼 수 없다** — 예약이 '종료를 감지한 시각'이라 그전에는
+    # 기록이 존재하지 않는다(결과 속보와 같은 성질).
+    ContentType.BOXSCORE: 0,
     # **'오늘의 경기'가 자정 전에 나가면 이름이 거짓이 된다.**
     # 00:05 예약에 앞창 90분이면 **전날 22:35**에 나간다.
     # 유예 2시간이 창을 대신한다.

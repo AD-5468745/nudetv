@@ -242,3 +242,109 @@ def top_player(pv: dict, side: str) -> Optional[dict]:
         if r5.get(k) is not None:
             out[k] = r5.get(k)
     return out
+
+
+# ══════════════════════════════════════════════════════════════
+# 경기 **후** 기록 — `/record` (3차 · v1.45)
+# ══════════════════════════════════════════════════════════════
+#
+# 같은 파일에 두는 이유는 `game_id()` 때문이다. 경기 번호를 찾아내는 일이
+# 이 통합에서 가장 까다로운 부분이고(리그마다 번호 체계가 다르다),
+# 그것을 두 벌로 만들면 한쪽만 고치는 날이 반드시 온다(약점 45·110).
+
+_rec_cache: dict = {}
+RECORD_CACHE_SECONDS = 10 * 60
+
+
+def fetch_record(league: League, game) -> Optional[dict]:
+    """그 경기 기록 원본. 못 받으면 None."""
+    if not PREVIEW_ENABLED:
+        return None
+    gid = game_id(league, game)
+    if not gid:
+        return None
+    hit = _rec_cache.get(gid)
+    if hit and time.time() - hit[0] < RECORD_CACHE_SECONDS:
+        return hit[1]
+    d = _get(f"/schedule/games/{gid}/record") or {}
+    rd = (d.get("result") or {}).get("recordData")
+    _rec_cache[gid] = (time.time(), rd if isinstance(rd, dict) else None)
+    return _rec_cache[gid][1]
+
+
+# 오늘의 기록 — 소스 칸 → 우리 말. **순서가 곧 카드 줄 순서다.**
+_KEY_STATS = (("hit", "안타"), ("hr", "홈런"), ("kk", "삼진"),
+              ("sb", "도루"), ("err", "실책"))
+
+
+def key_stats(rec: dict) -> list:
+    """`[(이름, 원정값, 홈값)]`. 양쪽 다 있는 칸만."""
+    tk = (rec or {}).get("todayKeyStats") or {}
+    a, h = tk.get("away") or {}, tk.get("home") or {}
+    out = []
+    for k, label in _KEY_STATS:
+        if a.get(k) is None or h.get(k) is None:
+            continue
+        out.append((label, str(a[k]), str(h[k])))
+    return out
+
+
+# 투수 결과 표기. `wls`가 소스의 코드다.
+_WLS = {"W": "승", "L": "패", "S": "세이브", "H": "홀드"}
+
+
+def pitching_result(rec: dict) -> list:
+    """`[(이름, 무엇, 시즌표기)]` — 승·패·세이브·홀드 투수.
+
+    **홀드는 뺀다.** 한 경기에 여럿 나와 줄이 길어지는데, 승·패·세이브만큼
+    궁금한 값이 아니다. 필요해지면 `_WLS`에서 다시 열면 된다.
+    """
+    out = []
+    for p in (rec or {}).get("pitchingResult") or []:
+        what = _WLS.get(str(p.get("wls") or ""))
+        name = str(p.get("name") or "").strip()
+        if not what or not name or what == "홀드":
+            continue
+        season = f"{p.get('w', 0)}승 {p.get('l', 0)}패"
+        if p.get("s"):
+            season += f" {p['s']}세이브"
+        out.append((name, what, season))
+    # 승 → 패 → 세이브 차례. 소스 순서는 들쭉날쭉하다.
+    order = {"승": 0, "패": 1, "세이브": 2}
+    return sorted(out, key=lambda x: order.get(x[1], 9))
+
+
+# 진기록에서 **빼는** 항목. 경기 내용이 아니라 운영 정보다.
+_ETC_SKIP = ("심판", "관중", "경기시간")
+
+
+def etc_records(rec: dict) -> list:
+    """`[(무엇, 내용)]` — 결승타 · 홈런 · 2루타 · 도루 …
+
+    야구 중계에서 가장 많이 읽히는 칸이고, 우리가 여태 한 번도 안 쓴 값이다.
+    """
+    out = []
+    for e in (rec or {}).get("etcRecords") or []:
+        how = str(e.get("how") or "").strip()
+        what = str(e.get("result") or "").strip()
+        if not how or not what or how in _ETC_SKIP:
+            continue
+        out.append((how, what))
+    return out
+
+
+def _ymd(n) -> str:
+    s = str(n or "")
+    return f"{s[4:6]}.{s[6:8]}" if len(s) == 8 else ""
+
+
+def next_games(rec: dict, side: str) -> list:
+    """`[(월.일, 원정, 홈, 구장)]` — 그 팀의 다음 경기들."""
+    out = []
+    for g in (rec or {}).get(f"{side}TeamNextGames") or []:
+        d = _ymd(g.get("gdate"))
+        an, hn = str(g.get("aName") or ""), str(g.get("hName") or "")
+        if not (d and an and hn):
+            continue
+        out.append((d, an, hn, str(g.get("stadium") or "")))
+    return out

@@ -2288,6 +2288,7 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
 THREADED_CONTENT_TYPES = frozenset({
     ContentType.ANALYSIS, ContentType.PREGAME, ContentType.LINEUP,
     ContentType.KICKOFF, ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
+    ContentType.BOXSCORE,
 })
 
 # ── **경기별 콘텐츠는 채널에 안 나온다 (v1.41)** ────────────────
@@ -2685,6 +2686,24 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         return _try_v5("analysis", lambda R: R.analysis_card(
             rb, _one, item.league, day, team_stats=_ts or team_stats,
             history=games, now=_now(), preview=_pv))
+
+    elif item.content_type is ContentType.BOXSCORE:
+        # ── **경기 기록실 (3차 · v1.45)** ──────────────────────────
+        # 오늘의 기록 · 승패세 투수 · 진기록 · 다음 경기.
+        # 야구에만 있다 — 축구는 이 창구가 비어 있다(실측).
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _lg is None or _one is None:
+            return None
+        try:
+            from adapters import naver_preview as _NPb
+            _recb = _NPb.fetch_record(_lg, _one)
+        except Exception:                                # noqa: BLE001
+            _recb = None
+        if not _recb:
+            return None
+        return _try_v5("boxscore", lambda R: R.boxscore_card(
+            _one, _lg, record=_recb, now=_now()))
 
     elif item.content_type is ContentType.PREGAME:
         # ── **경기 전 정보 (2차 · v1.44)** ──────────────────────────

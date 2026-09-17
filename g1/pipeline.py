@@ -781,6 +781,26 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                         sports_day=g.sports_day, game_id=g.game_id,
                         render_at_utc=_fat))
 
+                    # ── 경기 기록실 (3차 · v1.45) ─────────────────
+                    #
+                    # 결과 속보 **3분 뒤**. 속보가 먼저 나가야 사람이 결과를
+                    # 먼저 알고, 기록은 그다음에 읽는 것이다. 시각으로 차례를
+                    # 못 박는다 — 같은 시각이면 순서가 발송기 안쪽 규칙에
+                    # 달리고 그 규칙은 언제든 바뀐다.
+                    #
+                    # 소스가 기록을 채우는 데도 시간이 걸린다. 3분은 그 여유이고,
+                    # 못 채웠으면 렌더가 None을 내고 유예(6시간) 안에 다시 온다.
+                    _bx = _fat + timedelta(minutes=3)
+                    if _bx <= hi and keep_in_queue(
+                            _bx, now, ContentType.BOXSCORE):
+                        items.append(QueueItem(
+                            idem_key=idem_key(channel, ContentType.BOXSCORE,
+                                              _scope),
+                            content_type=ContentType.BOXSCORE, scope=_scope,
+                            scheduled_utc=_bx, league=league,
+                            sports_day=g.sports_day, game_id=g.game_id,
+                            render_at_utc=_bx))
+
             # ③ **경기 중 득점 속보 (v1.35)** — 골마다 한 장.
             #
             # 대표님 지시(2026-09-12): *"유료는 아직보류 나머지는 모두 업그레이드하자"*

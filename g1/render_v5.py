@@ -52,6 +52,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
 USE_V5 = {
     "anchor": True,          # v1.39: 그 경기의 문패 — 채널에 나가는 유일한 장
     "pregame": True,         # v1.44: 경기 전 정보 — 선발·팀기록·라인업·불펜
+    "boxscore": True,        # v1.45: 경기 기록실 — 오늘의 기록·투수·진기록
     "result": True,          # 리그 결과 요약 — 하루를 닫는 한 장
     # 경기별 2종 (v1.14) — 애초에 v5로만 만든다. 옛 카드에 대응물이 없다.
     "kickoff": True,         # 그 경기 시작 10~1분 전
@@ -1406,6 +1407,87 @@ def pregame_card(game, league: League, *, preview: dict | None = None,
         kind="pregame", league=league, head=head, date_label=lab,
         extra_lines=extra or None, extra_title="주목 타자" if extra else "",
         tags=_tags("pregame", league, [game])))
+
+
+def boxscore_card(game, league: League, *, record: dict | None = None,
+                  now: datetime | None = None) -> tuple[str, list[str]] | None:
+    """경기 기록실 — 오늘의 기록 · 승패세 투수 · 진기록 (v1.45 · 3차).
+
+    결과 속보가 *"무슨 일이 있었나"*를 말하면, 이 장은 *"숫자로 무엇이
+    남았나"*다. 야구 중계에서 가장 많이 읽히는 칸(결승타·홈런·2루타·도루)이
+    여기 있는데 **우리는 여태 한 번도 안 썼다**.
+
+    **끝난 경기에만.** 재료가 없으면 만들지 않는다.
+    """
+    if not record or not getattr(game, "is_terminal", False):
+        return None
+    if getattr(game, "status", None) is not Status.FINAL or not game.score:
+        return None                       # 취소·연기는 기록이 없다
+    try:
+        from adapters import naver_preview as _NP
+    except Exception:                                    # noqa: BLE001
+        return None
+    na = C5._nm(league, game.away)
+    nh = C5._nm(league, game.home)
+
+    body = ""
+    _ks = _NP.key_stats(record)
+    if _ks:
+        body += ('<div class="anh">오늘의 기록<span>'
+                 f'{C5.esc(na)} · {C5.esc(nh)}</span></div>'
+                 + "".join(
+                     f'<div class="cmp"><div class="v r">{C5.esc(a)}</div>'
+                     f'<div class="k">{C5.esc(k)}</div>'
+                     f'<div class="v">{C5.esc(h)}</div></div>'
+                     for k, a, h in _ks))
+
+    _pr = _NP.pitching_result(record)
+    if _pr:
+        body += "".join(
+            f'<div class="bar"><span class="k">{C5.esc(what)}</span>'
+            f'<span class="v">{C5.esc(name)} <em>{C5.esc(season)}</em></span>'
+            '</div>' for name, what, season in _pr)
+
+    # 진기록 — **카드에는 앞 넷만.** 나머지는 캡션이 받는다.
+    # 여덟 줄을 다 그리면 카드가 높이 한계에 닿고, 그러면 이 장이 통째로
+    # 사라진다(분석 카드에서 이미 겪었다).
+    _etc = _NP.etc_records(record)
+    if _etc:
+        body += ('<div class="anh">기록<span>이 경기</span></div>'
+                 + "".join(
+                     f'<div class="bar"><span class="k">{C5.esc(how)}</span>'
+                     f'<span class="v">{C5.esc(what)}</span></div>'
+                     for how, what in _etc[:4]))
+
+    if not body:
+        return None
+
+    head = H.Headline(rule="B-BOX", text=f"{na} {game.score.away} : "
+                                        f"{game.score.home} {nh}",
+                      sub="경기 기록", facts={"away": game.score.away,
+                                              "home": game.score.home})
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="boxscore", league=league, date_label=lab, head=head,
+                    body=body, foot_left=(venue_name(game.venue) or "")
+                    if game.venue else C5.LEAGUE_LABEL.get(league, ""))
+
+    # 캡션 — **카드에 못 실은 것만.** 카드가 말한 넷은 빼고 나머지 기록,
+    # 그리고 양 팀 다음 경기.
+    extra: list = []
+    for how, what in _etc[4:]:
+        extra.append(f"{how} — {what}")
+    _nx: list = []
+    for _side, _nm2 in (("away", na), ("home", nh)):
+        for d, an, hn, st in _NP.next_games(record, _side)[:1]:
+            _nx.append(f"{_nm2} {d} {an} vs {hn}" + (f" ({st})" if st else ""))
+    if _nx:
+        extra.append("")
+        extra.append("■ 다음 경기")
+        extra.extend(_nx)
+    return html, list(C5.caption(
+        kind="boxscore", league=league, head=head, date_label=lab,
+        extra_lines=extra or None, extra_title="기록 더 보기" if extra else "",
+        tags=_tags("boxscore", league, [game])))
 
 
 def lineup_card(game, league: League, *, now: datetime
