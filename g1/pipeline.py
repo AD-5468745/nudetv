@@ -469,17 +469,53 @@ DAILY_INDEX_SLOTS = ((0, 5), (17, 0))
 
 
 def daily_index_text(games: list, day: str, *, links: dict | None = None,
-                     name_of=None) -> str:
+                     name_of=None, max_chars: int = TELEGRAM_TEXT_MAX) -> str:
     """그날 전 리그 편성 한 통. 경기가 없으면 빈 문자열.
 
     `links`는 `{game_id: 바로가기 주소}`다 — 앵커가 생긴 경기에만 붙는다.
     처음 올릴 때는 비어 있고, 앵커가 설 때마다 채워 넣는다.
+
+    ★ **길이를 스스로 지킨다** (v1.57).
+
+    이게 없어서 **'오늘의 경기'가 한 번도 안 나갔다**(실측 2026-09-16~18,
+    성공 0건). 앵커가 설 때마다 `보기` 링크가 하나씩 붙는데, 링크 한 줄이
+    45자쯤이라 경기가 쌓이면 텔레그램 상한(4096자)을 넘는다 —
+    54경기에 4,533자였다. 넘으면 발송기 게이트가 막고, 그건 예외라
+    **대장에 아무것도 안 남는다.** 그래서 두 시간 뒤 '시각을 놓쳐 취소'로만
+    보였다. 원인이 길이라는 것은 어디에도 안 적혔다.
+
+    **줄이는 순서가 중요하다.** 먼저 `보기` 링크를 **늦게 열리는 경기부터**
+    떼어 낸다 — 링크가 없어도 그 경기 줄은 남고, 버튼으로도 갈 수 있다.
+    링크를 다 떼도 넘치면 그때 비로소 줄 자체를 줄인다(그날 경기가
+    비정상적으로 많은 경우다).
     """
     todays = [g for g in games if g.sports_day == day]
     if not todays:
         return ""
     nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
-    lk = links or {}
+    lk = dict(links or {})
+    # 링크를 뗄 순서 — **늦게 열리는 경기부터.** 앞에 열리는 경기가 지금
+    # 눌릴 확률이 높다.
+    if lk:
+        _order = sorted((g for g in todays if g.game_id in lk),
+                        key=lambda g: g.start_utc, reverse=True)
+        for _drop in [None] + _order:
+            if _drop is not None:
+                lk.pop(_drop.game_id, None)
+            _t = _compose_index(todays, day, lk, nm, max_chars=None)
+            if len(_t) <= max_chars:
+                return _t
+        lk = {}
+    return _compose_index(todays, day, lk, nm, max_chars=max_chars)
+
+
+def _compose_index(todays: list, day: str, lk: dict, nm,
+                   *, max_chars: int | None = TELEGRAM_TEXT_MAX) -> str:
+    """'오늘의 경기' 한 통을 조립한다. `daily_index_text`만 부른다.
+
+    `max_chars=None`이면 **자르지 않는다** — 링크를 떼며 길이를 맞추는
+    쪽이 줄을 버리는 것보다 낫기 때문에, 그 단계에서는 자름을 끈다.
+    """
     d = datetime.strptime(day, "%Y-%m-%d")
     head = (f"📌 <b>{d.month}월 {d.day}일 "
             f"({'월화수목금토일'[d.weekday()]}) 오늘의 경기</b>")
@@ -505,7 +541,20 @@ def daily_index_text(games: list, day: str, *, links: dict | None = None,
                          else f"· {row}")
         lines.append("")
     lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
-    return "\n".join(lines).strip()
+    out = "\n".join(lines).strip()
+    if max_chars is None or len(out) <= max_chars:
+        return out
+    # 링크를 다 떼고도 넘친다 — 그날 경기가 비정상적으로 많다.
+    # **줄을 잘라도 글은 내보낸다.** 안 내보내면 목록이 통째로 사라진다.
+    keep, used = [], 0
+    tailline = f"<i>전 리그 {total}경기 · 아래 버튼에서 경기를 고르세요</i>"
+    room = max_chars - len(tailline) - 2
+    for ln in lines[:-1]:
+        if used + len(ln) + 1 > room:
+            break
+        keep.append(ln)
+        used += len(ln) + 1
+    return "\n".join(keep + ["", tailline]).strip()
 
 
 # 한 글에 붙일 수 있는 버튼 수. 텔레그램은 더 받아 주지만, 손님이 스크롤로

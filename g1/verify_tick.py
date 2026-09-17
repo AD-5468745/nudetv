@@ -27,7 +27,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import contract as C
 from contract import (GRACE_SECONDS, ContentType, GameMeta, Game, GateError, KST, League, Score,
-                      ScoreUnit, SendState, Status, TeamRef, is_late)
+                      ScoreUnit, SendRecord, SendState, Status, TeamRef, is_late)
 import pipeline as P
 
 ok = fail = 0
@@ -2847,6 +2847,175 @@ check("★★★ 전체 예고가 앵커보다 먼저 나간다",
 check("  ↳ 두 값이 **관계로** 묶여 있다 (한쪽만 바뀌면 다시 뒤집힌다)",
       P.PREVIEW_BEFORE_FIRST_SECONDS - P.ANCHOR_LEAD_SECONDS == 30 * 60,
       f"차이 {(P.PREVIEW_BEFORE_FIRST_SECONDS - P.ANCHOR_LEAD_SECONDS) // 60}분")
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★ '오늘의 경기'가 길이 때문에 사라지지 않는다 (v1.57)")
+# ══════════════════════════════════════════════════════════════
+#
+# **실제로 사라졌다.** 2026-09-16~18 사흘 동안 성공 0건 — 앵커가 설 때마다
+# `보기` 링크가 붙어 텔레그램 상한(4096자)을 넘겼고, 발송기 게이트가 예외를
+# 내 **대장에 아무 기록도 안 남긴 채** 매 틱 실패했다. 두 시간 뒤
+# "시각을 놓쳐 취소"로만 보였다 — 원인은 어디에도 안 적혔다.
+from contract import TELEGRAM_TEXT_MAX as _TMAX
+
+
+class _IxT:
+    def __init__(self, n): self.name = n
+
+
+class _IxG:
+    def __init__(self, lg, day, at, i):
+        self.league, self.sports_day, self.start_utc = lg, day, at
+        self.away, self.home = _IxT(f"원정{i}"), _IxT(f"홈{i}")
+        self.game_id = f"{lg.value}:2026:{i}"
+
+
+def _ix_pool(total):
+    _day = "2026-09-18"
+    _lgs = [League.KBO, League.NPB, League.MLB, League.UEL, League.LALIGA]
+    out, n = [], 0
+    for lg in _lgs:
+        for _ in range(max(1, total // len(_lgs))):
+            n += 1
+            out.append(_IxG(lg, _day, datetime(2026, 9, 18, 10, tzinfo=timezone.utc)
+                            + timedelta(minutes=13 * n), n))
+    return out
+
+
+for _n in (6, 30, 54, 90, 150, 300):
+    _pool = _ix_pool(_n)
+    _lks = {g.game_id: f"https://t.me/sports_preview_nudetv/{1000 + i}"
+            for i, g in enumerate(_pool)}
+    _txt = P.daily_index_text(_pool, "2026-09-18", links=_lks,
+                              name_of=lambda lg, t: t.name)
+    check(f"  {len(_pool)}경기 · 링크 전부여도 {_TMAX}자를 안 넘는다",
+          len(_txt) <= _TMAX, f"{len(_txt)}자")
+# 줄이는 순서: **링크를 먼저 뗀다** — 경기 줄 자체는 끝까지 지킨다.
+_pool90 = _ix_pool(90)
+_lk90 = {g.game_id: f"https://t.me/sports_preview_nudetv/{1000 + i}"
+         for i, g in enumerate(_pool90)}
+_t90 = P.daily_index_text(_pool90, "2026-09-18", links=_lk90,
+                          name_of=lambda lg, t: t.name)
+check("★ 길이를 맞출 때 경기 줄이 아니라 링크부터 뗀다",
+      _t90.count("\n· ") == len(_pool90) and _t90.count("보기</a>") < len(_pool90),
+      f"경기 {_t90.count(chr(10) + '· ')}줄 · 링크 {_t90.count('보기</a>')}개 "
+      f"/ {len(_pool90)}경기")
+# **먼저 열리는 경기의 링크를 남긴다** — 지금 눌릴 확률이 높은 쪽이다.
+_kept = [g for g in sorted(_pool90, key=lambda g: g.start_utc)
+         if f"/{1000 + _pool90.index(g)}\"" in _t90]
+check("  ↳ 남는 링크는 **먼저 열리는 경기** 쪽이다",
+      bool(_kept) and _kept[0].start_utc == min(g.start_utc for g in _pool90),
+      f"{len(_kept)}개 남음")
+check("  ↳ 링크가 적으면 전부 붙는다 (평소에는 아무것도 안 뗀다)",
+      P.daily_index_text(_ix_pool(6), "2026-09-18",
+                         links={g.game_id: "https://t.me/x/1"
+                                for g in _ix_pool(6)},
+                         name_of=lambda lg, t: t.name).count("보기</a>") == 5)
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★ 바로가기 주소는 **저장하지 않고 그때그때 만든다** (v1.57)")
+# ══════════════════════════════════════════════════════════════
+#
+# 채널을 공개로 바꾸면 주소 꼴이 `t.me/c/<번호>` → `t.me/<아이디>`로 바뀐다.
+# 전에는 앵커를 보낸 순간의 주소를 통째로 적어 둬서, 공개로 바꾼 뒤에도
+# 그날 적힌 주소는 **비공개 꼴 그대로 남아 아무 데도 안 열렸다**
+# (실측 2026-09-17 23:32에 적힌 유로파 링크 전부).
+_ix_state = TMP / "daily_index.json"
+_old_state, T.DAILY_INDEX_STATE = T.DAILY_INDEX_STATE, _ix_state
+_ix_state.write_text(json.dumps({"2026-09-18": {"message_id": 7, "links": {
+    "새로 적은 것": 1112,
+    "옛 파일에 남은 비공개 주소": "https://t.me/c/9999999999/1091"}}}),
+    encoding="utf-8")
+T.CHANNEL_FOR_LINKS[0] = "-1009999999999"   # 가짜 번호 — 실제 채널 ID는 안 적는다
+T.CHANNEL_USERNAME[0] = ""
+_priv = T._index_links("2026-09-18")
+T.CHANNEL_USERNAME[0] = "sports_preview_nudetv"
+_pub = T._index_links("2026-09-18")
+T.DAILY_INDEX_STATE = _old_state
+check("비공개일 때는 t.me/c/… 꼴",
+      all(v.startswith("https://t.me/c/9999999999/") for v in _priv.values()),
+      str(_priv))
+check("★★★ 공개로 바꾸면 **이미 적힌 것까지** 공개 주소가 된다",
+      all(v.startswith("https://t.me/sports_preview_nudetv/")
+          for v in _pub.values()), str(_pub))
+check("  ↳ 옛 파일에 주소로 적혀 있어도 글 번호를 꺼내 쓴다",
+      _pub.get("옛 파일에 남은 비공개 주소", "").endswith("/1091"),
+      str(_pub))
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★ 토론방 연결을 시계가 스스로 잰다 (v1.57)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-18): *"계속 실측하고 모니터링하도록해."*
+# 사람이 화면을 봐야만 알 수 있는 고장은 감시가 아니다.
+
+
+class _FakeDisc:
+    def __init__(self, m): self.m = m
+    def thread_of(self, mid): return self.m.get(int(mid))
+
+
+class _FakeLed:
+    def __init__(self, rows): self.rows = rows
+    def idem_keys(self): return list(self.rows)
+    def get(self, k): return self.rows.get(k)
+
+
+def _rec(kind, scope, mid, when, *, thread=None):
+    return SendRecord(
+        idem_key=f"ch|{kind.value}|{scope}|s0|r0", state=SendState.SENT,
+        chat_id="ch", content_type=kind, message_ids=[mid],
+        sent_at_utc=when, thread_root=thread)
+
+
+_TH_NOW = datetime(2026, 9, 18, 3, 0, tzinfo=timezone.utc)
+_old_disc_id, T.DISCUSSION_CHAT_ID = T.DISCUSSION_CHAT_ID, "-100999"
+
+# ① 정상 — 앵커가 전부 옮겨졌고 경기별 글은 전부 댓글로
+_rows = {}
+for i in range(3):
+    r = _rec(ContentType.ANCHOR, f"L:d:g{i}", 100 + i, _TH_NOW - timedelta(hours=1))
+    _rows[r.idem_key] = r
+r = _rec(ContentType.LINEUP, "L:d:g0", 5, _TH_NOW - timedelta(minutes=30), thread=11)
+_rows[r.idem_key] = r
+_good = T._thread_health(_FakeLed(_rows), _FakeDisc({100: 11, 101: 12, 102: 13}),
+                         "ch", _TH_NOW)
+check("정상일 때는 조용하다 (한밤중)", not _good, str(_good))
+check("★ 정상이어도 하루 한 번(아침 9시)은 말한다 — 조용한 것과 죽은 것은 다르다",
+      any("정상" in x for x in T._thread_health(
+          _FakeLed(_rows), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch",
+          _TH_NOW.replace(hour=0))), "KST 9시")
+
+# ② 앵커가 토론방으로 안 옮겨졌다 = '댓글 남기기'가 안 붙는다
+_bad = T._thread_health(_FakeLed(_rows), _FakeDisc({100: 11}), "ch", _TH_NOW)
+check("★★★ 앵커가 안 옮겨지면 경보를 올린다",
+      any("옮겨지지 않았습니다" in x for x in _bad), str(_bad))
+check("  ↳ 대표님이 무엇을 누르셔야 하는지까지 적는다",
+      any("토론 그룹 연결" in x for x in _bad), str(_bad))
+# 막 올라간 앵커는 아직 아니다 — 텔레그램이 옮기는 데 몇 초가 걸린다
+_fresh = dict(_rows)
+_f = _rec(ContentType.ANCHOR, "L:d:g9", 109, _TH_NOW - timedelta(minutes=2))
+_fresh[_f.idem_key] = _f
+check("  ↳ 방금 올라간 앵커는 아직 경보가 아니다 (유예 15분)",
+      not any("옮겨지지" in x for x in T._thread_health(
+          _FakeLed(_fresh), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch", _TH_NOW)))
+
+# ③ 경기별 글이 본채널로 샜다
+_leak = dict(_rows)
+_l = _rec(ContentType.GOAL_FLASH, "L:d:g1#1", 7, _TH_NOW - timedelta(minutes=10),
+          thread=SendRecord.THREAD_ROOT_CHANNEL)
+_leak[_l.idem_key] = _l
+check("★★★ 경기별 글이 본채널로 나가면 경보를 올린다",
+      any("본채널로 나갔습니다" in x for x in T._thread_health(
+          _FakeLed(_leak), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch", _TH_NOW)))
+# ④ 옛 줄(칸이 없던 때)은 누수로 세지 않는다 — 세면 켜는 날 경보가 거짓말이 된다
+_unknown = dict(_rows)
+_u = _rec(ContentType.GOAL_FLASH, "L:d:g2#1", 8, _TH_NOW - timedelta(minutes=10))
+_unknown[_u.idem_key] = _u
+check("★★ 어디로 갔는지 **모르는** 옛 줄은 누수로 세지 않는다",
+      not any("본채널로" in x for x in T._thread_health(
+          _FakeLed(_unknown), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch", _TH_NOW)))
+T.DISCUSSION_CHAT_ID = _old_disc_id
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)

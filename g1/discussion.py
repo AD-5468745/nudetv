@@ -123,15 +123,21 @@ def public_username(transport, chat_id) -> str:
     실패하면 빈 문자열이다 — 그때는 지금까지처럼 `t.me/c/…`로 떨어진다.
     """
     key = str(chat_id or "")
-    if key in _username_cache:
+    if _username_cache.get(key):
         return _username_cache[key]
+    # ⚠️ **빈 답은 캐시하지 않는다** (v1.57).
+    # 한 실행이 5시간을 사는데, 그 사이에 대표님이 채널을 공개로 바꾸셔도
+    # 처음 한 번 받은 빈 답이 끝까지 남아 **그 5시간 동안 만든 주소가 전부
+    # 비공개 꼴(`t.me/c/…`)로 굳는다.** 실제로 2026-09-17 23:32에 만든
+    # 유로파 링크 전부가 그랬다. 실패는 상태가 아니라 사건이므로 다시 묻는다.
     name = ""
     try:
         chat = transport.call("getChat", {"chat_id": chat_id}) or {}
         name = str(chat.get("username") or "").lstrip("@")
     except Exception:                                    # noqa: BLE001
         name = ""
-    _username_cache[key] = name
+    if name:
+        _username_cache[key] = name
     return name
 
 

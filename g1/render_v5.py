@@ -1738,6 +1738,7 @@ def lineup_card(game, league: League, *, now: datetime
     # v1.26 — 킥오프와 같은 판정을 쓴다. 옛 조건(`status is SCHEDULED`)은
     # 소스가 시작 전에 `LIVE`를 주는 리그에서 명단 카드를 통째로 막았다.
     if not is_upcoming(game, now):
+        note_expired(f"선발 라인업 {league.value} {game.game_id} — 이미 시작한 경기")
         return None
     left = (game.start_utc - now).total_seconds()
     body = _lineup_body(game, league, with_goals=False)
@@ -1784,6 +1785,7 @@ def goal_card(game, league: League, goal_id: str, *,
         return None
     # ② 종료된 경기에는 '경기 중' 속보가 없다.
     if getattr(game, "is_terminal", False):
+        note_expired(f"득점 속보 {league.value} {game.game_id} — 이미 끝난 경기")
         return None
     goals = list((game.meta.goals if game.meta else ()) or ())
     if not goals:
@@ -1942,6 +1944,29 @@ def take_fallbacks() -> list:
     return out
 
 
+# ── **때를 넘겨 안 만든 것** — 사고가 아니다 (v1.57) ──────────────
+#
+# 라인업·킥오프·득점 속보는 **경기가 시작되면 뜻을 잃는다**. 그래서
+# 보내는 순간 다시 판정해 안 만든다(`REJUDGE_AT_SEND`). 이건 설계대로다.
+#
+# 그런데 시계는 그것도 '만들 내용 없음'으로 세어, 운영 알림에
+# `🔴 콘텐츠가 나가지 못했습니다 — [lineup] 3건이 전부 만들 내용 없음`으로
+# 올렸다(실측 2026-09-18 02:01, 유로파 01:45 경기 셋). **정상 동작이 빨간
+# 경보로 보이면 진짜 사고가 그 속에 묻힌다.** 그래서 갈라 적는다.
+_EXPIRED: list = []
+
+
+def note_expired(why: str) -> None:
+    """때가 지나 안 만든 것. 사고가 아니므로 **빨간 줄로 올리지 않는다.**"""
+    _EXPIRED.append(why)
+
+
+def take_expired() -> list:
+    out = list(_EXPIRED)
+    _EXPIRED.clear()
+    return out
+
+
 def render_png(card_html: str, out: pathlib.Path,
                shorter_html: str | None = None) -> tuple[int, int, int] | None:
     """v5 카드를 그려 PNG로 저장한다. `(폭, 높이, jpg 바이트)` 또는 None.
@@ -2029,12 +2054,12 @@ def _render_once(card_html: str, out: pathlib.Path):
             b.close()
     except Exception as e:                                   # noqa: BLE001
         print(f"  ⚠️ [v5] 렌더 실패: {e.__class__.__name__}")
-        note_fallback(f"카드를 그리지 못해 옛 카드로 나갔습니다: {e.__class__.__name__}")
+        note_fallback(f"카드를 그리지 못해 이번 회차에 안 나갔습니다: {e.__class__.__name__}")
         return None
     if problems:
         _why = " | ".join(problems[:3])
-        print("  ⚠️ [v5] 카드 결함 — 옛 카드로 대신합니다: " + _why)
-        note_fallback(f"카드 검사에 걸려 옛 카드로 나갔습니다: {_why}")
+        print("  ⚠️ [v5] 카드 결함 — 이번 회차에 내보내지 않습니다: " + _why)
+        note_fallback(f"카드 검사에 걸려 이번 회차에 안 나갔습니다: {_why}")
         return None
     im = Image.open(out).convert("RGB")
     w, h = im.size
@@ -2048,8 +2073,8 @@ def _render_once(card_html: str, out: pathlib.Path):
         if w == C5.CARD_W:
             print(f"  ⓘ [v5] 카드가 높이 상한을 넘었습니다: {e}")
             return TOO_TALL
-        print(f"  ⚠️ [v5] 카드 크기가 계약을 벗어났습니다 — 옛 카드로 대신합니다: {e}")
-        note_fallback(f"카드 크기가 계약을 벗어나 옛 카드로 나갔습니다: {e}")
+        print(f"  ⚠️ [v5] 카드 크기가 계약을 벗어났습니다 — 내보내지 않습니다: {e}")
+        note_fallback(f"카드 크기가 계약을 벗어나 이번 회차에 안 나갔습니다: {e}")
         return None
     jpg = out.with_suffix(".jpg")
     im.save(jpg, "JPEG", quality=SEND_JPEG_QUALITY, optimize=True)

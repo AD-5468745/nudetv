@@ -315,6 +315,52 @@ try:
           any("접힘" in x for x in _wr), str(_wr[:2]))
     check("★ 변이 — 글자를 줄이면 작은 글자를 잡는다",
           any("작은 글자" in x for x in _sm), str(_sm[:2]))
+    # ── ★★ 긴 머리말이 카드를 통째로 죽이지 않는가 (v1.57) ────────
+    #
+    # **실제로 죽였다.** 2026-09-18 02:19, 라리가 득점 속보가
+    # `접힘(2.0줄): 전반 30분 아이토르 칸탈라피에드라 골`로 게이트에 걸려
+    # 그 골이 채널에 한 번도 안 나갔다. 유럽 축구는 사람 이름과 구단 이름이
+    # 둘 다 길어서 이 선에 **자주** 닿는다 — 종목·리그를 넓힐수록 더 자주다.
+    #
+    # 그래서 **길이를 훑어 전수로 잰다.** 표본 몇 개로는 절벽이 어디 있는지
+    # 모르고, 절벽 너머는 아무 예고 없이 카드가 사라진다.
+    _LEAD_SAFE_CHARS = 100          # 이 길이까지는 어떤 밀도에서도 두 줄 안
+
+    async def _lead_sweep():
+        worst = []
+        async with async_playwright() as p:
+            b = await p.chromium.launch()
+            pg = await b.new_page(viewport={"width": C5.CARD_W, "height": 1400})
+            for dens in ("air", "tight"):
+                for n in range(10, _LEAD_SAFE_CHARS + 1, 6):
+                    _hd = H.for_goal(scorer="아" * (n // 2),
+                                     team_name="팀" * (n - n // 2),
+                                     when="후반 5분", own_goal=False,
+                                     away_score=1, home_score=2,
+                                     tied=False, leader="팀")
+                    _html = C5.shell(kind="goal", league=KBO, date_label="9.4",
+                                     head=_hd, body="<div></div>",
+                                     foot_left="x", density=dens)
+                    await pg.set_content(_html)
+                    r = await pg.evaluate(
+                        "()=>{const e=document.querySelector('.lead');"
+                        "const cs=getComputedStyle(e);"
+                        "return e.getBoundingClientRect().height"
+                        "/parseFloat(cs.lineHeight);}")
+                    if r > C5.LEAD_WRAP_TOLERANCE:
+                        worst.append((dens, len(_hd.text), round(r, 2)))
+            await b.close()
+        return worst
+
+    _ws = asyncio.run(_lead_sweep())
+    check(f"★★ 머리말 10~{_LEAD_SAFE_CHARS}자가 어느 밀도에서도 두 줄을 안 넘는다",
+          not _ws, str(_ws[:3]))
+    # 판독 하한(20px) 아래로는 안 줄인다 — 그때는 줄여서 될 일이 아니다.
+    check("머리말을 줄여도 판독 하한(20px) 밑으로는 안 내려간다",
+          C5._lead_px("가" * 400) >= C5.MIN_FONT_PX,
+          str(C5._lead_px("가" * 400)))
+    check("짧은 머리말은 기본 크기 그대로다 (군더더기 style이 안 붙는다)",
+          C5._lead_style("후반 12분 손흥민 골 · 토트넘") == "")
 except ImportError:
     skip = len(_CARDS) + 3
     print(f"  SKIP  실렌더 {skip}건 — playwright가 없습니다 (SKIP은 PASS가 아닙니다)")

@@ -221,6 +221,7 @@ class Ledger:
             idem_key=d["idem_key"], state=SendState(d["state"]), chat_id=d["chat_id"],
             content_type=ContentType(d["content_type"]),
             message_ids=d.get("message_ids", []), file_ids=d.get("file_ids", []),
+            thread_root=d.get("thread_root"),
             sent_at_utc=(datetime.fromisoformat(d["sent_at_utc"])
                          if d.get("sent_at_utc") else None),
             claimed_by=d.get("claimed_by"),
@@ -252,6 +253,8 @@ class Ledger:
         # 정정 칸은 **값이 있을 때만** 적는다. 항상 적으면 지금까지의 모든 줄에
         # null 네 칸이 붙어 대장이 커지고, 지문 없는 옛 줄과 구별도 안 된다.
         # (지문은 단방향 해시라 내용 원문은 대장에 남지 않는다 — channel_ref와 같은 이유.)
+        if r.thread_root:
+            out["thread_root"] = r.thread_root
         if r.revision:
             out["revision"] = r.revision
         if r.content_digest:
@@ -1042,7 +1045,13 @@ class Sender:
         # **여기서부터는 "보냈는지 알 수 없는" 구간이다.**
         # 표시를 남겨두면, 프로세스가 강제 종료돼 리스가 만료됐을 때
         # claim()이 '클레임만 함'과 구분해 이 항목만 격리한다.
-        rec = replace(rec, last_error=DISPATCH_MARK)
+        rec = replace(rec, last_error=DISPATCH_MARK,
+                      # **이 건이 어디로 가는지 여기서 확정된다.** 토론방으로
+                      # 보내는 항목은 `chat_id_override`가 붙어 있다.
+                      thread_root=(int(payload.reply_to_message_id)
+                                   if (payload.chat_id_override
+                                       and payload.reply_to_message_id)
+                                   else SendRecord.THREAD_ROOT_CHANNEL))
         self.led.put(rec)
 
         try:

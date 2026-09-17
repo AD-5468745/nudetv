@@ -50,6 +50,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
+                      CorrectionSkip,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
@@ -2053,10 +2054,19 @@ def _try_correction(snd, item: QueueItem, games: list, digest: str,
         notes.append(f"정정 판정 실패 — {item.scope}: {type(e).__name__}")
         return 0
     if getattr(d, "blocked", False):
-        # 상한·기한·간격에 걸린 것은 **조용히 넘기지 않는다** — 바로잡아야 할
+        # 상한·기한에 걸린 것은 **조용히 넘기지 않는다** — 바로잡아야 할
         # 사실이 있는데 못 내고 있다는 뜻이라 사람이 알아야 한다.
+        #
+        # ⚠️ **다만 '최소 간격 미달'은 다르다** (v1.57). 그건 몇 분 뒤 다음
+        # 틱에 저절로 풀리는 대기이지 못 내는 상태가 아니다. 그런데 그동안
+        # 매 틱 알림에 실려, 15분짜리 대기 하나가 운영 알림 여러 줄을
+        # 차지했다(실측 2026-09-18 01:54, 같은 문장이 두 번). **저절로
+        # 풀리는 것을 경보로 올리면 진짜 사고가 그 속에 묻힌다.**
+        # 기한을 넘겨 끝내 못 내게 되면 그때는 EXPIRED로 바뀌어 올라온다.
         note = d.note() if hasattr(d, "note") else str(d)
-        notes.append(f"✏️ 정정 보류 — {item.content_type.value} {item.scope}: {note}")
+        if getattr(d, "code", None) is not CorrectionSkip.TOO_SOON:
+            notes.append(
+                f"✏️ 정정 보류 — {item.content_type.value} {item.scope}: {note}")
         print(f"    ⏸ 정정 보류 {item.scope}: {note}")
         return 0
     if not getattr(d, "should_send", False):
@@ -2165,8 +2175,45 @@ def _index_save(d: dict) -> None:
         pass
 
 
-def _index_links(day: str) -> dict:
-    return dict((_index_load().get(day) or {}).get("links") or {})
+def _index_post_id(v) -> int:
+    """저장된 값에서 **글 번호**를 꺼낸다. 숫자면 그대로, 옛 주소면 끝자리."""
+    if isinstance(v, int):
+        return v
+    t = str(v or "").rstrip("/")
+    tail = t.rsplit("/", 1)[-1].split("?")[0]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _index_links(day: str, *, username: str | None = None) -> dict:
+    """`{game_id: 그 앵커로 가는 주소}`.
+
+    ★ **주소를 저장하지 않고 그때그때 만든다** (v1.57).
+
+    전에는 앵커를 보낸 순간의 주소를 통째로 적어 뒀다. 그런데 주소 꼴은
+    **채널이 공개인지 비공개인지에 따라 달라진다**(`t.me/<아이디>/…` ↔
+    `t.me/c/<내부번호>/…`). 대표님이 채널을 공개로 바꾸신 뒤에도 그날
+    적힌 주소는 비공개 꼴 그대로 남아, **버튼을 눌러도 아무 데도 안 열렸다**
+    (실측 2026-09-17 23:32에 적힌 유로파 링크 전부).
+
+    그래서 저장하는 것은 **사실(글 번호)**이고, 주소는 쓸 때 만든다.
+    공개·비공개가 바뀌어도 다음 글부터가 아니라 **이미 적힌 것까지 함께**
+    따라간다. 옛 파일에 적힌 주소도 끝자리를 꺼내 그대로 쓴다.
+    """
+    if username is None:
+        username = CHANNEL_USERNAME[0]
+    src = (_index_load().get(day) or {}).get("links") or {}
+    out: dict = {}
+    for gid, v in src.items():
+        mid = _index_post_id(v)
+        if mid:
+            out[gid] = _message_link(CHANNEL_FOR_LINKS[0], mid, username=username)
+    return out
+
+
+# 주소를 만들 때 쓰는 채널 번호와 공개 아이디. 틱이 시작할 때 채운다 —
+# 이 파일 어디서나 같은 값을 쓰게 하려고 한 칸짜리 목록으로 둔다.
+CHANNEL_FOR_LINKS = [""]
+CHANNEL_USERNAME = [""]
 
 
 def _message_link(chat_id: str, message_id: int, *, username: str = "") -> str:
@@ -2213,23 +2260,24 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
             return
 
         if item.content_type is ContentType.ANCHOR and item.game_id:
-            rec["links"][item.game_id] = _message_link(
-                channel, message_ids[0],
-                username=_DS.public_username(transport, channel))
+            # **주소가 아니라 글 번호를 적는다** (v1.57 · `_index_links` 참조).
+            rec["links"][item.game_id] = int(message_ids[0])
             _index_save(state)
+            _user = _DS.public_username(transport, channel)
             # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.
             mid = rec.get("message_id")
             if mid:
                 _pool = _INDEX_POOL.get(day) or []
                 import cards_v5 as _C5x
+                _lk = _index_links(day, username=_user)
                 txt = _P.daily_index_text(
-                    _pool, day, links=rec["links"],
+                    _pool, day, links=_lk,
                     name_of=lambda lg, t: _C5x._nm(lg, t))
                 if txt:
                     # 글과 **버튼을 함께** 고친다 — 앵커가 하나 설 때마다
                     # 그 경기 버튼이 목록에 붙는다. 새 글은 안 올린다.
                     _btn = _P.daily_index_buttons(
-                        _pool, day, links=rec["links"],
+                        _pool, day, links=_lk,
                         name_of=lambda lg, t: _C5x._nm(lg, t), now=_now())
                     _DS.edit_text(transport, channel, mid, txt,
                                   buttons=_btn or None)
@@ -2406,6 +2454,79 @@ def _anchor_is_up(item, ledger, channel: str) -> bool:
     except Exception:                                    # noqa: BLE001
         return False
     return bool(rec is not None and rec.message_ids)
+
+
+# 앵커가 채널에 나간 뒤 텔레그램이 토론방으로 옮겨 놓기까지 주는 여유.
+# 실측(2026-09-18)으로는 보통 몇 초다. 넉넉히 잡아도 이 시간을 넘기면
+# **연결 자체가 끊긴 것**이라 사람이 채널 설정에서 손대야 한다.
+THREAD_LINK_GRACE_SECONDS = 15 * 60
+THREAD_HEALTH_WINDOW_SECONDS = 24 * 3600
+
+
+def _thread_health(ledger, disc, channel: str, now) -> list:
+    """**토론방 연결이 지금 멀쩡한가**를 매 틱 스스로 재서 줄로 돌려준다 (v1.57).
+
+    이 개편의 전제는 고리 두 개다 —
+      ① 앵커가 채널에 나가면 텔레그램이 그걸 **토론방으로 옮긴다**
+         (그 옮겨진 글이 곧 '댓글 남기기'의 실체다)
+      ② 그 경기의 모든 글은 **그 댓글 자리로만** 들어간다
+
+    둘 중 하나가 끊기면 대표님이 화면을 보시기 전까지 아무도 모른다.
+    그래서 **끊긴 사실 자체를 숫자로 만들어 알림에 싣는다.**
+
+    ①이 끊기면 고칠 수 있는 사람은 대표님뿐이다(채널 ↔ 토론 그룹 연결).
+    그래서 알림 문구에 **무엇을 누르셔야 하는지**까지 적는다.
+    """
+    if disc is None or not DISCUSSION_CHAT_ID:
+        return []
+    cut = now - timedelta(seconds=THREAD_HEALTH_WINDOW_SECONDS)
+    linked = broken = 0
+    oldest = None
+    in_thread = leaked = 0
+    leak_ex: list = []
+    for key in ledger.idem_keys():
+        rec = ledger.get(key)
+        if rec is None or rec.state is not SendState.SENT:
+            continue
+        if not rec.sent_at_utc or rec.sent_at_utc < cut:
+            continue
+        if rec.content_type is ContentType.ANCHOR:
+            if not rec.message_ids:
+                continue
+            if disc.thread_of(rec.message_ids[0]) is not None:
+                linked += 1
+            elif (now - rec.sent_at_utc).total_seconds() > THREAD_LINK_GRACE_SECONDS:
+                broken += 1
+                if oldest is None or rec.sent_at_utc < oldest:
+                    oldest = rec.sent_at_utc
+        elif rec.content_type in THREADED_CONTENT_TYPES:
+            # None은 **모름**이다(이 칸이 생기기 전 줄). 누수로 세지 않는다.
+            if rec.thread_root is None:
+                continue
+            if rec.thread_root > 0:
+                in_thread += 1
+            else:
+                leaked += 1
+                if len(leak_ex) < 3:
+                    leak_ex.append(key.split("|")[2][:44])
+    lines: list = []
+    if broken:
+        hrs = (now - oldest).total_seconds() / 3600 if oldest else 0
+        lines.append(
+            f"★★ 앵커 {broken}건이 토론방으로 옮겨지지 않았습니다 "
+            f"(가장 오래된 것 {hrs:.1f}시간 전) — 그 글에는 '댓글 남기기'가 "
+            f"안 붙습니다. 채널 설정 → 토론에서 토론 그룹 연결을 확인해 주세요")
+    if leaked:
+        lines.append(
+            f"★★ 경기별 글 {leaked}건이 본채널로 나갔습니다 — "
+            + " · ".join(leak_ex))
+    # **정상일 때도 하루 한 번은 말한다.** 조용한 것과 죽은 것을 구별할
+    # 방법이 없으면 감시가 아니다(약점 112와 같은 자리).
+    if not lines and now.astimezone(KST).hour == 9 and (linked or in_thread):
+        lines.append(
+            f"토론방 연결 정상 — 최근 24시간 앵커 {linked}건 전원 연결 · "
+            f"경기별 글 {in_thread}건 전원 댓글로 들어감")
+    return lines
 
 
 def _answer_questions(transport, disc, asks, snaps, records) -> None:
@@ -2855,6 +2976,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     if not channel:
         print("TELEGRAM_CHAT_ID 가 없습니다.", file=sys.stderr)
         return 2
+    # 바로가기 주소를 만들 때 쓴다 (v1.57 · `_index_links`).
+    CHANNEL_FOR_LINKS[0] = channel
 
     print(f"[틱] {now.astimezone(KST):%Y-%m-%d %H:%M} KST"
           + (" · 드라이런" if dry_run else ""))
@@ -3035,6 +3158,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     if DISCUSSION_CHAT_ID:
         try:
             import discussion as _DS
+            # **맨 먼저 묻는다.** 뒤 단계(받아오기·버튼)가 막히면 주소 꼴이
+            # 옛 값에 묶여, 공개로 바꾼 뒤에도 안 열리는 주소가 계속 나온다.
+            CHANNEL_USERNAME[0] = _DS.public_username(tr, channel)
             disc = _DS.DiscussionState(ROOT / "discussion.json")
             # 새 소식을 받아 **자동 전달 짝**을 적는다. 손님 질문도 여기서 온다.
             _asks = _DS.poll(tr, disc)
@@ -3072,6 +3198,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 채널도 알림도 조용했다. 종류별로 세면 그 침묵이 문장이 된다.
     empty_kinds: dict[str, int] = {}
     missed: list[str] = []
+    fail_why: list[str] = []
     dropped_before = 0
 
     def _skip(code) -> None:
@@ -3268,6 +3395,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                       f"{item.content_type.value} {item.scope}: {res.reason[:90]}")
         except Exception as e:                               # noqa: BLE001
             failed += 1
+            # **무엇이 왜 실패했는지 알림에도 싣는다** (v1.57).
+            # 전에는 알림이 `발송 실패 1건 (로그 확인)`뿐이었다. 깃허브 로그를
+            # 열어 보는 사람은 없으므로 사실상 원인이 사라진다 — 실제로
+            # '오늘의 경기'가 사흘 내내 `텍스트 4533자 > 4096`으로 막혀 있었는데
+            # 아무도 그걸 몰랐고, 두 시간 뒤 '시각을 놓쳐 취소'로만 보였다.
+            fail_why.append(f"{item.content_type.value} {item.scope} — "
+                            f"{type(e).__name__}: {str(e)[:90]}")
             print(f"    실패 {item.content_type.value} {item.scope}: "
                   f"{type(e).__name__} {str(e)[:110]}")
             traceback.print_exc(limit=2)
@@ -3331,7 +3465,12 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     if soft:
         lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
     if failed:
-        lines.append(f"발송 실패 {failed}건 (이번 틱에 새로 발생 — 로그 확인)")
+        lines.append(f"발송 실패 {failed}건 (이번 틱에 새로 발생)")
+        _fw: list = []
+        for w in fail_why:
+            if w not in _fw:
+                _fw.append(w)
+        lines += [f"  ↳ {w}" for w in _fw[:3]]
     # **건너뛴 것을 사유별로 싣는다 (3번 항목).**
     # 전에는 `skipped`가 알림 본문에 아예 없어서, 하루 상한에 막히거나
     # 429가 걸려도 채널도 조용하고 알림도 조용했다.
@@ -3351,7 +3490,29 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 기록이 없는 리그의 기록 기반 콘텐츠는 세지 않는다.
     _record_based = {ContentType.STANDINGS.value, ContentType.LEADERBOARD.value,
                      ContentType.ANALYSIS.value}
+    # ── **때를 넘겨 안 만든 것은 빼고 센다** (v1.57) ────────────────
+    #
+    # 라인업·킥오프·득점 속보는 경기가 시작(또는 종료)되면 안 만드는 것이
+    # **설계대로**다. 그걸 '만들 내용 없음'으로 세면 정상 동작이 매번
+    # `🔴 콘텐츠가 나가지 못했습니다`로 올라간다 — 실측 2026-09-18 02:01,
+    # 유로파 01:45 경기 셋이 그랬다. 경보가 소음이 되면 진짜 사고가 묻힌다.
+    try:
+        import render_v5 as _R5e
+        _exp = _R5e.take_expired()
+    except Exception:                                        # noqa: BLE001
+        _exp = []
+    if _exp:
+        print(f"  [렌더] 때를 넘겨 안 만든 것 {len(_exp)}건 "
+              f"(정상): {' · '.join(_exp[:3])}")
+    _expired_n: dict = {}
+    for _w in _exp:
+        _k = (ContentType.LINEUP.value if _w.startswith("선발 라인업")
+              else ContentType.GOAL_FLASH.value)
+        _expired_n[_k] = _expired_n.get(_k, 0) + 1
     for _ct, _n in sorted(empty_kinds.items()):
+        _n -= _expired_n.get(_ct, 0)
+        if _n <= 0:
+            continue
         _due = [i for i in due if i.content_type.value == _ct]
         if _ct in _record_based:
             _due = [i for i in _due
@@ -3534,6 +3695,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if len(_hs) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_hs)}건")
         _homeless.clear()
+    # ── 토론방 연결 자가진단 (v1.57) ────────────────────────────
+    #
+    # 대표님 지시(2026-09-18): *"계속 실측하고 모니터링하도록해."*
+    # 사람이 화면을 보고 있어야만 알 수 있는 고장은 감시가 아니다.
+    # 매 틱 스스로 재서, 끊긴 날에만 말한다.
+    try:
+        lines += _thread_health(led, disc, channel, now)
+    except Exception:                                    # noqa: BLE001
+        pass                                             # 알림 하나가 틱을 죽이지 않는다
     # 유럽 순위 수집이 남긴 진단 (v1.49) — 대조가 덜 됐다거나 등급에 막혔다거나.
     try:
         from adapters import fd_records as _FDn

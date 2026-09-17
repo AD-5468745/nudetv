@@ -3918,6 +3918,21 @@ class SendRecord:
     scheduled_utc: Optional[datetime] = None
 
     message_ids: list[int] = field(default_factory=list)
+    # 이 발송이 **어디로 갔는가** (v1.57).
+    #
+    #   None  — 모름. 이 칸이 생기기 전에 적힌 줄이다.
+    #   -1    — **본채널로 나갔다.**
+    #   >0    — 토론방 그 댓글 자리(앵커가 옮겨진 글)의 번호.
+    #
+    # **왜 따로 적나.** `chat_id`는 지문으로 바꿔 적기 때문에(공개 저장소)
+    # 채널과 토론방을 구별할 수 없다. 이 칸이 없으면 "경기별 글이 채널로
+    # 샜는가"를 기록만 보고는 절대 못 센다 — 사람이 화면을 봐야만 안다.
+    #
+    # **`None`과 `-1`을 반드시 가른다.** 둘을 같이 '채널로 감'으로 세면,
+    # 이 칸이 생긴 날 옛 줄 수백 개가 한꺼번에 '누수'로 잡혀 경보가 거짓말이
+    # 된다. 모르는 것은 모른다고 둔다.
+    thread_root: Optional[int] = None
+    THREAD_ROOT_CHANNEL = -1
     media_group_id: Optional[str] = None
     file_ids: list[str] = field(default_factory=list)
     poll_result: Optional[PollResult] = None

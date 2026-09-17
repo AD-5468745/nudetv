@@ -592,7 +592,7 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
     <div class="lab"><svg viewBox="0 0 24 24" fill="none" stroke="{th['accent']}"
       stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="{icon}"/></svg>
       {esc(label)}<span class="lg">{esc(lg)}</span><span class="dt">{esc(date_label)}</span></div>
-    <div class="lead">{esc(head.text)}</div>{sub}
+    <div class="lead"{_lead_style(head.text, density)}>{esc(head.text)}</div>{sub}
     <div class="rule"></div>
   </div>
   <div class="body num">{body}</div>
@@ -1544,6 +1544,63 @@ def relax(html: str) -> Optional[str]:
 
 
 WRAP_TOLERANCE = 1.5          # 이 줄 수를 넘으면 접힌 것으로 본다
+# ── 머리말은 **문장이라 두 줄까지 정상이다** (v1.57) ────────────
+#
+# 2026-09-18 02:19 실측: 라리가 득점 속보가 `접힘(2.0줄): 전반 30분 아이토르
+# 칸탈라피에드라 골`로 게이트에 걸려 **그 골 속보가 아예 안 나갔다.**
+# 62px에 한 줄은 16자쯤인데, 한글 사람 이름이 긴 유럽 선수(아이토르
+# 칸탈라피에드라)는 그 안에 절대 안 들어간다 — 즉 **리그를 유럽으로 넓힌
+# 순간부터 예정된 누락**이었고, 종목이 늘수록 더 자주 걸린다.
+#
+# 머리말은 `.sub`·`.vd p`와 같은 **문장**이다(라벨이 아니다). 문장이 두 줄이
+# 되는 것은 사고가 아니라 정상이므로 그만큼 열어 준다. 다만 **무제한으로
+# 풀지는 않는다** — 세 줄부터는 골격이 무너진 것이므로 그대로 잡는다.
+LEAD_WRAP_TOLERANCE = 2.5
+LEAD_SEL = ".lead"
+
+# ── 머리말이 길면 **글자를 줄여 담는다** (v1.57) ────────────────
+#
+# 게이트를 두 줄까지 열어도 한계는 남는다 — 실측으로 62px 한 줄은 21자쯤이고,
+# 43자를 넘으면 세 줄이 되어 카드가 통째로 안 나간다. 유럽 축구는 사람 이름과
+# 구단 이름이 둘 다 길어서(`크리스토퍼 은쿤쿠 · 보루시아 묀헨글라트바흐`)
+# 그 선에 실제로 닿는다.
+#
+# **줄이는 쪽을 고른다.** 글자를 자르면 다른 사람·다른 팀이 되고(약점: `SSG`를
+# `SS`로 줄여 삼성으로 읽힌 일), 카드를 버리면 그 골이 사라진다.
+#
+# **단계표가 아니라 계산으로 정한다.** 단계를 몇 개 두든 그 끝에는 절벽이
+# 생기고, 절벽 너머는 아무 예고 없이 카드가 사라진다(실측: 단계 넷을 둬도
+# 94자에서 무너졌다). 한 줄에 들어가는 글자 수는 글자 크기에 반비례하므로
+# 필요한 크기를 바로 구할 수 있다 — 절벽이 없어진다.
+#
+#   한 줄 글자수 ≈ LEAD_CHARS_PER_PX ÷ 크기   (실측 62px에서 21자)
+#   두 줄에 담으려면  크기 ≤ 2 × LEAD_CHARS_PER_PX ÷ 글자수
+#
+# 판독 하한(`MIN_FONT_PX`) 아래로는 안 내려간다 — 거기까지 갔는데도 넘치면
+# 그건 줄여서 될 일이 아니라 **머리말 자체가 잘못 만들어진 것**이므로
+# 게이트가 잡아 사람에게 알리는 편이 맞다.
+LEAD_CHARS_PER_PX = 1302      # 실측: 62px × 21자 (폭 1080 · 좌우 여백 56)
+LEAD_FIT_SAFETY = 0.93        # 글자 폭이 고르지 않으니 한 뼘 접어 둔다
+LEAD_BASE_PX = {"air": 58, "tight": 62}
+
+
+def _lead_px(text: str, density: str = "air") -> int:
+    """머리말을 **두 줄 안에** 담는 글자 크기(px)."""
+    base = LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"])
+    n = len(str(text or "").strip())
+    if n <= 0:
+        return base
+    fit = int(2 * LEAD_CHARS_PER_PX * LEAD_FIT_SAFETY / n)
+    return max(MIN_FONT_PX, min(base, fit))
+
+
+def _lead_style(text: str, density: str = "air") -> str:
+    """기본 크기면 빈 문자열, 줄여야 하면 `style="…"`."""
+    px = _lead_px(text, density)
+    base = LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"])
+    return "" if px >= base else f' style="font-size:{px}px"'
+
+
 MIN_FONT_PX = 20              # 이보다 작으면 폰에서 못 읽는다
 
 _MEASURE_JS = """() => {
@@ -1580,7 +1637,9 @@ _MEASURE_JS = """() => {
     // 바깥 높이가 1.7배가 된다 — 그대로 재면 멀쩡한 칸을 접혔다고 잡는다.
     const h = el.getBoundingClientRect().height
               - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
-    if (lh > 0 && h / lh > %(tol)s)
+    // 머리말만 두 줄까지 봐준다 — 라벨이 아니라 문장이기 때문이다.
+    const tol = el.closest('%(leadsel)s') ? %(leadtol)s : %(tol)s;
+    if (lh > 0 && h / lh > tol)
       out.push('접힘(' + (h/lh).toFixed(1) + '줄): ' + el.textContent.trim().slice(0, 24));
   });
   // ② 같은 행의 칸끼리 포개졌나
@@ -1668,7 +1727,8 @@ _MEASURE_JS = """() => {
   const tofu = x.measureText('\\uFFFD').width;
   if (ko <= 0 || Math.abs(ko - tofu) < 0.5) out.push('두부 의심: 한글 폭 ' + ko);
   return [...new Set(out)];
-}""" % {"tol": WRAP_TOLERANCE, "min": MIN_FONT_PX}
+}""" % {"tol": WRAP_TOLERANCE, "min": MIN_FONT_PX,
+        "leadtol": LEAD_WRAP_TOLERANCE, "leadsel": LEAD_SEL}
 
 
 async def audit(page, html: str) -> list[str]:
