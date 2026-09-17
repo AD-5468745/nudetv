@@ -136,6 +136,30 @@ html_m = P.render_morning(MLB, MLB_DAY)
 check("모닝 브리핑도 같은 규칙", "8.31 월" in html_m and "현지 8.30" in html_m)
 
 # ── 3. 결과 카드 마감 — 마지막 경기가 끝난 뒤인가 ───────────────────────
+# ══════════════════════════════════════════════════════════════
+print("\n★ 경기 전 정보는 분석 **뒤**에 (2차 · v1.44)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님이 정한 댓글 차례가 `경기분석글 먼저`다. 같은 시각으로 두면 순서가
+# 발송기 안쪽 규칙에 달리고, 그 규칙은 언제든 바뀐다 — 시각으로 못 박는다.
+from contract import ContentType                              # noqa: E402
+_pq = [i for i in P.build_queue(
+    [mk(League.KBO, "2026-09-04", 18, 30, tz="Asia/Seoul", h="LG", a="OB")],
+    datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc), "chtest", floor_hours=0)
+    if i.content_type in (ContentType.ANALYSIS, ContentType.PREGAME)]
+_by = {i.content_type: i.scheduled_utc for i in _pq}
+check("★★★ 분석과 경기 전 정보가 **둘 다** 큐에 오른다",
+      len(_by) == 2, str([i.content_type.value for i in _pq]))
+if len(_by) == 2:
+    check("★★★ 경기 전 정보가 분석보다 **늦다**",
+          _by[ContentType.PREGAME] > _by[ContentType.ANALYSIS],
+          f"분석 {_by[ContentType.ANALYSIS]} · 경기전 {_by[ContentType.PREGAME]}")
+    check("  ↳ 둘 다 경기 시작 전이다",
+          all(v < mk(League.KBO, "2026-09-04", 18, 30,
+                     tz="Asia/Seoul", h="LG", a="OB").start_utc
+              for v in _by.values()))
+
+
 print("3. 결과 카드 마감 — 마지막 경기를 빠뜨리지 않는가")
 
 dl = result_deadline(MLB)

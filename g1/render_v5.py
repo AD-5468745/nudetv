@@ -51,6 +51,7 @@ from contract import (GateError, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
 # 켜 볼 수 있다. 종류별로 나눈 이유도 같다 — 하나가 잘못돼도 나머지는 산다.
 USE_V5 = {
     "anchor": True,          # v1.39: 그 경기의 문패 — 채널에 나가는 유일한 장
+    "pregame": True,         # v1.44: 경기 전 정보 — 선발·팀기록·라인업·불펜
     "result": True,          # 리그 결과 요약 — 하루를 닫는 한 장
     # 경기별 2종 (v1.14) — 애초에 v5로만 만든다. 옛 카드에 대응물이 없다.
     "kickoff": True,         # 그 경기 시작 10~1분 전
@@ -820,7 +821,12 @@ def _streak_text(st) -> str:
 
 def analysis_card(rb, game, league: League, day: str, *,
                   team_stats: dict | None = None, history: list | None = None,
-                  now: datetime | None = None) -> tuple[str, list[str]] | None:
+                  now: datetime | None = None,
+                  preview: dict | None = None) -> tuple[str, list[str]] | None:
+    # `preview`는 지금 쓰지 않는다 — **분석 카드는 이미 높이 한계에 닿아 있다**
+    # (실측 2026-09-18: 선발 블록을 얹자 2585px로 넘쳐 카드가 통째로 None이
+    # 됐다). 미리보기 내용은 `pregame_card`가 따로 싣는다. 인자는 남겨 둔다:
+    # 부르는 쪽이 이미 넘기고 있고, 자리를 없애면 다음에 또 여기에 얹는다.
     """경기 분석 — 좌우 대비 + 관전 포인트.
 
     **승률·확률·추천을 쓰지 않는다.** 우리에겐 모델이 없다. 가진 숫자를 읽어 줄
@@ -1317,6 +1323,89 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
     return html, list(C5.caption(kind="anchor", league=league, head=head,
                                  date_label=lab,
                                  tags=_tags("anchor", league, [game])))
+
+
+def pregame_card(game, league: League, *, preview: dict | None = None,
+                 now: datetime | None = None) -> tuple[str, list[str]] | None:
+    """경기 전 정보 — 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜 (v1.44 · 2차).
+
+    대표님 지시(2026-09-18): *"수집가능한 모든 데이터를 각 경기 토론방에서
+    알려줘야해"*.
+
+    **분석 카드와 나눈 이유는 높이다.** 한 장에 다 넣었더니 2585px가 되어
+    높이 게이트에 걸렸고, 그 순간 분석 카드가 통째로 안 나갔다.
+
+    **재료가 없으면 만들지 않는다** — 축구·농구·배구에는 이 창구가 아예
+    없다(실측). 빈 장을 내보내느니 안 내는 편이 낫다.
+    """
+    if not preview:
+        return None
+    try:
+        from adapters import naver_preview as _NP
+    except Exception:                                    # noqa: BLE001
+        return None
+    na = C5._nm(league, game.away)
+    nh = C5._nm(league, game.home)
+
+    body = ""
+    _sa = _NP.starter(preview, "away")
+    _sh = _NP.starter(preview, "home")
+    body += C5.body_starters(na, nh, _sa, _sh)
+
+    # 팀 기록 — 있는 칸만. `format_team_stat`을 거쳐 야구 표기법대로 찍는다.
+    _ta = _NP.team_stats(preview, "away")
+    _th = _NP.team_stats(preview, "home")
+    if _ta and _th:
+        _rows = [(_ta[k], k, _th[k], "") for k in ("팀타율", "팀평균자책", "팀홈런")
+                 if k in _ta and k in _th]
+        if _rows:
+            body += (f'<div class="anh">팀 기록<span>올 시즌</span></div>'
+                     + "".join(
+                         f'<div class="cmp"><div class="v r">{C5.esc(a)}</div>'
+                         f'<div class="k">{C5.esc(k)}</div>'
+                         f'<div class="v">{C5.esc(h)}</div></div>'
+                         for a, k, h, _ in _rows))
+
+    body += C5.body_lineup_pair(na, nh, _NP.lineup(preview, "away"),
+                                _NP.lineup(preview, "home"))
+
+    _ba, _bh = _NP.bullpen_count(preview, "away"), _NP.bullpen_count(preview, "home")
+    if _ba and _bh:
+        body += (f'<div class="bar"><span class="k">불펜</span>'
+                 f'<span class="v">{C5.esc(na)} {_ba}명 · '
+                 f'{C5.esc(nh)} {_bh}명</span></div>')
+
+    if not body:
+        return None                       # 아무 재료도 없었다 — 빈 장은 안 낸다
+
+    kst, _loc = format_kickoff(game)
+    head = H.Headline(rule="P-PREGAME", text=f"{na} vs {nh}",
+                      sub=f"{kst} 시작", facts={"away": na, "home": nh})
+    lab = _day_label(game.sports_day, [game])
+    html = C5.shell(kind="pregame", league=league, date_label=lab, head=head,
+                    body=body, foot_left=(venue_name(game.venue) or "")
+                    if game.venue else C5.LEAGUE_LABEL.get(league, ""))
+
+    # 캡션 — **카드가 말한 것을 되풀이하지 않는다.** 카드에 없는 것만 적는다:
+    # 주목 타자는 카드에 자리가 없어 여기로 내린다.
+    extra: list = []
+    for _side, _nm2 in (("away", na), ("home", nh)):
+        _tp = _NP.top_player(preview, _side)
+        if not _tp:
+            continue
+        _bits = [f"최근 5경기 타율 {_tp['hra']}"] if _tp.get("hra") else []
+        if _tp.get("hit") is not None and _tp.get("ab") is not None:
+            _bits.append(f"{_tp['ab']}타수 {_tp['hit']}안타")
+        if _tp.get("hr"):
+            _bits.append(f"홈런 {_tp['hr']}")
+        if _tp.get("rbi"):
+            _bits.append(f"타점 {_tp['rbi']}")
+        if _bits:
+            extra.append(f"{_nm2} {_tp['name']} — " + " · ".join(_bits))
+    return html, list(C5.caption(
+        kind="pregame", league=league, head=head, date_label=lab,
+        extra_lines=extra or None, extra_title="주목 타자" if extra else "",
+        tags=_tags("pregame", league, [game])))
 
 
 def lineup_card(game, league: League, *, now: datetime

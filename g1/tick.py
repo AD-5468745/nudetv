@@ -2286,8 +2286,8 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
 # 득점 속보 30분)은 기다리면 그냥 사라지므로 **채널로라도 보낸다** —
 # 늦은 속보는 쓸모없지만, 안 나간 속보는 더 쓸모없다.
 THREADED_CONTENT_TYPES = frozenset({
-    ContentType.ANALYSIS, ContentType.LINEUP, ContentType.KICKOFF,
-    ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
+    ContentType.ANALYSIS, ContentType.PREGAME, ContentType.LINEUP,
+    ContentType.KICKOFF, ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
 })
 
 # ── **경기별 콘텐츠는 채널에 안 나온다 (v1.41)** ────────────────
@@ -2664,9 +2664,46 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         _one = next((g for g in games if g.game_id == item.game_id), None)
         if _one is None or item.league is None:
             return None
+        # ── **경기 전 미리보기를 얹는다 (2차 · v1.44)** ────────────
+        #
+        # 대표님: *"수집가능한 모든 데이터를 각 경기 토론방에서 알려줘야해"*.
+        # 같은 소스의 `/preview` 창구에 선발투수·팀 기록·예상 라인업·불펜이
+        # 들어 있는데 **한 번도 안 쓰고 있었다**(2026-09-18 실측).
+        #
+        # 팀 기록은 이미 있는 통로(`team_stats`)에 **그 꼴 그대로** 얹는다 —
+        # 새 길을 내면 표기 함수가 둘이 되고, 그러면 두 화면이 같은 값을
+        # 다르게 찍는다(이 저장소에서 가장 자주 난 사고다).
+        _pv = None
+        _ts = dict(team_stats or {})
+        try:
+            from adapters import naver_preview as _NP
+            _pv = _NP.fetch(item.league, _one)
+            if _pv:
+                pass        # 팀 기록도 분석 카드엔 안 얹는다 — 높이가 넘친다
+        except Exception:                                # noqa: BLE001
+            _pv = None                                   # 보강기다 — 실패는 조용히
         return _try_v5("analysis", lambda R: R.analysis_card(
-            rb, _one, item.league, day, team_stats=team_stats,
-            history=games, now=_now()))
+            rb, _one, item.league, day, team_stats=_ts or team_stats,
+            history=games, now=_now(), preview=_pv))
+
+    elif item.content_type is ContentType.PREGAME:
+        # ── **경기 전 정보 (2차 · v1.44)** ──────────────────────────
+        # 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜.
+        # **재료가 없으면 만들지 않는다** — 축구·농구·배구에는 이 창구가
+        # 아예 없다(실측). 빈 장을 내보내느니 안 내는 편이 낫다.
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _lg is None or _one is None or not is_upcoming(_one, _now()):
+            return None
+        try:
+            from adapters import naver_preview as _NPq
+            _pvq = _NPq.fetch(_lg, _one)
+        except Exception:                                # noqa: BLE001
+            _pvq = None
+        if not _pvq:
+            return None
+        return _try_v5("pregame", lambda R: R.pregame_card(
+            _one, _lg, preview=_pvq, now=_now()))
 
     else:
         return None

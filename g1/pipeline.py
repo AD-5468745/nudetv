@@ -984,6 +984,26 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                     game_id=_g.game_id,
                     render_at_utc=an_at))
 
+                # ── 경기 전 정보 (2차 · v1.44) ────────────────────
+                #
+                # 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜. 분석 **바로 뒤**에
+                # 놓는다 — 대표님이 정한 댓글 차례가 `분석 먼저`다.
+                # 1분 뒤로 잡아 **시각으로도** 차례를 못 박는다: 같은 시각이면
+                # 순서가 발송기 안쪽 규칙에 달리고, 그 규칙은 언제든 바뀐다.
+                #
+                # 재료가 없는 리그(축구·농구·배구)에서도 큐에는 오른다 —
+                # 렌더가 `None`을 내고 조용히 넘어간다. 여기서 리그를 가리면
+                # 그 표를 두 곳(여기와 수집기)에서 관리하게 된다.
+                pg_at = an_at + timedelta(minutes=1)
+                if pg_at < _g.start_utc and pg_at <= hi and keep_in_queue(
+                        pg_at, now, ContentType.PREGAME):
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.PREGAME, scope),
+                        content_type=ContentType.PREGAME, scope=scope,
+                        scheduled_utc=pg_at, league=league,
+                        sports_day=_g.sports_day, game_id=_g.game_id,
+                        render_at_utc=pg_at))
+
     # ── 나이트 브리핑 — 매일 23:00 KST, **전 리그 통합 1건** ──────
     #
     # 이것만 리그별이 아니다. 그래서 scope도 리그가 아니라 `ALL:날짜`이고,

@@ -1096,6 +1096,11 @@ class ContentType(str, Enum):
     # 그날 전 리그 편성을 **텍스트 한 통**으로. 자정 직후 올리고 고정한다.
     # 앵커가 하나 생길 때마다 이 글을 고쳐 바로가기를 채운다.
     DAILY_INDEX = "daily_index"
+    # 경기 전 정보 — 선발 맞대결 · 팀 기록 · 예상 라인업 · 불펜 (v1.44 · 2차).
+    # **분석 카드와 나눈 이유는 높이다.** 한 장에 다 넣었더니 2585px가 되어
+    # 높이 게이트에 걸렸고, 그 순간 분석 카드가 **통째로 안 나갔다**
+    # (실측 2026-09-18). 내용을 줄이는 대신 장을 나눈다.
+    PREGAME = "pregame"
     LEAGUE_RESULT = "league_result"
     STANDINGS = "standings"                # v1.9: 일간 순위표
     KOREAN_DAILY = "korean_daily"          # v1.9: 코리안리거 데일리
@@ -1116,6 +1121,8 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # v1.39 — 앵커는 경기 3시간 전이라 창이 넓어도 된다. 놓치면 그 경기의
     # 댓글방이 통째로 없어지므로(세부가 갈 곳이 사라진다) **넉넉히** 준다.
     ContentType.ANCHOR: 3600,
+    # 경기 전 정보는 그 경기 시작까지만 뜻이 있다 — 앵커와 같은 1시간.
+    ContentType.PREGAME: 3600,
     ContentType.DAILY_INDEX: 7200,
     ContentType.START_ALERT: 480,        # v1.9: 180 → 480 (감시 임계보다 크게)
     ContentType.POLL_CLOSE: 480,         # v1.9: 1800 → 480 (열린 투표를 오래 두면 안 된다)
@@ -1292,6 +1299,8 @@ PACER_PRIORITY: dict[ContentType, int] = {
     # 득점·결과가 **갈 곳을 잃는다** — 한 장이 밀려서 그 경기 전체가 사라지는
     # 자리다. 킥오프·득점 속보와 같은 0을 준다.
     ContentType.ANCHOR: 0,
+    # 앵커 바로 다음이다 — 그 경기 댓글의 첫 장이 분석, 그다음이 이것.
+    ContentType.PREGAME: 1,
     # 오늘의 경기는 자정 직후 한 통이고, 몇 분 늦어도 뜻이 안 변한다.
     ContentType.DAILY_INDEX: 4,
     ContentType.POLL: 3,
@@ -1604,6 +1613,8 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # **문패는 경기 3시간 전에 선다** — 그것이 설계다. 유예가 1시간이라
     # 앞창 없이도 창은 60분, 2분 시계에 넉넉하다.
     ContentType.ANCHOR: 0,
+    # 경기 전 정보도 같다 — 예약 시각(경기 3시간 전)에 나간다.
+    ContentType.PREGAME: 0,
     # **'오늘의 경기'가 자정 전에 나가면 이름이 거짓이 된다.**
     # 00:05 예약에 앞창 90분이면 **전날 22:35**에 나간다.
     # 유예 2시간이 창을 대신한다.

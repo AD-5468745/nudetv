@@ -518,6 +518,9 @@ check("★★★ 속보도 채널로 새지 않는다 (경기별 콘텐츠는 �
       ContentType.GOAL_FLASH in T.WAIT_FOR_THREAD_TYPES
       and ContentType.KICKOFF in T.WAIT_FOR_THREAD_TYPES
       and ContentType.FINAL_FLASH in T.WAIT_FOR_THREAD_TYPES)
+check("★★★ 경기 전 정보도 토론방으로만 간다 (2차 · v1.44)",
+      ContentType.PREGAME in T.THREADED_CONTENT_TYPES
+      and ContentType.PREGAME in T.WAIT_FOR_THREAD_TYPES)
 check("  ↳ 댓글로 갈 종류와 기다릴 종류가 **같은 표**다 (하나만 고치면 샌다)",
       T.WAIT_FOR_THREAD_TYPES == T.THREADED_CONTENT_TYPES,
       str(sorted(x.value for x in

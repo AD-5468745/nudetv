@@ -82,6 +82,10 @@ KIND_META = {
     "standings": ("팀 순위", "M3 20h5v-6H3zM9.5 20h5V4h-5zM16 20h5v-9h-5z"),
     "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
     "analysis": ("경기 분석", "M12 4v16M5 8h14M7.5 8l-3 6h6zM16.5 8l-3 6h6z"),
+    # v1.44 — 경기 전 정보. 분석(저울)과 **다른 도형**을 쓴다: 두 장이 같은
+    # 경기 댓글에 연달아 붙으므로, 같은 그림이면 무엇이 무엇인지 안 갈린다.
+    # 명단을 뜻하는 줄과 점.
+    "pregame":  ("경기 전 정보", "M4 6h2M4 12h2M4 18h2M9 6h11M9 12h11M9 18h11"),
     "night":    ("나이트 브리핑", "M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"),
     # v1.38 — 그 경기의 **문패**. 채널에 나가는 건 이 한 장이고, 나머지
     # (분석·라인업·시작·득점·취소·결과)는 전부 이 글의 댓글로 들어간다.
@@ -1040,6 +1044,88 @@ def body_form(rows: list[tuple], *, title: str = "최근 5경기") -> str:
     return "".join(out)
 
 
+def body_starters(away_name: str, home_name: str,
+                  away: dict | None, home: dict | None,
+                  *, title: str = "선발 맞대결") -> str:
+    """분석 — **선발투수 좌우 대비** (v1.44 · 2차).
+
+    `away`/`home`은 `naver_preview.starter()`가 만든 꼴이다:
+        {"name", "era", "w", "l", "inn", "kk", "vs": {games, era, inn}}
+
+    ★ **`vs`가 이 블록의 존재 이유다.** 그 투수가 **바로 그 상대 팀을 상대로**
+    올 시즌 어땠는가 — 무료로 이만한 값을 주는 곳이 달리 없다(2026-09-18 실측).
+    시즌 성적만 있으면 순위표와 다를 게 없다.
+
+    **한쪽만 있으면 만들지 않는다** — 한 칸이 빈 대비는 그 팀에 선발이 없는
+    것처럼 읽힌다(앵커 로고에서 이미 배운 것).
+    """
+    if not (away and home):
+        return ""
+
+    def _season(d: dict) -> str:
+        bits = []
+        if d.get("w") is not None and d.get("l") is not None:
+            bits.append(f"{d['w']}승 {d['l']}패")
+        if d.get("era"):
+            bits.append(f"ERA {d['era']}")
+        return " · ".join(bits)
+
+    def _vs(d: dict) -> str:
+        v = d.get("vs") or {}
+        if not v.get("games"):
+            return ""
+        out = f"상대 {v['games']}경기"
+        if v.get("era"):
+            out += f" ERA {v['era']}"
+        return out
+
+    rows = [f'<div class="anh">{esc(title)}<span>올 시즌 · 그 상대 기준</span></div>',
+            '<div class="duo"><div>'
+            f'<div class="n"><b class="tn">{esc(away.get("name", ""))}</b></div>'
+            f'<div class="p">{esc(away_name)}</div></div>'
+            '<div class="x">VS</div><div>'
+            f'<div class="n r"><b class="tn">{esc(home.get("name", ""))}</b></div>'
+            f'<div class="p r">{esc(home_name)}</div></div></div>']
+    for label, fn in (("시즌", _season), ("이 상대", _vs)):
+        la, lh = fn(away), fn(home)
+        if not (la or lh):
+            continue
+        # **`body_compare`와 같은 markup을 쓴다.** 직접 짰더니 좌우 칸
+        # 정렬이 반대로 붙어, 같은 카드 안에서 표마다 값이 다른 쪽에
+        # 붙어 보였다(2026-09-18 실렌더).
+        rows.append(f'<div class="cmp"><div class="v r">{esc(la or "—")}</div>'
+                    f'<div class="k">{esc(label)}</div>'
+                    f'<div class="v">{esc(lh or "—")}</div></div>')
+    return "".join(rows)
+
+
+def body_lineup_pair(away_name: str, home_name: str,
+                     away: list, home: list, *,
+                     title: str = "예상 라인업") -> str:
+    """예상 타순 두 팀을 나란히 (v1.44 · 2차). 한쪽이라도 비면 빈 문자열.
+
+    `away`/`home`은 `[(타순, 포지션, 이름)]`이다.
+
+    **한 줄에 두 팀을 같이 놓는다.** 팀별로 세로로 쌓으면 카드가 두 배로
+    길어지고, 높이 게이트에 걸리면 이 장이 통째로 사라진다 — 분석 카드에서
+    이미 겪은 일이다.
+    """
+    if not (away and home):
+        return ""
+    n = min(len(away), len(home), 9)
+    out = [f'<div class="anh">{esc(title)}<span>{esc(away_name)} · '
+           f'{esc(home_name)}</span></div>']
+    for i in range(n):
+        _, pa, na_ = away[i]
+        _, ph, nh_ = home[i]
+        out.append(
+            f'<div class="cmp"><div class="v r">{esc(na_)}'
+            f'<em> {esc(pa)}</em></div>'
+            f'<div class="k">{i + 1}번</div>'
+            f'<div class="v"><em>{esc(ph)} </em>{esc(nh_)}</div></div>')
+    return "".join(out)
+
+
 def body_h2h(away_name: str, home_name: str, away_win: int, home_win: int,
              draw: int = 0, *, title: str = "시즌 상대전적") -> str:
     """분석 ④ — 시즌 상대전적. 막대 길이가 곧 수치다.
@@ -1589,7 +1675,7 @@ FOLLOW_MAX = 4096
 
 KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
               "canceled": "🌧", "postponed": "🕓",
-              "goal": "⚽", "standings": "📊", "anchor": "🆚",
+              "goal": "⚽", "standings": "📊", "anchor": "🆚", "pregame": "📝",
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 
