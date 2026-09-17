@@ -502,17 +502,30 @@ D._probed = False
 
 
 # ══════════════════════════════════════════════════════════════
-print("\n10. 토론방 자리가 없을 때 (v1.40)")
+print("\n10. 경기별 콘텐츠는 토론방에만 (v1.41)")
 # ══════════════════════════════════════════════════════════════
 # 분석이 **경기마다 한 장**이 되면서 생긴 위험: 토론방 짝을 못 찾은 채
 # 채널로 보내면 그날 경기 수만큼(실측 최대 62장) 채널에 쏟아진다.
+import inspect as _insp0                                     # noqa: E402
 check("★★★ 무거운 경기별 콘텐츠는 자리가 생길 때까지 기다린다",
       ContentType.ANALYSIS in T.WAIT_FOR_THREAD_TYPES
       and ContentType.LINEUP in T.WAIT_FOR_THREAD_TYPES,
       str(sorted(x.value for x in T.WAIT_FOR_THREAD_TYPES)))
-check("★★★ 창이 좁은 속보는 기다리지 않는다 (기다리면 그냥 사라진다)",
-      ContentType.GOAL_FLASH not in T.WAIT_FOR_THREAD_TYPES
-      and ContentType.KICKOFF not in T.WAIT_FOR_THREAD_TYPES)
+# v1.41 — 대표님 지시: *"앵커가 올라가는 채널에는 나오지 않고, 각 토론방에만
+# 올라가도록"*. 실측(2026-09-17)으로 그날 경기별 콘텐츠 26건 중 18건이
+# 채널로 새어 나가고 있었다. 이제 다섯 종류 **전부** 자리를 기다린다.
+check("★★★ 속보도 채널로 새지 않는다 (경기별 콘텐츠는 토론방에만)",
+      ContentType.GOAL_FLASH in T.WAIT_FOR_THREAD_TYPES
+      and ContentType.KICKOFF in T.WAIT_FOR_THREAD_TYPES
+      and ContentType.FINAL_FLASH in T.WAIT_FOR_THREAD_TYPES)
+check("  ↳ 댓글로 갈 종류와 기다릴 종류가 **같은 표**다 (하나만 고치면 샌다)",
+      T.WAIT_FOR_THREAD_TYPES == T.THREADED_CONTENT_TYPES,
+      str(sorted(x.value for x in
+                 T.THREADED_CONTENT_TYPES ^ T.WAIT_FOR_THREAD_TYPES)))
+check("★★★ 그 대신 집을 못 찾은 것은 **알린다** (조용히 잃지 않는다)",
+      "_homeless" in dir(T)
+      and "_homeless" in _insp0.getsource(T.alert_lines)
+      if hasattr(T, "alert_lines") else "_homeless" in dir(T))
 check("  ↳ 기다림은 '사라짐'과 다른 이름으로 기록된다",
       "thread_not_ready" in T._SKIP_LABEL_LOCAL
       and "기다림" in T._SKIP_LABEL_LOCAL["thread_not_ready"])
@@ -536,9 +549,12 @@ class _It:
     game_id = "g1"
 
 
-check("★★★ 앵커가 나간 경기는 기다린다",
+# v1.41부터 `_anchor_is_up`은 **보낼지 말지**가 아니라 **알릴지 말지**를 정한다.
+# 앵커가 없는 경기도 채널로는 안 보낸다(대표님 지시). 대신 그런 항목은
+# 끝내 자리를 못 찾고 사라지므로, 사라지기 전에 운영 알림에 싣는다.
+check("★★★ 앵커가 나간 경기는 집이 있다고 본다",
       T._anchor_is_up(_It(), _Led([1234]), "ch"))
-check("★★★ 앵커가 없는 경기는 기다리지 않는다 (조용한 소실 방지)",
+check("★★★ 앵커가 없으면 집이 없다고 본다 (그래야 알림이 뜬다)",
       not T._anchor_is_up(_It(), _Led(None), "ch"))
 
 # 답이 **그 경기 댓글창 안**에 남아야 다른 손님도 본다. 대표님 지적:

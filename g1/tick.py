@@ -2265,14 +2265,28 @@ def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
 # 경기마다 한 장씩 나오는 무거운 콘텐츠만 넣는다. 창이 좁은 것(킥오프 29분·
 # 득점 속보 30분)은 기다리면 그냥 사라지므로 **채널로라도 보낸다** —
 # 늦은 속보는 쓸모없지만, 안 나간 속보는 더 쓸모없다.
-WAIT_FOR_THREAD_TYPES = frozenset({
-    ContentType.ANALYSIS, ContentType.LINEUP,
-})
-
 THREADED_CONTENT_TYPES = frozenset({
     ContentType.ANALYSIS, ContentType.LINEUP, ContentType.KICKOFF,
     ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
 })
+
+# ── **경기별 콘텐츠는 채널에 안 나온다 (v1.41)** ────────────────
+#
+# 대표님 지시(2026-09-17): *"앵커가 올라가는 채널에는 나오지 않고,
+# 각 토론방에만 올라가도록"*.
+#
+# v1.40까지는 분석·라인업만 기다리고, 킥오프·득점·결과 속보는 짝을 못 찾으면
+# **채널로 새어 나갔다.** 실측(2026-09-17): 그날 경기별 콘텐츠 26건 중
+# **18건이 채널로** 갔다. 채널을 조용하게 만들려던 개편이 절반만 된 셈이다.
+#
+# 이제 다섯 종류 **전부** 토론방 자리를 기다린다. 자리를 못 찾으면 채널로
+# 보내지 않는다 — 대표님이 고르신 쪽이 '조용한 채널'이다.
+#
+# ⚠️ **그 대신 잃은 것을 반드시 알린다.** 창(킥오프 29분·득점 30분)을 넘기면
+# 그 속보는 사라지는데, 사라진 것이 조용하면 그게 더 나쁘다. 만료되면
+# `_homeless`에 쌓여 운영 알림에 실린다. 경기 자체의 결과는 그 리그
+# **정리판**(채널에 남는 리그 단위 카드)이 여전히 담는다.
+WAIT_FOR_THREAD_TYPES = THREADED_CONTENT_TYPES
 
 
 def _thread_for(item, ledger, disc, channel: str):
@@ -2300,6 +2314,10 @@ def _thread_for(item, ledger, disc, channel: str):
     if rec is None or not rec.message_ids:
         return None
     return disc.thread_of(rec.message_ids[0])
+
+
+# 집(앵커 댓글)을 못 찾은 경기별 콘텐츠. 틱이 매번 거둬 운영 알림에 싣는다.
+_homeless: list = []
 
 
 def _anchor_is_up(item, ledger, channel: str) -> bool:
@@ -3017,8 +3035,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 # 앨범에는 버튼을 못 단다. 댓글에는 버튼이 필요 없으므로 뗀다.
                 payload.buttons = []
             elif (DISCUSSION_CHAT_ID
-                  and item.content_type in WAIT_FOR_THREAD_TYPES
-                  and _anchor_is_up(item, led, channel)):
+                  and item.content_type in WAIT_FOR_THREAD_TYPES):
                 # ── **집이 생길 때까지 기다린다** (v1.40) ─────────────
                 #
                 # 분석은 v1.40에서 **경기마다 한 장**이 됐다. 토론방이 켜져
@@ -3029,10 +3046,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 # 그래서 **이번 틱만 미룬다.** 유예(분석 3시간) 안에 짝이
                 # 생기면 그때 댓글로 들어간다.
                 #
-                # ⚠️ **기다림은 앵커가 이미 나간 경기에만 건다**
-                # (`_anchor_is_up`). 앵커가 없는 경기까지 기다리게 하면 그
-                # 분석은 채널에도 토론방에도 안 나오고 조용히 만료된다 —
-                # 안 보이는 손실이 시끄러움보다 나쁘다.
+                # ⚠️ **앵커가 없는 경기는 집이 생길 일이 없다.** 그런 항목은
+                # 유예가 끝나면 사라지므로, 사라지기 전에 사람에게 알린다
+                # (`_homeless`). 조용히 잃는 것이 가장 나쁘다.
+                if not _anchor_is_up(item, led, channel):
+                    _homeless.append(
+                        f"{item.content_type.value} {item.scope}"
+                        " — 그 경기 앵커가 없어 댓글로 못 답니다")
                 _skip("thread_not_ready")
                 print(f"    ⏳ 토론방 자리 기다림 {item.content_type.value} "
                       f"{item.scope}")
@@ -3355,6 +3375,19 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 이것이 조용해서 MLB·K리그의 분석·순위표가 **몇 주 동안** 절반의 시간
     # 사라져 있었다(2026-09-17 발견). 되살리기 실패는 그 리그 카드 세 종류가
     # 함께 죽는다는 뜻이므로 반드시 사람에게 닿아야 한다.
+    # ── 집을 못 찾은 경기별 콘텐츠 (v1.41) ──────────────────────
+    #
+    # 경기별 콘텐츠는 이제 채널로 새지 않는다. 그 대신 **댓글 자리를 끝내
+    # 못 찾으면 사라진다** — 사라진 것이 조용하면 개편 전보다 나쁘다.
+    if _homeless:
+        _hs: list = []
+        for n in _homeless:
+            if n not in _hs:
+                _hs.append(n)
+        lines += [f"댓글 자리를 못 찾음 — {n}" for n in _hs[:3]]
+        if len(_hs) > 3:
+            lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_hs)}건")
+        _homeless.clear()
     _ar = take_archive_rejects()
     if _ar:
         _seen: list = []
