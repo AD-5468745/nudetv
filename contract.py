@@ -1592,7 +1592,53 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 정확도(T-3시간)는 `defer_for_precision`이 되찾는다 — 시계가 촘촘하면
     # 목표 시각에 가까운 틱까지 미루고, 뜸하면 일찍이라도 내보낸다.
     ContentType.ANALYSIS: 6 * 3600,
+    # ── ★ 앞창을 안 적으면 **기본 90분만큼 일찍 나간다** (v1.41) ──────
+    #
+    # 세 종류가 표에 빠져 있었다. 기본 앞창은 시계가 100분에 한 번 돌던
+    # 시절의 값인데, 지금 시계는 **2분마다** 돈다 — 그래서 빠진 종류는
+    # 전부 예약보다 최대 1시간 반 일찍 나갔다.
+    #
+    # 실측 2026-09-17 23:32: 04:00 경기의 앵커(예약 01:00)가 **23:32에**
+    # 나갔다. 대표님이 채널에서 먼저 보시고 물으셨다.
+    #
+    # **문패는 경기 3시간 전에 선다** — 그것이 설계다. 유예가 1시간이라
+    # 앞창 없이도 창은 60분, 2분 시계에 넉넉하다.
+    ContentType.ANCHOR: 0,
+    # **'오늘의 경기'가 자정 전에 나가면 이름이 거짓이 된다.**
+    # 00:05 예약에 앞창 90분이면 **전날 22:35**에 나간다.
+    # 유예 2시간이 창을 대신한다.
+    ContentType.DAILY_INDEX: 0,
+    # ★ **부문 순위는 앞창을 닫으면 안 된다.** `DEFER_FOR_PRECISION`에 들어
+    # 있어서, 앞창을 열어 유실을 막고 정확도는 '미루기'가 되찾는 구조다.
+    # 0으로 잠갔더니 *'일찍 나가지도 않는데 미루기까지 하는'* 콘텐츠가 되어
+    # 조용히 사라질 뻔했다 — 검증이 그 관계를 잡아 줬다(2026-09-17).
+    # 지금까지 쓰던 기본값(90분)을 **눈에 보이게** 적어 둔다.
+    ContentType.LEADERBOARD: 90 * 60,
+
 }
+
+
+# ★ **모든 종류가 표에 있어야 한다.** 빠뜨리면 조용히 기본 앞창(90분)을
+# 쓰고, 그 종류만 예약보다 일찍 나간다 — 오류도 경고도 안 난다.
+# 앵커·오늘의경기·부문순위 셋이 실제로 그렇게 빠져 있었다(2026-09-17).
+# `PACER_PRIORITY`가 같은 방식으로 한 번 잡아 준 적이 있다.
+# 아직 **만들지 않은** 종류. 계약에 이름만 있고 큐에 들어가지 않는다.
+# 만드는 날 여기서 빼면, 바로 아래 게이트가 "앞창을 정하라"고 막아 준다.
+NOT_BUILT_YET: frozenset = frozenset({
+    ContentType.POLL, ContentType.POLL_CLOSE, ContentType.POLL_SETTLEMENT,
+    ContentType.INPLAY_BOARD, ContentType.KOREAN_DAILY,
+    ContentType.WEEKLY_PREVIEW, ContentType.WEEKLY_COLUMN,
+    ContentType.QUIZ, ContentType.MILESTONE, ContentType.EVERGREEN,
+    # 정정문은 사람이 손으로 낸다 — 예약이 없으므로 앞창도 없다.
+    ContentType.CORRECTION,
+})
+
+assert not (set(ContentType) - NOT_BUILT_YET - set(LOOKAHEAD_SECONDS_BY_CONTENT)), (
+    "앞창 표에 빠진 종류: "
+    + ", ".join(sorted(c.value for c in set(ContentType) - NOT_BUILT_YET
+                       if c not in LOOKAHEAD_SECONDS_BY_CONTENT)))
+assert not (NOT_BUILT_YET & set(LOOKAHEAD_SECONDS_BY_CONTENT)), (
+    "만들지 않았다고 적어 놓고 앞창을 준 종류가 있습니다 — 둘 중 하나가 거짓입니다")
 
 
 def lookahead_for(content_type: "ContentType", default_seconds: int) -> int:
