@@ -375,10 +375,16 @@ check("★★ 공개 채널이면 공개 주소를 쓴다",
       T._message_link("@somechannel", 42) == "https://t.me/somechannel/42",
       T._message_link("@somechannel", 42))
 
-# 큐에 하루 한 건만 서는가
+# 큐에 몇 건이 서는가 — **하루 두 번**이다 (v1.50).
+# 자정 글 하나만 두면 하루가 지날수록 채널 아래로 밀려 아무도 안 본다.
+# 대표님: *"자주 본채널에 노출시켜서 회원들의 토론방 참여율을 높여야해"*.
 _qi = T.build_all_queues({"KBO": _IDX}, _NOWQ, "-100t")
 _idx = [i for i in _qi if i.content_type is ContentType.DAILY_INDEX]
-check("★★ 오늘의 경기는 하루 한 건이다", len(_idx) == 1, str(len(_idx)))
+check("★★ 오늘의 경기는 하루 **두 번**이다 (자정 · 저녁)",
+      len(_idx) == 2, str(len(_idx)))
+check("  ↳ 멱등키가 서로 다르다 (같으면 둘째 통이 조용히 사라진다)",
+      len({i.idem_key for i in _idx}) == len(_idx),
+      str(sorted(i.scope for i in _idx)))
 check("  ↳ 리그가 없는 통합 항목이다 (리그별로 서면 15통이 나간다)",
       _idx and _idx[0].league is None)
 check("  ↳ 자정 직후로 예약된다",
@@ -518,6 +524,56 @@ check("★★★ 속보도 채널로 새지 않는다 (경기별 콘텐츠는 �
       ContentType.GOAL_FLASH in T.WAIT_FOR_THREAD_TYPES
       and ContentType.KICKOFF in T.WAIT_FOR_THREAD_TYPES
       and ContentType.FINAL_FLASH in T.WAIT_FOR_THREAD_TYPES)
+# ══════════════════════════════════════════════════════════════
+# 본채널 경기 목록 버튼 (v1.50)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님: *"그날 진행하는 원하는 경기를 쉽게 찾아볼 수 있도록 쉽게
+# 선택하고, 클릭해서 토론방으로 넘어가지게 · 자주 본채널에 노출시켜서
+# 회원들의 토론방 참여율을 높여야해"*.
+import pipeline as _P50                                          # noqa: E402
+from datetime import datetime as _dt50, timedelta as _td50       # noqa: E402
+
+
+class _BRef:
+    def __init__(self, c):
+        self.team_code = c
+
+
+class _BG:
+    def __init__(self, gid, hours, terminal=False, lg=None):
+        from contract import League as _L
+        self.game_id = gid
+        self.sports_day = "2026-09-18"
+        self.start_utc = _dt50(2026, 9, 18, 3, 0, tzinfo=timezone.utc) \
+            + _td50(hours=hours)
+        self.home, self.away = _BRef("두산"), _BRef("삼성")
+        self.league = lg or _L.KBO
+        self.is_terminal = terminal
+
+
+_gs50 = [_BG("a", 0), _BG("b", 2), _BG("c", 4, terminal=True)]
+_lk50 = {"a": "https://t.me/ch/1?comment=1", "b": "https://t.me/ch/2?comment=2",
+         "c": "https://t.me/ch/3?comment=3"}
+_btn = _P50.daily_index_buttons(_gs50, "2026-09-18", links=_lk50,
+                                name_of=lambda lg, t: t.team_code,
+                                now=_dt50(2026, 9, 18, 3, tzinfo=timezone.utc))
+check("★★★ 경기마다 버튼 하나 — 누르면 그 경기 토론방으로",
+      len(_btn) == 2 and all(r[0]["url"].startswith("https://t.me/")
+                             for r in _btn), str(_btn))
+check("★★ 끝난 경기는 목록에서 뺀다 (지나간 버튼이 쌓이면 못 찾는다)",
+      all("3?comment=3" not in r[0]["url"] for r in _btn), str(_btn))
+check("★★★ 주소를 모르는 경기는 버튼을 안 만든다 (갈 곳 없는 버튼 금지)",
+      _P50.daily_index_buttons(_gs50, "2026-09-18", links={},
+                               name_of=lambda lg, t: t.team_code) == [])
+check("★★ 버튼 수에 상한이 있다 (스크롤로 찾으면 '쉽게'가 아니다)",
+      0 < _P50.DAILY_INDEX_MAX_BUTTONS <= 30)
+check("★★★ 목록을 하루 두 번 올린다 (자정 글은 저녁이면 아래로 밀린다)",
+      len(_P50.DAILY_INDEX_SLOTS) == 2, str(_P50.DAILY_INDEX_SLOTS))
+import inspect as _insp50                                        # noqa: E402
+check("  ↳ 글과 버튼을 **한 번에** 고친다 (따로 고치면 어긋나는 순간이 생긴다)",
+      "buttons" in _insp50.signature(D.edit_text).parameters)
+
 check("★★★ 경기 전 정보도 토론방으로만 간다 (2차 · v1.44)",
       ContentType.PREGAME in T.THREADED_CONTENT_TYPES
       and ContentType.PREGAME in T.WAIT_FOR_THREAD_TYPES)

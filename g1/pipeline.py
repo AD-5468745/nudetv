@@ -456,6 +456,17 @@ ANCHOR_ENABLED = True
 DAILY_INDEX_HOUR = 0
 DAILY_INDEX_MINUTE = 5
 
+# ★ **하루 두 번 올린다** (v1.50 · 대표님: *"자주 본채널에 노출시켜서
+# 회원들의 토론방 참여율을 높여야해"*).
+#
+# 자정 글 하나만 두면 하루가 지날수록 채널 아래로 밀려 아무도 안 본다.
+# 저녁에 한 번 더 올려 **그 시각에 열리는 경기**를 맨 아래로 끌어온다.
+# 그 이상은 안 늘린다 — 목록이 자주 올라오면 그것도 소음이다.
+#
+# 17:00은 국내 저녁 경기(18:30)와 유럽 심야 경기 사이다 — 그 한 통으로
+# 저녁·심야 경기를 다 덮는다.
+DAILY_INDEX_SLOTS = ((0, 5), (17, 0))
+
 
 def daily_index_text(games: list, day: str, *, links: dict | None = None,
                      name_of=None) -> str:
@@ -495,6 +506,43 @@ def daily_index_text(games: list, day: str, *, links: dict | None = None,
         lines.append("")
     lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
     return "\n".join(lines).strip()
+
+
+# 한 글에 붙일 수 있는 버튼 수. 텔레그램은 더 받아 주지만, 손님이 스크롤로
+# 찾아야 하면 '쉽게 고른다'가 아니다. **다음에 열리는 경기부터** 채운다.
+DAILY_INDEX_MAX_BUTTONS = 24
+
+
+def daily_index_buttons(games: list, day: str, *, links: dict,
+                        name_of=None, now=None) -> list:
+    """'오늘의 경기' 글에 붙일 **경기 버튼**. `[[{text,url}], …]`.
+
+    대표님 지시(2026-09-18): *"그날 진행하는 원하는 경기를 쉽게 찾아볼 수
+    있도록 쉽게 선택하고, 클릭해서 토론방으로 넘어가지게"*.
+
+    글 안의 작은 `보기` 링크는 누르기 어렵다 — 버튼은 손가락으로 누른다.
+
+    **주소를 아는 경기만** 넣는다. 앵커가 아직 안 선 경기는 갈 곳이 없으므로
+    버튼도 없다. 앵커가 설 때마다 이 글을 고쳐 채운다(새 글을 안 올린다 —
+    채널이 늘어나면 안 된다).
+
+    ⚠️ **끝난 경기는 뺀다.** 지나간 경기 버튼이 위에 쌓이면 지금 열리는
+    경기를 찾기 어려워진다 — 목록의 뜻이 '오늘 볼 것'이기 때문이다.
+    """
+    nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
+    lk = links or {}
+    rows: list = []
+    todays = [g for g in games if g.sports_day == day and lk.get(g.game_id)]
+    for g in sorted(todays, key=lambda x: x.start_utc):
+        if now is not None and g.is_terminal:
+            continue
+        k = g.start_utc.astimezone(KST)
+        label = (f"{LEAGUE_EMOJI.get(g.league, '•')} {k:%H:%M}  "
+                 f"{nm(g.league, g.away)} vs {nm(g.league, g.home)}")
+        rows.append([{"text": label[:64], "url": lk[g.game_id]}])
+        if len(rows) >= DAILY_INDEX_MAX_BUTTONS:
+            break
+    return rows
 
 
 def build_queue(games: list[Game], now: datetime, channel: str,

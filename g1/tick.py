@@ -1921,14 +1921,21 @@ def build_all_queues(snapshots: dict[str, list], now: datetime,
             _pool = [g for gs in snapshots.values() if gs for g in gs]
             _day = now.astimezone(KST).strftime("%Y-%m-%d")
             if any(g.sports_day == _day for g in _pool):
-                _at = now.astimezone(KST).replace(
-                    hour=P.DAILY_INDEX_HOUR, minute=P.DAILY_INDEX_MINUTE,
-                    second=0, microsecond=0).astimezone(timezone.utc)
-                items.append(QueueItem(
-                    idem_key=idem_key(channel, ContentType.DAILY_INDEX, _day),
-                    content_type=ContentType.DAILY_INDEX, scope=_day,
-                    scheduled_utc=_at, league=None, sports_day=_day,
-                    render_at_utc=_at))
+                # 하루 **두 번** — 자정 직후와 저녁. 자정 글 하나만 두면
+                # 하루가 지날수록 채널 아래로 밀려 아무도 안 본다.
+                # **멱등키에 시각을 넣는다** — 안 넣으면 둘째 통이
+                # '이미 보냄'으로 조용히 사라진다(리그별 모닝이 그랬다).
+                for _h, _m in P.DAILY_INDEX_SLOTS:
+                    _at = now.astimezone(KST).replace(
+                        hour=_h, minute=_m,
+                        second=0, microsecond=0).astimezone(timezone.utc)
+                    _scope = f"{_day}#{_h:02d}{_m:02d}"
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.DAILY_INDEX,
+                                          _scope),
+                        content_type=ContentType.DAILY_INDEX, scope=_scope,
+                        scheduled_utc=_at, league=None, sports_day=_day,
+                        render_at_utc=_at))
         except Exception as e:                               # noqa: BLE001
             print(f"  [큐] 오늘의 경기 생성 실패 {type(e).__name__}")
 
@@ -2219,7 +2226,13 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
                     _pool, day, links=rec["links"],
                     name_of=lambda lg, t: _C5x._nm(lg, t))
                 if txt:
-                    _DS.edit_text(transport, channel, mid, txt)
+                    # 글과 **버튼을 함께** 고친다 — 앵커가 하나 설 때마다
+                    # 그 경기 버튼이 목록에 붙는다. 새 글은 안 올린다.
+                    _btn = _P.daily_index_buttons(
+                        _pool, day, links=rec["links"],
+                        name_of=lambda lg, t: _C5x._nm(lg, t), now=_now())
+                    _DS.edit_text(transport, channel, mid, txt,
+                                  buttons=_btn or None)
     except Exception:                                    # noqa: BLE001
         return
 
@@ -3126,6 +3139,26 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             # 여기 조건을 박아 두면 늘릴 때 이 파일을 다시 찾아야 한다.
             if item.content_type.value in BUTTON_CONTENT_TYPES:
                 payload.buttons = brand_button()
+
+            # ── **오늘의 경기에는 경기 버튼을 붙인다** (v1.50) ─────
+            #
+            # 대표님: *"쉽게 선택하고, 클릭해서 토론방으로 넘어가지게"*.
+            # 글 안의 작은 `보기` 링크는 누르기 어렵다.
+            #
+            # 자정 통은 아직 앵커가 없어 버튼이 비지만, 앵커가 설 때마다
+            # `_index_after_send`가 그 글을 고쳐 채운다. 저녁 통은 그때까지
+            # 쌓인 경기 버튼을 처음부터 달고 나간다.
+            if item.content_type is ContentType.DAILY_INDEX:
+                try:
+                    import cards_v5 as _C5b
+                    _btns = P.daily_index_buttons(
+                        all_games or games, item.sports_day,
+                        links=_index_links(item.sports_day),
+                        name_of=lambda lg, t: _C5b._nm(lg, t), now=_now())
+                    if _btns:
+                        payload.buttons = _btns
+                except Exception:                        # noqa: BLE001
+                    pass                                 # 버튼 때문에 글을 잃지 않는다
 
             # ── **토론방으로 보낼 것인가** (v1.39) ─────────────────
             #

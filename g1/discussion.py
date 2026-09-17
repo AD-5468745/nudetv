@@ -241,16 +241,21 @@ def poll(transport, state: DiscussionState, *, limit: int = UPDATE_LIMIT) -> lis
 
 
 def edit_text(transport, chat_id, message_id, text: str, *,
-              parse_mode: str = "HTML") -> bool:
+              parse_mode: str = "HTML", buttons=None) -> bool:
     """이미 올린 글을 고쳐 쓴다. 실패하면 False (막지 않는다).
 
     '오늘의 경기' 글이 이걸 쓴다 — 자정에 목록만 올리고, 앵커가 하나 생길
     때마다 그 글에 바로가기를 채워 넣는다.
     """
     try:
-        transport.call("editMessageText", {
+        _pay = {
             "chat_id": chat_id, "message_id": int(message_id), "text": text,
-            "parse_mode": parse_mode, "disable_web_page_preview": True})
+            "parse_mode": parse_mode, "disable_web_page_preview": True}
+        # **글과 버튼을 한 번에 고친다** (v1.50). 따로 부르면 그 사이에
+        # 글은 새 경기를 담았는데 버튼은 옛것인 순간이 생긴다.
+        if buttons is not None:
+            _pay["reply_markup"] = {"inline_keyboard": buttons}
+        transport.call("editMessageText", _pay)
         return True
     except Exception:                                    # noqa: BLE001
         # **같은 내용으로 고치면 텔레그램이 오류를 준다.** 그건 실패가 아니다.
