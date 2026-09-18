@@ -1,5 +1,5 @@
 {
- "at": "2026-09-18T05:00:33.052205+00:00",
+ "at": "2026-09-18T05:02:53.487811+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-18T04:55:34.399453+00:00",
@@ -21,67 +21,67 @@
   "KBL": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 0,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "VLEAGUE_M": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 135,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "VLEAGUE_W": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 135,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "KL1": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 60,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "NPB": {
-   "at": "2026-09-18T04:52:30.461629+00:00",
+   "at": "2026-09-18T05:02:53.487811+00:00",
    "count": 289,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "EPL": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 11,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "LALIGA": {
-   "at": "2026-09-18T04:52:30.461629+00:00",
+   "at": "2026-09-18T05:02:53.487811+00:00",
    "count": 19,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "SERIEA": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 13,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "BUNDESLIGA": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 9,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "LIGUE1": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 9,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "UCL": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 54,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "UEL": {
-   "at": "2026-09-18T04:52:30.461629+00:00",
+   "at": "2026-09-18T05:02:53.487811+00:00",
    "count": 72,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "MLS": {
    "at": "2026-09-18T04:33:44.794249+00:00",
    "count": 5,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   }
  },
  "korean_players": {
@@ -89,7 +89,7 @@
  },
  "alert_lines": 0,
  "lost_lines": 1,
- "status_lines": 6,
+ "status_lines": 7,
  "lost_kinds": [
   "unsent_day:analysis"
  ],
