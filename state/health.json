@@ -1,5 +1,5 @@
 {
- "at": "2026-09-18T03:06:10.346954+00:00",
+ "at": "2026-09-18T03:08:57.331308+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-18T03:06:10.346954+00:00",
@@ -7,7 +7,7 @@
    "stale_hours": 0.0
   },
   "MLB": {
-   "at": "2026-09-18T03:06:10.346954+00:00",
+   "at": "2026-09-18T03:08:57.331308+00:00",
    "count": 87,
    "stale_hours": 0.0,
    "finals_utc": [
@@ -86,11 +86,9 @@
   "이강인": "2026-09-16"
  },
  "alert_lines": 0,
- "lost_lines": 1,
+ "lost_lines": 0,
  "status_lines": 6,
- "lost_kinds": [
-  "missed"
- ],
+ "lost_kinds": [],
  "stale_blocked": [],
  "coverage_ok": true,
  "coverage_findings": []
