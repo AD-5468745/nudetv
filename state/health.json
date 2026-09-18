@@ -1,5 +1,5 @@
 {
- "at": "2026-09-18T06:23:55.388789+00:00",
+ "at": "2026-09-18T06:26:47.483395+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-18T06:23:55.388789+00:00",
@@ -88,9 +88,10 @@
   "이강인": "2026-09-16"
  },
  "alert_lines": 0,
- "lost_lines": 1,
+ "lost_lines": 2,
  "status_lines": 6,
  "lost_kinds": [
+  "empty_render",
   "unsent_day:analysis"
  ],
  "stale_blocked": [],
