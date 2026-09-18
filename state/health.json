@@ -1,5 +1,5 @@
 {
- "at": "2026-09-18T17:28:00.803359+00:00",
+ "at": "2026-09-18T17:30:48.945863+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-18T17:24:41.235658+00:00",
@@ -62,7 +62,7 @@
   "LALIGA": {
    "at": "2026-09-18T17:21:39.037402+00:00",
    "count": 18,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "SERIEA": {
    "at": "2026-09-18T17:24:41.235658+00:00",
@@ -87,7 +87,7 @@
   "UEL": {
    "at": "2026-09-18T17:03:20.634249+00:00",
    "count": 72,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "MLS": {
    "at": "2026-09-18T17:06:23.511539+00:00",
@@ -99,10 +99,11 @@
   "이강인": "2026-09-16"
  },
  "alert_lines": 0,
- "lost_lines": 2,
- "status_lines": 11,
+ "lost_lines": 3,
+ "status_lines": 10,
  "lost_kinds": [
   "empty_render",
+  "missed",
   "unsent_day:analysis"
  ],
  "stale_blocked": [],
