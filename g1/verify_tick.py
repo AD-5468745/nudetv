@@ -3089,6 +3089,29 @@ check("★★ '오늘의 경기' 본문도 같은 문구를 쓴다 (화면마다
       P.LINK_LABEL in P.daily_index_text(
           _bb_games, _BB_DAY, links=_bb_links,
           name_of=lambda lg, t: str(t.team_code)))
+
+# ── 같은 시각은 시각을 한 번만 (v1.61) ────────────────────────────
+# 대표님: *"경기마다 전부 시간이 적혀있어 눈아파."*
+_tg_same = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18)
+            for i in range(4)]                       # 넷 다 18:30
+_tg_txt = P.daily_index_text(_tg_same, _BB_DAY, links={},
+                             name_of=lambda lg, t: str(t.team_code))
+check("★★★ 같은 시각 4경기면 시각이 **한 번만** 나온다",
+      _tg_txt.count("18:30") == 1, f"{_tg_txt.count('18:30')}번")
+check("  ↳ 경기는 넷 다 실린다 (묶었다고 빠지면 안 된다)",
+      _tg_txt.count("\n· ") == 4, str(_tg_txt.count(chr(10) + "· ")))
+_tg_diff = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=14 + i)
+            for i in range(3)]                       # 시각이 제각각
+_tg_txt2 = P.daily_index_text(_tg_diff, _BB_DAY, links={},
+                              name_of=lambda lg, t: str(t.team_code))
+check("★★ 혼자 열리는 경기는 줄 안에 시각을 그대로 둔다 "
+      "(머리줄을 따로 만들면 줄만 두 배가 된다)",
+      all(f"· {h}:30" in _tg_txt2 for h in (14, 15, 16)), _tg_txt2[:160])
+check("  ↳ 묶음 글 바로가기도 같은 규칙을 쓴다 (두 화면이 달라지면 안 된다)",
+      P.game_link_lines(_tg_same, _BB_DAY,
+                        links={g.game_id: "https://t.me/x/1" for g in _tg_same},
+                        name_of=lambda lg, t: str(t.team_code)
+                        ).count("18:30") == 1)
 check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       {"morning", "league_result", "night_brief", "daily_index"}
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))

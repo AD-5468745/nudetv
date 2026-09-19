@@ -509,6 +509,22 @@ def daily_index_text(games: list, day: str, *, links: dict | None = None,
     return _compose_index(todays, day, lk, nm, max_chars=max_chars)
 
 
+def _by_time(games: list) -> list:
+    """`[(HH:MM, [그 시각 경기들]), …]` — 시작 시각이 이른 순.
+
+    같은 시각끼리 묶는다. `_compose_index` 와 `game_link_lines` 가 **같은 것을
+    쓴다** — 두 벌로 두면 한 화면은 묶이고 다른 화면은 안 묶인다.
+    """
+    out: list = []
+    for g in sorted(games, key=lambda x: x.start_utc):
+        t = f"{g.start_utc.astimezone(KST):%H:%M}"
+        if out and out[-1][0] == t:
+            out[-1][1].append(g)
+        else:
+            out.append((t, [g]))
+    return out
+
+
 def _compose_index(todays: list, day: str, lk: dict, nm,
                    *, max_chars: int | None = TELEGRAM_TEXT_MAX) -> str:
     """'오늘의 경기' 한 통을 조립한다. `daily_index_text`만 부른다.
@@ -533,12 +549,31 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
         total += len(gs)
         lines.append(f"{LEAGUE_EMOJI.get(lg, '•')} <b>"
                      f"{LEAGUE_LABEL.get(lg, lg.value)}</b> {len(gs)}경기")
-        for g in gs:
-            k = g.start_utc.astimezone(KST)
-            row = (f"{k:%H:%M} {nm(lg, g.away)} vs {nm(lg, g.home)}")
-            url = lk.get(g.game_id)
-            lines.append(f"· {row} → <a href=\"{esc(url)}\">{LINK_LABEL}</a>"
-                         if url else f"· {row}")
+        # ── **같은 시각 경기는 시각을 한 번만 적는다** (v1.61) ──────
+        #
+        # 대표님(2026-09-19): *"경기마다 전부 시간이 적혀있어 눈아파."*
+        # KBO 4경기가 전부 17:00이면 `17:00`이 네 번 찍힌다. 읽는 사람에게
+        # 그 숫자는 **한 번만** 필요하다.
+        #
+        # 혼자 열리는 경기는 묶을 것이 없으므로 줄 안에 그대로 둔다 — 머리줄을
+        # 따로 만들면 줄 수만 두 배가 되고 오히려 길어진다(MLB는 대부분
+        # 시각이 제각각이다).
+        for _t, _grp in _by_time(gs):
+            if len(_grp) == 1:
+                g = _grp[0]
+                url = lk.get(g.game_id)
+                row = f"{_t} {nm(lg, g.away)} vs {nm(lg, g.home)}"
+                lines.append(
+                    f"· {row} → <a href=\"{esc(url)}\">{LINK_LABEL}</a>"
+                    if url else f"· {row}")
+                continue
+            lines.append(f"<b>{_t}</b>")
+            for g in _grp:
+                url = lk.get(g.game_id)
+                row = f"{nm(lg, g.away)} vs {nm(lg, g.home)}"
+                lines.append(
+                    f"· {row} → <a href=\"{esc(url)}\">{LINK_LABEL}</a>"
+                    if url else f"· {row}")
         lines.append("")
     lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
     out = "\n".join(lines).strip()
@@ -584,11 +619,15 @@ def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
     rows.sort(key=lambda g: g.start_utc)
     while rows:
         out = ["", "<b>경기별 정보</b>"]
-        for g in rows:
-            k = g.start_utc.astimezone(KST)
-            out.append(
-                f"· {k:%H:%M} {nm(g.league, g.away)} vs {nm(g.league, g.home)}"
-                f" → <a href=\"{esc(lk[g.game_id])}\">{LINK_LABEL}</a>")
+        # 같은 시각은 한 번만 적는다 (v1.61 · `_by_time` 참조)
+        for _t, _grp in _by_time(rows):
+            if len(_grp) > 1:
+                out.append(f"<b>{_t}</b>")
+            for g in _grp:
+                _pre = f"{_t} " if len(_grp) == 1 else ""
+                out.append(
+                    f"· {_pre}{nm(g.league, g.away)} vs {nm(g.league, g.home)}"
+                    f" → <a href=\"{esc(lk[g.game_id])}\">{LINK_LABEL}</a>")
         txt = "\n".join(out)
         if not budget or len(txt) <= budget:
             return txt
