@@ -1154,6 +1154,61 @@ class SnapshotWipe(GateError):
     """멀쩡하던 스냅샷을 0건으로 덮으려 한다 — 소스가 조용히 비었을 가능성이 높다."""
 
 
+# 야구 명단은 **경기 1시간쯤 전에야 나온다**(실측 2026-09-19: 다음날 경기는
+# 타순 0명). 그래서 너무 일찍 두드리면 빈 손으로 돌아오고 소스만 두드린다.
+BASEBALL_LINEUP_LEAD_SECONDS = 3 * 3600
+BASEBALL_LINEUP_MAX_PER_TICK = 6
+
+
+def _enrich_baseball_lineup(league, games: list, now: datetime) -> int:
+    """야구 선발 **타순**을 얹는다 (v1.63). 채운 경기 수.
+
+    대표님 지적(2026-09-19): 표에서 *"선발 라인업 — 야구 전부 0"*.
+
+    **원인은 데이터가 아니라 배선이었다.** `_enrich_lineup` 은 어댑터에
+    `fill_lineups` 가 있어야 도는데 야구 어댑터엔 그게 없다. 그래서 명단이
+    나오는 시각이 와도 **받으러 가지 않았다.** 소스에는 있다 —
+    `naver_preview` 의 `fullLineUp` 이 그것이고, 투수를 뺀 9명 규칙은
+    v1.44에서 이미 만들어 뒀다.
+
+    **축구와 같은 칸(`meta.lineup`)에 담는다.** 칸을 따로 만들면 카드가
+    두 벌이 되고, 한쪽만 고치는 사고가 난다(약점 45·110). 다만 야구는
+    타순 번호와 수비 위치가 뜻을 가지므로 `order` 로 적는다 — 축구의
+    `rows`(포메이션 줄)와 성격이 다르다.
+    """
+    try:
+        from adapters import naver_preview as _NP
+        if league not in getattr(_NP, "BASEBALL_LEAGUES", ()):
+            return 0                      # 축구는 `_enrich_lineup` 이 맡는다
+    except Exception:                                    # noqa: BLE001
+        return 0
+    done = 0
+    todo = [g for g in games
+            if not getattr(g, "is_terminal", False)
+            and (g.meta and not g.meta.lineup)
+            and 0 < (g.start_utc - now).total_seconds()
+            <= BASEBALL_LINEUP_LEAD_SECONDS]
+    todo.sort(key=lambda g: g.start_utc)          # 곧 열리는 경기부터
+    for g in todo[:BASEBALL_LINEUP_MAX_PER_TICK]:
+        try:
+            pv = _NP.fetch(league, g)
+            if not pv:
+                continue
+            aw, hm = _NP.lineup(pv, "away"), _NP.lineup(pv, "home")
+            # **한쪽만 있는 명단은 명단이 아니다.** 아홉씩 다 찼을 때만 담는다
+            # (v1.44의 규칙 그대로 — 투수를 빼고 정확히 9명).
+            if len(aw) != 9 or len(hm) != 9:
+                continue
+            g.meta.lineup = {
+                "away": {"order": [list(x) for x in aw]},
+                "home": {"order": [list(x) for x in hm]}}
+            g.meta.lineup_seen_at = _iso(now)
+            done += 1
+        except Exception:                                # noqa: BLE001
+            continue        # 한 경기 못 채운다고 리그가 멈추지 않는다
+    return done
+
+
 def _enrich_lineup(name: str, league, games: list, now: datetime,
                    soft: list) -> None:
     """선발 라인업과 득점자를 얹는다 (v1.17, 유럽 축구 전용).
@@ -1167,12 +1222,22 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
     `_enrich_flow`와 같은 규칙: **실패해도 아무 일도 일어나지 않는다.**
     여기서 예외를 내보내면 그 리그가 그 틱을 통째로 건너뛴다 — 원래 사고보다 나쁘다.
     """
-    if not LINEUP_ENABLED:
-        return
     try:
         ad = _ADAPTERS.get(name)
-        if ad is None or not hasattr(ad, "fill_lineups"):
-            return                        # 2차 소스(football-data)는 라인업이 없다
+        if not LINEUP_ENABLED or ad is None or not hasattr(ad, "fill_lineups"):
+            # ★★ **골 도장은 라인업과 상관없다** (v1.63에서 떼어냄).
+            #
+            # 전에는 이 함수가 맨 앞에서 돌아서면 **골 도장도 함께 죽었다.**
+            # `fill_lineups` 를 가진 어댑터는 유럽 축구 하나뿐이라, K리그는
+            # 골 목록이 멀쩡히 있는데도 도장이 한 번도 안 찍혔고 **득점 속보가
+            # 전 기간 0건**이었다(실측 2026-09-19: 유로파 44건 vs K리그 0건).
+            #
+            # 라인업을 못 받는 것과 골 도장을 못 찍는 것은 **다른 사실**이다.
+            # 섞여 있으면 한쪽이 없을 때 다른 쪽이 조용히 따라 죽는다.
+            _stamp_goals_only(name, games, now)
+            return
+        if not LINEUP_ENABLED:
+            return
         # ① 되살리기 — 이름표(source_key)와 **신원**을 둘 다 본다 (v1.28).
         #
         # 팀 이름 문자열로 맞추던 것이 유럽에서 실패했던 그 실수는 피하되
@@ -1251,6 +1316,42 @@ def _enrich_lineup(name: str, league, games: list, now: datetime,
         _stamp_goals(games, now, known)
     except Exception as e:                                   # noqa: BLE001
         soft.append(f"{name}: 라인업 보강을 건너뜀 ({e.__class__.__name__})")
+
+
+def _stamp_goals_only(name: str, games: list, now: datetime) -> None:
+    """라인업 경로를 안 타는 리그의 **골 도장만** 찍는다 (v1.63).
+
+    되살리기와 도장 찍기는 `_enrich_lineup` 과 같은 규칙을 쓴다 — 그래야
+    두 길이 같은 판정을 한다. 다른 것은 **조회를 안 한다**는 것뿐이다
+    (그 어댑터에는 조회할 창구가 없다).
+    """
+    try:
+        known = _goal_tracked(name)
+        prev: dict = {}
+        prev_id: dict = {}
+        for d in _load_raw(name):
+            if not d.get("goal_seen_at"):
+                continue
+            k = d.get("source_key")
+            if k:
+                prev[k] = d
+            _id = game_identity(d)
+            if _id is not None:
+                prev_id[_id] = d
+        for g in games:
+            old = prev.get(g.source_key)
+            if not old:
+                _gid = game_identity(g)
+                old = prev_id.get(_gid) if _gid is not None else None
+            if old and old.get("goal_seen_at"):
+                merged = dict(old["goal_seen_at"])
+                merged.update({k: v
+                               for k, v in (g.meta.goal_seen_at or {}).items()
+                               if k not in merged})
+                g.meta.goal_seen_at = merged
+        _stamp_goals(games, now, known)
+    except Exception:                                        # noqa: BLE001
+        return          # 도장 하나 못 찍는다고 그 리그가 멈추지 않는다
 
 
 # ── ★ 골을 처음 본 시각 (v1.35) ────────────────────────────────────
@@ -1920,6 +2021,15 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 유럽은 이름표가 비어 `None vs None`이 되어 매칭이 언제나 실패했다.
             # 여기서 gameId로 직접 받아 그 구멍을 메운다.
             _enrich_lineup(name, lg, games, now, soft)
+            # **야구 타순은 다른 창구에서 온다** (v1.63). 축구용 경로는
+            # 어댑터에 `fill_lineups` 가 있어야 도는데 야구엔 그게 없어
+            # 명단이 나오는 시각이 와도 받으러 가지 않았다.
+            try:
+                _nb = _enrich_baseball_lineup(lg, games, now)
+                if _nb:
+                    print(f"  [타순] {name} {_nb}건")
+            except Exception as _e:                      # noqa: BLE001
+                soft.append(f"{name}: 타순 수집 실패 {_e.__class__.__name__}")
             # **진행 중인 경기에 구간을 얹는다 (v1.62).** 추가 조회가 없다 —
             # 구간은 위에서 이미 받은 일정 응답(`statusInfo`)에 들어 있다.
             try:

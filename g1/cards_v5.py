@@ -186,6 +186,7 @@ _DENSITY_CSS = {
 .tl{padding:25px 0}
 .fr{padding:26px 0}
 .qr{padding:16px 0}
+.bo{padding:13px 0}
 """,
     # 조임판 — 여백판이 상한을 넘을 때만. 골격·정보는 같고 간격만 돌린다.
     "tight": """
@@ -198,6 +199,7 @@ _DENSITY_CSS = {
 .tl{padding:19px 0}
 .fr{padding:22px 0}
 .qr{padding:12px 0}
+.bo{padding:8px 0}
 """,
 }
 
@@ -278,6 +280,14 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .lab svg{{width:30px;height:30px;flex:none}}
 .lab .lg{{color:{th['faint']};letter-spacing:.10em}}
 .lab .dt{{margin-left:auto;color:{th['faint']};letter-spacing:.06em;font-weight:700}}
+/* 야구 타순 (v1.63) — 번호·수비위치·이름 세 칸. 번호는 자릿수가 고르므로
+   `tabular-nums` 로 줄을 맞춘다. */
+.bo{{display:grid;grid-template-columns:52px 96px 1fr;align-items:baseline;
+  padding:13px 0;border-top:1px solid {th['line']}}}
+.bo .n{{font-size:26px;font-weight:800;color:{th['accent']};
+  font-variant-numeric:tabular-nums}}
+.bo .p{{font-size:22px;color:{th['faint']}}}
+.bo .nm{{font-size:29px;font-weight:700;color:{th['ink']}}}
 .lead{{font-size:62px;font-weight:800;letter-spacing:-.035em;line-height:1.14;
   margin-top:26px;color:{th['ink']}}}
 .sub{{font-size:27px;color:{th['dim']};margin-top:16px;font-weight:500;
@@ -765,6 +775,32 @@ def body_scoreboard(games: list, league: League, *,
                               mid=mid, lc=lc, rc=rc, cols=cols, lead=lead,
                               away_dot=team_dot(league, g.away, side="r"),
                               home_dot=team_dot(league, g.home, side="l")))
+    return "".join(out)
+
+
+def body_batting_order(teams: list) -> str:
+    """야구 선발 **타순** 블록 (v1.63). `teams`는 `{name, order:[(번,포지션,이름)]}`.
+
+    축구 명단(`body_lineup`)과 **다른 함수인 이유**: 축구는 포메이션 줄로
+    묶어 그리고, 야구는 **번호와 수비 위치**가 정보다. 한 함수에 우겨넣으면
+    두 종목 중 하나는 반드시 어색해진다.
+
+    ⚠️ **투수는 타순에 없다.** 소스의 `fullLineUp` 은 투수를 맨 앞에 넣어
+    주는데 그대로 쓰면 `1번 …선발투수` 가 된다(v1.44에서 실제로 그랬다).
+    빼는 규칙은 수집 쪽(`naver_preview.lineup`)에 있고 여기선 받아 적는다.
+    """
+    out = []
+    for t in teams:
+        rows = "".join(
+            f'<div class="bo"><span class="n">{int(no)}</span>'
+            f'<span class="p">{esc(pos)}</span>'
+            f'<span class="nm">{esc(nm)}</span></div>'
+            for no, pos, nm in (t.get("order") or []))
+        # **머리줄은 축구 명단과 같은 부품을 쓴다**(`.luh`) — 새로 만들면
+        # 한 채널에서 같은 성격의 블록이 두 모양으로 보인다(약점 45).
+        out.append(f'<div class="lu"><div class="luh">'
+                   f'<span class="nm">{esc(t["name"])}</span>'
+                   f'<span class="fm2">선발 타순</span></div>{rows}</div>')
     return "".join(out)
 
 

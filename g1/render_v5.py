@@ -1258,6 +1258,17 @@ def _lineup_body(game, league: League, *, with_goals: bool) -> str | None:
     lu = getattr(getattr(game, "meta", None), "lineup", None)
     if not lu:
         return None
+    # ── **야구는 타순이다** (v1.63) ────────────────────────────────
+    # 축구는 포메이션 줄, 야구는 번호·수비위치. 담는 칸은 같고(`meta.lineup`)
+    # 그리는 함수만 갈린다 — 칸을 따로 두면 카드가 두 벌이 된다.
+    if any((lu.get(side) or {}).get("order") for side in ("away", "home")):
+        _bt = []
+        for side, ref in (("away", game.away), ("home", game.home)):
+            _o = (lu.get(side) or {}).get("order") or []
+            if not _o:
+                return None       # 한쪽만 있는 명단은 명단이 아니다
+            _bt.append({"name": C5._nm(league, ref), "order": _o})
+        return C5.body_batting_order(_bt)
     scored: dict = {}
     if with_goals:
         for g in (getattr(game.meta, "goals", ()) or ()):
