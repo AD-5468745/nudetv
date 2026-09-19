@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import pathlib
@@ -3236,7 +3237,20 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     empty_kinds: dict[str, int] = {}
     missed: list[str] = []
     fail_why: list[str] = []
+    # ── **왜 안 나갔는지를 항목마다 적는다** (v1.58) ──────────────
+    #
+    # 2026-09-19: KBO·NPB 분석이 이틀 동안 0건인데 **원인을 밖에서 못 찾았다.**
+    # 큐에 오르고, 기록도 있고, 카드도 만들어지고, 댓글 자리도 찾아지는데
+    # 실제로는 안 나갔다 — 전부 따로 떼어 돌려 보고도 못 짚었다.
+    #
+    # 장부에는 '보낸 것'만 남는다. **안 보낸 것은 줄이 안 생긴다.** 그래서
+    # 대장을 아무리 봐도 빠진 것은 안 보이고, 사람이 매번 코드를 뒤져야 한다.
+    # 이제 **시계가 스스로 말한다** — 어느 항목이 어느 문에서 걸렸는지.
+    why_not: list[tuple] = []          # (종류, 범위, 걸린 문)
     dropped_before = 0
+
+    def _note_skip(_it, _door: str) -> None:
+        why_not.append((_it.content_type.value, _it.scope, _door))
 
     def _skip(code) -> None:
         skip_kinds[code] = skip_kinds.get(code, 0) + 1
@@ -3279,6 +3293,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if defer_for_precision(item.scheduled_utc, now, item.content_type,
                                next_tick, worst_tick):
             deferred += 1
+            _note_skip(item, "정확도를 위해 다음 틱으로 미룸")
             print(f"    ⏳ 정확도를 위해 미룸 {item.content_type.value} {item.scope} "
                   f"— 목표 {item.scheduled_utc.astimezone(KST):%H:%M}까지 "
                   f"{(item.scheduled_utc - now).total_seconds() / 60:.0f}분 남음 "
@@ -3286,6 +3301,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             continue
         if item.league in stale_block:
             # 며칠 묵은 데이터로 '오늘 경기'를 안내하지 않는다.
+            _note_skip(item, "묵은 데이터로 보류")
             _skip("stale_data")
             print(f"    ⏸ 묵은 데이터로 보류 {item.content_type.value} {item.scope}")
             continue
@@ -3299,6 +3315,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                               all_games=pool)
             if made is None:
                 nothing_to_render += 1
+                _note_skip(item, "카드를 못 만듦")
                 empty_kinds[item.content_type.value] = \
                     empty_kinds.get(item.content_type.value, 0) + 1
                 continue
@@ -3363,6 +3380,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                     _homeless.append(
                         f"{item.content_type.value} {item.scope}"
                         " — 그 경기 앵커가 없어 댓글로 못 답니다")
+                    _note_skip(item, "앵커가 없어 댓글 자리 없음")
+                else:
+                    _note_skip(item, "앵커는 있는데 댓글 자리를 아직 못 찾음")
                 _skip("thread_not_ready")
                 print(f"    ⏳ 토론방 자리 기다림 {item.content_type.value} "
                       f"{item.scope}")
@@ -3501,6 +3521,26 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         lines.append(f"발송기 — {n}")
     if soft:
         lines += [f"일시적 실패(자동 재시도) — {e}" for e in soft[:3]]
+    # ── **의무가 있는데 안 나간 것 — 어느 문에서 걸렸나** (v1.58) ──────
+    #
+    # 대표님 지시(2026-09-19): *"앵커에 컨텐츠가 하나라도 빠진 것들은 없는지
+    # 전수검증."* 검증은 사람이 아니라 시계가 매 틱 해야 한다.
+    #
+    # **큐에 올랐는데 안 나간 것**(위 문들)과 **큐에조차 못 온 것**을 함께 센다.
+    # 둘을 가르는 것이 핵심이다 — 전자는 발송 단계, 후자는 편성 단계 문제라
+    # 고칠 곳이 완전히 다르다.
+    try:
+        _due_kinds = {(i.content_type.value, i.scope) for i in due}
+        _blocked = collections.Counter()
+        _ex: dict = {}
+        for _k, _sc, _door in why_not:
+            _blocked[(_k, _door)] += 1
+            _ex.setdefault((_k, _door), _sc)
+        for (_k, _door), _n in _blocked.most_common(4):
+            lines.append(f"[{_k}] {_n}건이 '{_door}' 에서 걸렸습니다 — "
+                         f"예) {_ex[(_k, _door)][:44]}")
+    except Exception:                                        # noqa: BLE001
+        pass
     if failed:
         lines.append(f"발송 실패 {failed}건 (이번 틱에 새로 발생)")
         _fw: list = []
