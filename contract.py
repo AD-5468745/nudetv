@@ -3556,6 +3556,23 @@ BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup", "goal_flash"})
 # ⚠️ **버튼은 '댓글 남기기' 줄을 덮는다**(2026-09-17 실측). 그래서 이 표에는
 # **댓글이 필요 없는 글만** 들어간다. 경기 앵커는 절대 여기 넣지 않는다 —
 # 거기서는 댓글 줄이 곧 토론방 입구다.
+# ── **경기 기록실이 있는 종목** (v1.63) ────────────────────────
+#
+# 결승타·승패투수·진기록은 **야구에만 있는 칸**이다. 축구 응답에는 그 창구가
+# 비어 있다(실측). 그런데 의무표는 '끝난 경기 전부'로 잡혀 있어, 축구 32경기가
+# 영원히 `0건` 으로 남아 있었다 — **못 채우는 의무는 감시가 아니라 소음이고,
+# 그 소음 속에 진짜 구멍이 묻힌다.**
+#
+# 그래서 사실대로 좁힌다. 축구에 기록실을 붙이려면 먼저 그 재료를 찾고,
+# 찾은 뒤에 이 표를 넓힌다.
+BOXSCORE_SPORTS: frozenset = frozenset({ScoreUnit.RUNS})
+
+
+def boxscore_expected(league: "League") -> bool:
+    """이 리그에 경기 기록실 의무가 있는가."""
+    return SCORE_UNIT_BY_LEAGUE.get(league) in BOXSCORE_SPORTS
+
+
 BUNDLE_LINK_CONTENT: frozenset = frozenset({
     "morning", "league_result", "night_brief", "daily_index"})
 # 끝난 경기도 버튼에 넣는 글 — 전체 결과는 끝난 경기가 본문이다.

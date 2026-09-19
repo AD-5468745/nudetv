@@ -3117,6 +3117,53 @@ check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★★ 표의 구멍 넷 — 다시 뚫리지 않게 (v1.63)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"구멍을 전부 매꿀 수 있도록 하자."*
+# 네 구멍 모두 **재료는 있는데 배선이 없어서** 0건이던 것이다. 같은 얼굴이
+# 또 생기지 않게 각각을 시험으로 묶는다.
+
+# ① 사전정보 — 예약이 '지금+1분'으로 무한히 밀리면 안 된다
+_pgz = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day="2026-08-29", hh=18)
+        for i in range(2)]
+_pg_late = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)   # 시작 후
+_pg_early = datetime(2026, 8, 29, 3, 0, tzinfo=timezone.utc)   # 시작 6시간 전
+for _nm, _nw in (("시작 전", _pg_early), ("이미 3시간 지난 뒤", _pg_late)):
+    _q = P.build_queue(_pgz, _nw, "ch", floor_hours=0)
+    _pgi = [i for i in _q if i.content_type is ContentType.PREGAME]
+    _drift = [i for i in _pgi
+              if abs((i.scheduled_utc - _nw).total_seconds() - 60) < 2]
+    check(f"★★★ 사전정보 예약이 '지금+1분'에 붙어 있지 않다 ({_nm})",
+          not _drift or not _pgi,
+          f"{len(_drift)}/{len(_pgi)}건이 지금+1분")
+
+# ② 야구 타순 — 담는 칸은 축구와 같고, 그리는 함수만 갈린다
+_bo = mkgame(lg=League.KBO, day="2026-08-29", hh=18)
+_bo.meta.lineup = {"away": {"order": [[1, "유격수", "심우준"], [2, "중견수", "최인호"]]},
+                   "home": {"order": [[1, "2루수", "신민재"], [2, "중견수", "박해민"]]}}
+import render_v5 as _R5b
+_bo_body = _R5b._lineup_body(_bo, League.KBO, with_goals=False)
+check("★★★ 야구 명단이 **타순**으로 그려진다 (번호·수비위치·이름)",
+      bool(_bo_body) and "심우준" in _bo_body and "유격수" in _bo_body)
+check("  ↳ 한쪽만 있는 명단은 명단이 아니다",
+      _R5b._lineup_body(
+          type("G", (), {"meta": type("M", (), {"lineup": {"away": _bo.meta.lineup["away"]}})(),
+                         "away": _bo.away, "home": _bo.home})(),
+          League.KBO, with_goals=False) is None)
+
+# ③ 기록실 — 못 채우는 의무를 표에 남겨 두지 않는다
+check("★★ 경기 기록실 의무는 **야구에만** 있다 (축구엔 그 창구가 없다)",
+      C.boxscore_expected(League.KBO) and C.boxscore_expected(League.MLB)
+      and C.boxscore_expected(League.NPB)
+      and not C.boxscore_expected(League.KL1)
+      and not C.boxscore_expected(League.EPL))
+
+# ④ 골 도장 — 라인업 배선에 묶여 있으면 안 된다
+check("★★★ 골 도장 경로가 라인업과 **따로** 있다 (한쪽이 없어도 다른 쪽이 산다)",
+      hasattr(T, "_stamp_goals_only"))
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★ 구간 속보 — 전반 종료 · 5회 종료 · 연장 (v1.62)")
 # ══════════════════════════════════════════════════════════════
 #

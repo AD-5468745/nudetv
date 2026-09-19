@@ -1258,7 +1258,20 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 # 재료가 없는 리그(축구·농구·배구)에서도 큐에는 오른다 —
                 # 렌더가 `None`을 내고 조용히 넘어간다. 여기서 리그를 가리면
                 # 그 표를 두 곳(여기와 수집기)에서 관리하게 된다.
-                pg_at = an_at + timedelta(minutes=1)
+                # ★★ **예약을 '분석 시각 + 1분'으로 두면 영영 차례가 안 온다**
+                # (v1.63에서 고침).
+                #
+                # `an_at` 은 `max(시작-3시간, 지금)` 이다. 이미 3시간이 지난
+                # 경기에서는 그게 곧 **지금**이라, 사전정보 예약이 매 틱
+                # `지금+1분` 이 된다. 앞창이 0이니 이번 틱엔 안 담기고,
+                # 다음 틱에 다시 `지금+1분` 이 된다 — **무한히 1분 뒤로
+                # 밀린다.** 그래서 만든 이래 **한 장도 안 나갔다**(실측 0건).
+                #
+                # 차례는 **경기 시작 기준**으로 못 박는다. 분석 바로 뒤라는
+                # 뜻은 그대로 지키되(대표님이 정한 댓글 차례가 `분석 먼저`),
+                # 시각이 '지금'을 따라다니지 않는다.
+                pg_at = max(_g.start_utc - timedelta(hours=ANALYSIS_LEAD_HOURS)
+                            + timedelta(minutes=1), now)
                 if pg_at < _g.start_utc and pg_at <= hi and keep_in_queue(
                         pg_at, now, ContentType.PREGAME):
                     items.append(QueueItem(

@@ -314,15 +314,38 @@ _KEY_STATS = (("hit", "안타"), ("hr", "홈런"), ("kk", "삼진"),
               ("sb", "도루"), ("err", "실책"))
 
 
+# 같은 값을 리그마다 다른 이름으로 준다 — 삼진이 KBO는 `kk`, MLB·NPB는 `so`.
+_KEY_ALIAS = {"kk": ("kk", "so"), "hit": ("hit",), "hr": ("hr",),
+              "sb": ("sb",), "err": ("err",)}
+
+
+def _pick(d: dict, key: str):
+    for k in _KEY_ALIAS.get(key, (key,)):
+        if (d or {}).get(k) is not None:
+            return d[k]
+    return None
+
+
 def key_stats(rec: dict) -> list:
-    """`[(이름, 원정값, 홈값)]`. 양쪽 다 있는 칸만."""
+    """`[(이름, 원정값, 홈값)]`. 양쪽 다 있는 칸만.
+
+    ★ **리그마다 담는 자리가 다르다** (v1.63에서 넓힘).
+        KBO       `todayKeyStats.{away,home}`  · 삼진 `kk`
+        MLB·NPB   `awayKeyStat` / `homeKeyStat` · 삼진 `so`
+
+    전에는 KBO 자리만 봤다. 그래서 **MLB·NPB 경기 기록실이 전 기간 0건**이었다
+    (실측 2026-09-19: 재료는 멀쩡히 오는데 해석기가 빈손으로 돌아왔다).
+    자리가 다를 뿐 값은 같은 것이므로, 두 자리를 다 본다.
+    """
     tk = (rec or {}).get("todayKeyStats") or {}
-    a, h = tk.get("away") or {}, tk.get("home") or {}
+    a = tk.get("away") or (rec or {}).get("awayKeyStat") or {}
+    h = tk.get("home") or (rec or {}).get("homeKeyStat") or {}
     out = []
     for k, label in _KEY_STATS:
-        if a.get(k) is None or h.get(k) is None:
+        av, hv = _pick(a, k), _pick(h, k)
+        if av is None or hv is None:
             continue
-        out.append((label, str(a[k]), str(h[k])))
+        out.append((label, str(av), str(hv)))
     return out
 
 
@@ -337,9 +360,18 @@ def pitching_result(rec: dict) -> list:
     궁금한 값이 아니다. 필요해지면 `_WLS`에서 다시 열면 된다.
     """
     out = []
-    for p in (rec or {}).get("pitchingResult") or []:
-        what = _WLS.get(str(p.get("wls") or ""))
-        name = str(p.get("name") or "").strip()
+    # ★ **투수도 리그마다 자리가 다르다** (v1.63).
+    #     KBO       `pitchingResult` · `wls` 가 코드(`W`/`L`/`S`)
+    #     MLB·NPB   `awayPitcher` + `homePitcher` · `wls` 가 한글(`승`/`패`)
+    _rows = list((rec or {}).get("pitchingResult") or [])
+    if not _rows:
+        _rows = list((rec or {}).get("awayPitcher") or []) \
+            + list((rec or {}).get("homePitcher") or [])
+    for p in _rows:
+        _raw = str(p.get("wls") or "").strip()
+        # 코드면 우리말로 바꾸고, 이미 우리말이면 그대로 쓴다.
+        what = _WLS.get(_raw) or (_raw if _raw in _WLS.values() else None)
+        name = str(p.get("name") or p.get("playerName") or "").strip()
         if not what or not name or what == "홀드":
             continue
         season = f"{p.get('w', 0)}승 {p.get('l', 0)}패"
