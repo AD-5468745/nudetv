@@ -386,7 +386,31 @@ class NaverGameAdapter(NoticeMixin):
             return None
         return by_gap[0][1]
 
-    def enrich_live(self, games: list, league: League) -> int:
+    def _fill_live_goals(self, game, cands, aw: str, hm: str) -> None:
+        """진행 중 경기의 득점자를 채운다 (v1.66). 실패는 조용히 넘어간다.
+
+        ⚠️ **종료 경기는 손대지 않는다** — 그쪽은 `enrich` 가 점수 대조까지
+        하고 채운다. 여기서 겹쳐 쓰면 판정이 두 곳이 된다.
+
+        ⚠️ **점수와 안 맞으면 안 담는다.** `_fill_football` 이 그 판정을 한다 —
+        득점자 수가 점수와 다르면 타임라인이 거짓말을 한다. 진행 중에는
+        점수가 먼저 오고 득점자가 늦게 붙는 일이 흔해서 더 중요하다.
+        """
+        try:
+            gid = (cands[0][1] if len(cands) == 1
+                   else self._pick(cands, game, aw, hm))
+            if gid is None:
+                return
+            g = self._game(gid, game.league)
+            nh, na = _num(g.get("homeTeamScore")), _num(g.get("awayTeamScore"))
+            if nh is None or na is None:
+                return
+            self._fill_football(game.meta, g, nh, na)
+        except Exception:                                # noqa: BLE001
+            return
+
+    def enrich_live(self, games: list, league: League,
+                    *, want_goals: bool = False) -> int:
         """**진행 중인 경기에 구간을 얹는다** (v1.62). 채운 개수.
 
         대표님 지시(2026-09-19): *"축구는 전반종료, 후반종료, 연장 알림도
@@ -434,6 +458,20 @@ class NaverGameAdapter(NoticeMixin):
                                 if c[1] == gid and len(c) > 2), {})
                 if not isinstance(row, dict) or not row.get("info"):
                     continue
+                # ── **진행 중 득점자도 여기서 받는다** (v1.66) ──────────
+                #
+                # 대표님 지시(2026-09-19): *"득점자도 마무리해. 케이리그
+                # 뿐만 아니라, 모든 경기."*
+                #
+                # 유럽 축구는 제 어댑터(`naver_football.fill_goals`)가 진행 중
+                # 경기를 매 틱 다시 받는다. **K리그는 그 창구가 없다** —
+                # 연맹 소스가 점수만 주고 득점자 명단을 안 준다(행의 모든 칸을
+                # 확인했다). 그래서 K리그 득점 속보가 전 기간 0건이었다.
+                #
+                # 여기서 메우면 **네이버 경로를 쓰는 모든 리그**가 함께 덮인다 —
+                # 리그마다 창구를 새로 만들면 다음에 붙는 리그에서 또 빈다.
+                if want_goals and league in _FOOTBALL:
+                    self._fill_live_goals(game, cands, aw, hm)
                 per, state = parse_period(row["info"])
                 if per is None:
                     continue

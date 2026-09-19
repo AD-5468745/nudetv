@@ -3117,6 +3117,40 @@ check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★★ 축구 **모든 리그**에 득점자 창구가 있다 (v1.66)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"득점자도 마무리해. 케이리그 뿐만 아니라,
+# 모든 경기."*
+#
+# 유럽·MLS는 제 어댑터(`naver_football.fill_goals`)가 **진행 중 경기를 매 틱
+# 다시 받는다**. K리그만 그 창구가 없었다 — 연맹 소스가 점수만 주고 득점자
+# 명단을 안 준다(행의 모든 칸을 확인했다). 그래서 K리그 득점 속보가 전 기간
+# 0건이었다.
+#
+# **리그마다 창구를 새로 만들지 않는다** — 다음에 리그를 붙일 때 또 빈다.
+# 네이버 공용 경로가 '자체 창구가 없는 축구 리그'를 전부 덮는다.
+from adapters.naver_football import CATEGORY as _NF_CAT
+from adapters.naver_game import _FOOTBALL as _NG_FOOT
+_gap = []
+for _lg in League:
+    if not C.league_enabled(_lg):
+        continue
+    if C.SCORE_UNIT_BY_LEAGUE.get(_lg) is not C.ScoreUnit.GOALS:
+        continue                      # 야구·농구·배구는 골이라는 개념이 없다
+    if _lg in _NF_CAT:                # 제 어댑터가 채운다 (진행 중 포함)
+        continue
+    if _lg in _NG_FOOT:               # 네이버 공용이 채운다 (v1.66)
+        continue
+    _gap.append(_lg.value)
+check("★★★ 득점자를 아무도 안 채우는 축구 리그가 **없다**",
+      not _gap, "빈 리그: " + ", ".join(_gap))
+check("  ↳ K리그는 공용 경로가 덮는다 (제 소스에 득점자가 없다)",
+      League.KL1 in _NG_FOOT and League.KL1 not in _NF_CAT)
+check("  ↳ 유럽·MLS는 제 어댑터가 덮는다 (두 곳에서 채우면 판정이 갈린다)",
+      {League.EPL, League.LALIGA, League.UEL, League.MLS} <= set(_NF_CAT))
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★★ 명단이 있었는데 못 나간 경기를 시계가 잡는다 (v1.65)")
 # ══════════════════════════════════════════════════════════════
 #

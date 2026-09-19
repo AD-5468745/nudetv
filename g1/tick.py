@@ -2063,7 +2063,13 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
                 global _FLOW_ADAPTER
                 if _FLOW_ADAPTER is None:
                     _FLOW_ADAPTER = _NGA()
-                _np = _FLOW_ADAPTER.enrich_live(games, lg)
+                # **자체 골 창구가 없는 리그에만 득점자를 함께 받는다**
+                # (v1.66). 유럽 축구는 `naver_football.fill_goals` 가 이미
+                # 매 틱 다시 받는다 — 두 곳에서 채우면 판정이 갈린다.
+                _ad0 = _ADAPTERS.get(name)
+                _want_goals = not hasattr(_ad0, "fill_goals")
+                _np = _FLOW_ADAPTER.enrich_live(games, lg,
+                                                want_goals=_want_goals)
                 _ns = _stamp_periods(games, now)
                 if _ns:
                     print(f"  [구간] {name} 새 구간 {_ns}건 (구간 확인 {_np}건)")
