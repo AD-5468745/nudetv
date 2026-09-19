@@ -482,8 +482,24 @@ STATUS_MAP: dict[League, dict[str, Status]] = {
     # 옛 e스포츠 리그 — 종목사 공식 API. 연기·취소 전용 상태값 없음(일정 이동으로 처리)
 }
 
-# K리그 `1S12`(전반 12분) 처럼 접두 + 숫자인 진행중 코드
+# ── K리그 **진행 중** 코드 (v1.64에서 비로소 배선됨) ─────────────
+#
+# `1S 12`(전반 12분) · `2S 24`(후반 24분)처럼 **접두 + 분**으로 온다.
+# 상태표에는 `1E~4E`(피리어드 종료)와 `FE`(경기 종료)만 있고 **진행 중
+# 코드가 통째로 빠져 있었다.** 그래서 K리그 경기는 90분 내내
+# `UnknownStatus` → `scheduled` 로 떨어졌고 —
+#
+#   · 점수·골은 `LIVE`/`FINAL` 일 때만 담기므로 **골 속보가 구조적으로 0건**
+#   · 구간 속보도 같은 이유로 0건
+#   · 채널에는 경기가 끝나야 비로소 존재하기 시작했다
+#
+# 이 상수는 **정의만 되고 아무 데서도 안 쓰이고 있었다.** 누군가 예상해
+# 적어 두고 배선을 잊은 것이다 — 주석에도 `1S~4S` 라고 적혀 있었다.
+# 실측 2026-09-19 20:23: 안양-울산이 83분째 `2S 24 · 2:1` 인데 우리는
+# `scheduled · 점수 없음 · 골 0건`.
 KL_LIVE_PREFIXES = ("1s", "2s", "3s", "4s")
+# 그 꼴을 쓰는 리그. K리그2를 붙이면 여기 함께 넣는다.
+KL_LIVE_LEAGUES: frozenset = frozenset({League.KL1})
 
 # KBO는 상태 문자열이 아니라 취소 사유가 그대로 들어온다
 # (2026 시즌 실측: 우천취소 25 · 폭염 30 · 기타 30 — 사유가 다양해 화이트리스트 불가)
@@ -592,6 +608,12 @@ def parse_status(raw: str, league: League) -> Status:
     if not table:
         raise UnknownStatus(f"{league.value}: 상태 매핑 미정의 (raw={raw!r})")
     if key not in table:
+        # **접두 + 분** 꼴을 알아본다 (`2S 24` → 후반 진행). 분이 붙어 온다는
+        # 이유로 진행 중 경기를 통째로 못 알아보던 사고가 있었다(v1.64).
+        if league in KL_LIVE_LEAGUES:
+            head = key.split()[0] if key.split() else key
+            if head.startswith(KL_LIVE_PREFIXES):
+                return Status.LIVE
         raise UnknownStatus(f"{league.value}: 미지 상태값 {raw!r}")
     return table[key]
 

@@ -3117,6 +3117,41 @@ check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★★ K리그 진행 중 상태 — 경기 내내 '예정'이면 안 된다 (v1.64)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지적(2026-09-19 20:23): *"지금 안양울산 경기중인데 경기시작 킥오프
+# 알림없고 골득점 실시간 알림 전혀 없다."*
+#
+# 상태표에 **진행 중 코드(`1S~4S`)가 통째로 빠져** 있었다. 게다가 실제 값은
+# `2S 24`(후반 24분)처럼 **분이 붙어** 온다. 그래서 K리그 경기는 90분 내내
+# `UnknownStatus` → `scheduled` 로 떨어졌고, 점수·골은 `LIVE`/`FINAL` 일 때만
+# 담기므로 **골 속보가 구조적으로 0건**이었다. 채널에는 경기가 **끝나야**
+# 비로소 존재하기 시작했다.
+#
+# `KL_LIVE_PREFIXES` 는 계약에 **정의만 되고 아무 데서도 안 쓰이고** 있었다 —
+# 누군가 예상해 적어 두고 배선을 잊은 것이다.
+for _raw, _want in (("FE", Status.FINAL), ("1E", Status.LIVE),
+                    ("2S 24", Status.LIVE), ("1S 45", Status.LIVE),
+                    ("4S 7", Status.LIVE), ("2S", Status.LIVE),
+                    ("", Status.SCHEDULED)):
+    check(f"K리그 상태 {_raw!r:8} → {_want.value}",
+          C.parse_status(_raw, League.KL1) is _want)
+_unknown = False
+try:
+    C.parse_status("ZZ", League.KL1)
+except C.UnknownStatus:
+    _unknown = True
+check("★★ 모르는 값은 **그대로 막힌다** (아무거나 진행 중으로 삼지 않는다)",
+      _unknown)
+from adapters.kleague import _period_no as _kpn, _period_state as _kps
+check("★★★ 같은 값에서 **구간도 읽는다** (따로 조회하지 않는다)",
+      (_kpn("2S 24"), _kps("2S 24")) == (2, "진행")
+      and (_kpn("1E"), _kps("1E")) == (1, "종료"))
+check("  ↳ 경기 전·종료에는 구간이 없다 (엉뚱한 때 구간 속보가 울리면 안 된다)",
+      _kpn("") is None and _kpn("FE") is None)
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★★ 표의 구멍 넷 — 다시 뚫리지 않게 (v1.63)")
 # ══════════════════════════════════════════════════════════════
 #

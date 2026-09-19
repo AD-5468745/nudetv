@@ -39,6 +39,28 @@ _API = "https://www.kleague.com/getScheduleList.do"
 _OPENER = make_opener()
 
 
+def _period_no(raw: str):
+    """`2S 24` · `1E` → 구간 번호. 못 읽으면 None.
+
+    **경기 전(`""`)과 종료(`FE`)는 구간이 없다** — 그때 번호를 매기면
+    구간 속보가 엉뚱한 시점에 울린다.
+    """
+    t = str(raw or "").strip().lower()
+    if not t or t.startswith("fe"):
+        return None
+    m = re.match(r"^([1-4])[se]", t)
+    return int(m.group(1)) if m else None
+
+
+def _period_state(raw: str) -> str:
+    """`진행` 또는 `종료`. 구간이 없으면 빈 문자열."""
+    t = str(raw or "").strip().lower()
+    if not t or t.startswith("fe"):
+        return ""
+    m = re.match(r"^[1-4]([se])", t)
+    return {"s": "진행", "e": "종료"}.get(m.group(1), "") if m else ""
+
+
 def _post(body: dict) -> dict:
     req = urllib.request.Request(
         _API, data=json.dumps(body).encode(),
@@ -147,7 +169,16 @@ class KLeagueAdapter(NoticeMixin):
             start_utc=start.astimezone(ZoneInfo("UTC")), home_tz="Asia/Seoul",
             status=status, score=score,
             venue=r.get("fieldNameFull") or r.get("fieldName") or None,
-            meta=GameMeta(season_category=r.get("codeName") or None),
+            meta=GameMeta(season_category=r.get("codeName") or None,
+                          # **같은 값이 구간도 말해 준다** (v1.64).
+                          # `2S 24` = 후반 진행 · `1E` = 전반 종료. 따로
+                          # 조회할 필요가 없다 — 이미 받은 줄에 들어 있다.
+                          period=_period_no(raw_status),
+                          period_state=_period_state(raw_status),
+                          live_score=((int(ag), int(hg))
+                                      if status is Status.LIVE
+                                      and hg is not None and ag is not None
+                                      else None)),
         )
         g.validate()
         return g
