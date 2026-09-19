@@ -1332,7 +1332,6 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
 
     # 비교 줄 — 기록이 있을 때만. 없으면 그림과 시각만으로도 문패가 선다.
     rows: list = []
-    _h2h = ""
     if rb is not None:
         try:
             sa, sh = rb.team(game.away.team_code), rb.team(game.home.team_code)
@@ -1348,16 +1347,48 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
                              f"{sh.last10.win}-{sh.last10.loss}",
                              "l" if sa.last10.win > sh.last10.win else
                              ("r" if sh.last10.win > sa.last10.win else "")))
+            # ── 흐름 (v1.69) ─────────────────────────────────
+            # `3연승`·`2연패`. 둘 다 연속이 없으면(`—` `—`) 줄을 뺀다 —
+            # 줄표 두 개짜리 줄은 자리만 먹고 아무것도 말하지 않는다.
+            _fa, _fh = _streak_text(sa), _streak_text(sh)
+            if _fa != "—" or _fh != "—":
+                _na_, _nh_ = _streak_num(sa), _streak_num(sh)
+                _bt = ""
+                if _na_ is not None and _nh_ is not None and _na_ != _nh_:
+                    _bt = "l" if _na_ > _nh_ else "r"
+                rows.append((_fa, "흐름", _fh, _bt))
             _w = rb.between(game.away.team_code, game.home.team_code)
             if _w and _w.total:
                 _d = f" {_w.draw}무" if _w.draw else ""
-                # **맞대결은 한쪽 값이 아니다.** 비교 줄에 넣으면 오른쪽 칸이
-                # 빈 채로 남아 '홈 팀 값이 없다'로 읽힌다 — 아래 줄로 내린다.
-                _h2h = f"{na} {_w.win}승{_d} {_w.loss}패"
+                # **맞대결은 한쪽 값이 아니다** — 한 칸만 채우면 오른쪽이
+                # 빈 채로 남아 '홈 팀 값이 없다'로 읽힌다. 그래서 v1.68까지
+                # 아래 바로 내려 두었는데, v1.69에서 **뒤집어 양쪽에 적는다.**
+                # 원정 3승 1패는 곧 홈 1승 3패다 — 없는 값을 지어내는 게
+                # 아니라 같은 사실을 상대 쪽에서 읽은 것이다.
+                rows.append((f"{_w.win}승{_d} {_w.loss}패", "상대전적",
+                             f"{_w.loss}승{_d} {_w.win}패",
+                             "l" if _w.win > _w.loss else
+                             ("r" if _w.loss > _w.win else "")))
+
+    # ── 선발 (v1.69) ─────────────────────────────────────────────
+    # 야구는 선발투수, 축구는 포메이션. **소스가 준 것만 쓴다** — 한쪽만
+    # 있으면 줄을 통째로 뺀다(반쪽 줄은 '값이 빠졌다'로 읽힌다).
+    _m = getattr(game, "meta", None)
+    _sp = getattr(_m, "starting_pitchers", None) or ()
+    if len(_sp) == 2 and all(str(x or "").strip() for x in _sp):
+        rows.append((str(_sp[0]).strip(), "선발", str(_sp[1]).strip(), ""))
+    else:
+        _lu = getattr(_m, "lineup", None) or {}
+        _fa2 = str((_lu.get("away") or {}).get("formation") or "")
+        _fh2 = str((_lu.get("home") or {}).get("formation") or "")
+        if _fa2 and _fh2:
+            rows.append(("-".join(_fa2) if _fa2.isdigit() else _fa2, "포메이션",
+                         "-".join(_fh2) if _fh2.isdigit() else _fh2, ""))
 
     body = C5.body_versus(away_name=na, home_name=nh,
                           away_logo=la, home_logo=lh,
-                          away_color=ca, home_color=ch, rows=rows)
+                          away_color=ca, home_color=ch, rows=rows,
+                          compact=True)
     # 시작 시각은 **머리말이 이미 말한다**(`18:30 시작`). 여기 또 쓰면 한 장에
     # 같은 사실이 두 번 나온다 — 그게 고치려던 문제다.
     _bars = []
@@ -1365,8 +1396,8 @@ def anchor_card(game, league: League, *, rb=None, now: datetime | None = None
         _bars.append(("경기장", venue_name(game.venue) or ""))
     if loc:
         _bars.append(("현지 시각", loc))
-    if _h2h:
-        _bars.append(("올 시즌 맞대결", _h2h))
+    # `_h2h`는 이제 **비교줄이 맡는다**(위 상대전적). 여기 또 적으면 한 장에
+    # 같은 사실이 두 번 나온다 — 시작 시각을 머리말에서 뺀 것과 같은 이유다.
     body += "".join(
         f'<div class="bar"><span class="k">{C5.esc(k)}</span>'
         f'<span class="v">{C5.esc(v)}</span></div>' for k, v in _bars if v)

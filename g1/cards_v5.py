@@ -39,7 +39,15 @@ from headline import Headline
 
 # 카드 폭. 텔레그램은 세로로 긴 사진도 잘 보여준다(비율 20:1까지) —
 # 높이는 내용에 맞춰 늘어나게 두고, 폭만 고정한다.
-CARD_W = 1080
+#
+# ★ **계약에서 가져온다** (v1.69). 전에는 여기 1080이 따로 적혀 있어서
+# 계약의 폭을 바꿔도 이 값이 안 따라왔다 — 렌더 창은 1080인데 카드는 1440으로
+# 그려져 창 밖으로 넘친 채 잘려 나갈 뻔했다. **한 곳이 정한다.**
+# **두 값이 있다 — 헷갈리면 폭이 두 번 곱해진다** (v1.69에서 실제로 그랬다).
+#   `CARD_BASE_W` — CSS 안에 적는 값. 스케일러가 이걸 키운다.
+#   `CARD_W`      — 최종 그림 폭. 렌더 창과 계약 게이트가 이걸 본다.
+CARD_BASE_W = 1080
+from contract import CARD_WIDTH_PX as CARD_W
 
 # 리그 이름은 **계약 한 곳**이 정한다 (v1.50).
 # 여기 따로 두었더니 카드는 `프리미어리그`, 산문은 `EPL`로 갈렸다.
@@ -127,6 +135,39 @@ THEMES = {
 # **대표님이 시안 3벌을 보고 고른 값** (2026-09-07): "C — 바 + 라벨까지".
 # 한 글자만 바꾸면 전 카드가 따른다.
 ACCENT_MODE = "full"
+
+# ══════════════════════════════════════════════════════════════
+# 크기 — **한 손잡이로 전부 키운다** (v1.69)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-20): *"너무 작은 글씨, 어두운테마 폰에서 보기 힘들더라.
+# 사이즈도 더 키우고 폰트도 전부 조금더 키우자. 이미지 카드 사이즈도 최대로."*
+#
+# **두 가지는 서로 다른 일이다.**
+#   · `CARD_RES`  — 그림의 **해상도**. 폰은 사진을 말풍선 폭에 맞춰 늘려 보여
+#                   주므로, 폭을 키우면 **더 선명해질 뿐 글씨가 커지진 않는다.**
+#                   요즘 폰(3배 화면)에서 1080은 살짝 모자라 1440으로 올린다.
+#   · `TYPE_BOOST` — 글씨가 **카드 안에서 차지하는 비율**. 이것만이 폰 화면에서
+#                   글씨를 실제로 크게 만든다.
+#
+# 둘을 곱해 `<style>` 블록의 px 를 한 번에 바꾼다. 값이 CSS 곳곳에 흩어져
+# 있어 손으로 고치면 반드시 몇 개를 빠뜨리고, 그 칸만 상대적으로 작아진다.
+CARD_RES = 1.0             # 폭은 그대로 (위 계약 주석 참조)
+TYPE_BOOST = 1.25          # **글씨만** 키운다 — 이것이 폰에서 실제로 커지는 유일한 값
+
+
+def _scaled_css(css: str) -> str:
+    """`<style>` 블록의 px 를 통째로 키운다. 글꼴은 한 단 더.
+
+    **한 번만 훑는다.** 두 번 훑으면 글꼴이 두 번 곱해진다 — 그런 실수는
+    카드가 조금 이상해질 뿐 오류를 안 내서 한참 뒤에야 발견된다.
+    """
+    def rep(m):
+        v = float(m.group(2))
+        if m.group(1):                      # font-size:…
+            return f"font-size:{round(v * CARD_RES * TYPE_BOOST)}px"
+        return f"{round(v * CARD_RES)}px"
+    return re.sub(r"(font-size:\s*)?([\d.]+)px", rep, css)
 
 
 def esc(s) -> str:
@@ -257,6 +298,17 @@ def shell(*, kind: str, league: Optional[League], date_label: str,
     _c = credit_line(credit_for if credit_for is not None else [league])
     _credit = f'<span class="cr">{esc(_c)}</span>' if _c else ""
     label, icon = KIND_META[kind]
+    # ── 리그 로고 (v1.69 · 대표님: *"각 리그로고를 수집해서 함께 사용하자"*) ──
+    # **없는 리그에는 아무것도 안 붙인다.** 엉뚱한 로고보다 없는 편이 낫다
+    # (실측: 15개 중 8개만 소스에 있다). 그때는 지금처럼 글자 라벨만 나간다.
+    _lglogo = ""
+    try:
+        from adapters.logos import league_logo as _LL
+        _u = _LL(league)
+        if _u:
+            _lglogo = f'<img class="lgi" src="{_u}" alt="">'
+    except Exception:                                    # noqa: BLE001
+        _lglogo = ""
     # **종류 이름을 발송 순간에 바꿔 달 수 있다.** 경기 예고가 첫 경기 뒤에
     # 나가는 날에는 '예고'가 아니라 '안내'다(`contract.morning_label`).
     # 아이콘은 그대로 둔다 — 같은 종류의 카드이고, 아이콘까지 바뀌면
@@ -265,13 +317,13 @@ def shell(*, kind: str, league: Optional[League], date_label: str,
     lg = group_label or (LEAGUE_LABEL.get(league, "전 리그") if league else "전 리그")
     sub = (f'<div class="sub">{esc(head.sub)}</div>' if head.sub else "")
     rail = '<div class="rail"></div>' if th["rail"] else ""
-    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+    return _scaled_css(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
-html,body{{width:{CARD_W}px;background:{th['bg']};
+html,body{{width:{CARD_BASE_W}px;background:{th['bg']};
   font-family:Pretendard,'Noto Sans KR','Apple SD Gothic Neo',sans-serif;
   color:{th['ink']};-webkit-font-smoothing:antialiased}}
-.card{{width:{CARD_W}px;border-radius:{th['radius']};overflow:hidden;position:relative}}
+.card{{width:{CARD_BASE_W}px;border-radius:{th['radius']};overflow:hidden;position:relative}}
 .num{{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}}
 .top{{padding:52px 56px 0;position:relative}}
 .rail{{position:absolute;left:0;top:52px;bottom:0;width:6px;background:{_rail_color}}}
@@ -279,6 +331,9 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
   letter-spacing:.16em;color:{th['accent']}}}
 .lab svg{{width:30px;height:30px;flex:none}}
 .lab .lg{{color:{th['faint']};letter-spacing:.10em}}
+/* 리그 엠블럼 — 종류 라벨과 리그 이름 사이. 글자 높이에 맞춘다(v1.69). */
+.lab .lgi{{height:30px;width:auto;object-fit:contain;display:block;
+  margin-left:4px;flex:none}}
 .lab .dt{{margin-left:auto;color:{th['faint']};letter-spacing:.06em;font-weight:700}}
 /* 야구 타순 (v1.63) — 번호·수비위치·이름 세 칸. 번호는 자릿수가 고르므로
    `tabular-nums` 로 줄을 맞춘다. */
@@ -401,6 +456,22 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .vs .mid .x{{font-size:34px;font-weight:800;letter-spacing:.14em;
   color:{th['accent']}}}
 .vs .mid .ln{{width:2px;height:64px;background:{th['rule']};opacity:.5}}
+
+/* ── 가로 대결판 `.vs.row` (v1.69, 2026-09-20) ─────────────────
+   대표님이 시안 셋을 보고 고르신 ③번. *"실제 데이터가 너무 빈약해"* 가
+   출발점이었다 — 세로로 쌓은 172px 로고 두 장이 카드 높이의 40%를 먹고
+   그 아래 읽을 값은 넷뿐이었다. **로고를 눕혀 78px로 줄이고, 비워진
+   자리에 비교줄을 넣는다**(순위·최근10·흐름·상대전적·선발 다섯 줄).
+   골격은 위 `.vs`를 그대로 물려받고 크기·방향만 덮어쓴다 — 두 벌로 짜면
+   한쪽만 고치는 사고가 난다. */
+.vs.row{{gap:20px;padding:22px 0 18px}}
+.vs.row .side{{gap:10px}}
+.vs.row .vsl{{display:flex;align-items:center;justify-content:center;
+  gap:16px;min-width:0;max-width:100%}}
+.vs.row .em{{width:78px;height:78px}}
+.vs.row .em img{{width:66px;height:66px}}
+.vs.row .nm2{{font-size:40px;text-align:left}}
+.vs.row .mid .ln{{height:34px}}
 
 /* ── 구단색 점 (v1.36, 2026-09-17) ────────────────────────────
    대표님: *"시각적으로 보기 좋은 채널컨텐츠를 완성"*.
@@ -601,11 +672,11 @@ html,body{{width:{CARD_W}px;background:{th['bg']};
 .vd .tag{{margin-top:20px;font-size:21px;font-weight:700;letter-spacing:.08em;
   color:{th['faint']}}}
 /* ── 밀도 ({density}) — 이 블록만 층에 따라 갈린다 ── */{_DENSITY_CSS[density]}
-</style></head><body><div class="card">
+</style></head><body>""") + f"""<div class="card">
   <div class="top">{rail}
     <div class="lab"><svg viewBox="0 0 24 24" fill="none" stroke="{th['accent']}"
       stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="{icon}"/></svg>
-      {esc(label)}<span class="lg">{esc(lg)}</span><span class="dt">{esc(date_label)}</span></div>
+      {esc(label)}{_lglogo}<span class="lg">{esc(lg)}</span><span class="dt">{esc(date_label)}</span></div>
     <div class="lead"{_lead_style(head.text, density)}>{esc(head.text)}</div>{sub}
     <div class="rule"></div>
   </div>
@@ -863,10 +934,15 @@ def body_goal(*, away_name: str, home_name: str,
                                show_header=False)
 
 
-def emblem(*, logo: str = "", color: str = "", initial: str = "") -> str:
+def emblem(*, logo: str = "", color: str = "", initial: str = "",
+           small: bool = False) -> str:
     """대결 그림의 동그란 자리 하나. 로고가 없으면 **구단색 + 첫 글자**.
 
     빈 칸을 남기지 않는다 — 한쪽만 비면 그 팀이 없는 것처럼 보인다.
+
+    `small`은 가로 대결판(`.vs.row`)의 78px 원판이다. 첫 글자 크기는
+    **인라인 스타일이라 `_scaled_css`가 못 건드린다** — 원판이 작아진 만큼
+    여기서 같이 줄이지 않으면 글자가 원판 밖으로 비어져 나간다.
     """
     if logo:
         return f'<span class="em"><img src="{logo}" alt=""></span>'
@@ -876,7 +952,9 @@ def emblem(*, logo: str = "", color: str = "", initial: str = "") -> str:
     # 글자 크기만 줄인다. 그보다 길면 그때 두 자로 줄인다(한글 팀명).
     _t = (initial or "").strip()
     ini = esc(_t if len(_t) <= 3 else _t[:2])
-    _fs = 64 if len(ini) <= 2 else 46
+    _fs = (64 if len(ini) <= 2 else 46)
+    if small:
+        _fs = 32 if len(ini) <= 2 else 23
     return (f'<span class="em" style="background:{bg}">'
             f'<span class="ini" style="font-size:{_fs}px">{ini}</span></span>')
 
@@ -884,25 +962,31 @@ def emblem(*, logo: str = "", color: str = "", initial: str = "") -> str:
 def body_versus(*, away_name: str, home_name: str,
                 away_logo: str = "", home_logo: str = "",
                 away_color: str = "", home_color: str = "",
-                rows: Optional[list] = None) -> str:
+                rows: Optional[list] = None, compact: bool = False) -> str:
     """앵커 카드의 **대결 그림** (v1.38) — 로고 · 이름 · 역할, 가운데 VS.
 
     `rows`는 그 아래 붙는 (왼값, 이름, 오른값, 앞선쪽) 목록이다.
     `body_compare`와 같은 꼴이라 **같은 줄 부품**을 그대로 쓴다(약점 45).
+
+    `compact`는 대표님이 고르신 가로판(v1.69) — 로고를 이름 옆에 눕혀
+    78px로 줄이고 그 자리를 비교줄에 내준다. 위 `.vs.row` 주석을 보라.
     """
-    head = (
-        '<div class="vs">'
-        '<span class="side">'
-        + emblem(logo=away_logo, color=away_color, initial=away_name)
-        + f'<span class="nm2">{esc(away_name)}</span>'
-        '<span class="role">원정</span></span>'
-        '<span class="mid"><span class="ln"></span>'
-        '<span class="x">VS</span><span class="ln"></span></span>'
-        '<span class="side">'
-        + emblem(logo=home_logo, color=home_color, initial=home_name)
-        + f'<span class="nm2">{esc(home_name)}</span>'
-        '<span class="role">홈</span></span>'
-        '</div>')
+    def _one(name, logo, color, role):
+        em = emblem(logo=logo, color=color, initial=name, small=compact)
+        nm = f'<span class="nm2">{esc(name)}</span>'
+        # 가로판은 로고와 이름이 **한 줄**이라 묶는 상자가 하나 더 필요하다.
+        # 세로판은 `.side`가 이미 그 줄이므로 상자를 더 두지 않는다 —
+        # 빈 상자는 접힘 게이트가 높이로 읽는다(약점 153).
+        inner = f'<span class="vsl">{em}{nm}</span>' if compact else em + nm
+        return (f'<span class="side">{inner}'
+                f'<span class="role">{role}</span></span>')
+
+    head = ('<div class="vs row">' if compact else '<div class="vs">') + (
+        _one(away_name, away_logo, away_color, "원정")
+        + '<span class="mid"><span class="ln"></span>'
+          '<span class="x">VS</span><span class="ln"></span></span>'
+        + _one(home_name, home_logo, home_color, "홈")
+        + '</div>')
     body = [head]
     for left, key, right, better in (rows or []):
         lc = "v r on" if better == "l" else "v r"
@@ -1501,7 +1585,7 @@ def body_periods(*, labels: list, away_name: str, home_name: str,
         raise ValueError("합계 라벨과 값 개수가 다릅니다")
 
     n = len(labels) + len(total_labels)
-    avail = CARD_W - 56 * 2 - NAME_COL_PX
+    avail = CARD_BASE_W - 56 * 2 - NAME_COL_PX
     if n and avail / n < CELL_MIN_PX:
         raise ValueError(
             f"칸이 좁습니다: {n}칸에 {avail}px (칸당 {avail / n:.0f}px < {CELL_MIN_PX}px). "
@@ -1595,10 +1679,14 @@ def relax(html: str) -> Optional[str]:
     바꾸는 것은 밀도 블록 하나뿐이다 — 골격도 정보도 그대로다. 그래서
     "높이 때문에 카드를 못 냈다"는 일이 안 생긴다(위 DENSITY 주석).
     """
-    air = _DENSITY_CSS["air"]
+    # ★ v1.69 — 카드 CSS 는 **스케일러를 지나** 나온다(글씨 확대). 그래서
+    # 원본 밀도 문자열은 결과물에 없다. 같은 변환을 걸어 찾고 바꾼다 —
+    # 안 그러면 `relax()` 가 언제나 None 을 내고, 높이 상한에 걸린 카드가
+    # 한 단 내려가 보지도 못한 채 사라진다(조용한 실패).
+    air = _scaled_css(_DENSITY_CSS["air"])
     if air not in html:
         return None
-    return html.replace(air, _DENSITY_CSS["tight"], 1)
+    return html.replace(air, _scaled_css(_DENSITY_CSS["tight"]), 1)
 
 
 WRAP_TOLERANCE = 1.5          # 이 줄 수를 넘으면 접힌 것으로 본다
@@ -1643,19 +1731,28 @@ LEAD_BASE_PX = {"air": 58, "tight": 62}
 
 
 def _lead_px(text: str, density: str = "air") -> int:
-    """머리말을 **두 줄 안에** 담는 글자 크기(px)."""
-    base = LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"])
+    """머리말을 **두 줄 안에** 담는 글자 크기(px).
+
+    ★ **확대(`TYPE_BOOST`)를 함께 계산한다** (v1.69).
+    `<style>` 블록은 스케일러가 키우는데 이 값은 **인라인 style** 이라 그 길을
+    안 지난다. 그래서 확대를 모르면 기준이 어긋나 — 실측으로 39자 머리말이
+    세 줄이 됐다. 한 줄에 들어가는 글자 수는 글자 크기에 반비례하므로
+    확대한 만큼 담기는 글자도 줄어든다.
+    """
+    k = CARD_RES * TYPE_BOOST
+    base = round(LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"]) * k)
     n = len(str(text or "").strip())
     if n <= 0:
         return base
-    fit = int(2 * LEAD_CHARS_PER_PX * LEAD_FIT_SAFETY / n)
-    return max(MIN_FONT_PX, min(base, fit))
+    fit = int(2 * LEAD_CHARS_PER_PX * CARD_RES * LEAD_FIT_SAFETY / n)
+    return max(round(MIN_FONT_PX * k), min(base, fit))
 
 
 def _lead_style(text: str, density: str = "air") -> str:
     """기본 크기면 빈 문자열, 줄여야 하면 `style="…"`."""
     px = _lead_px(text, density)
-    base = LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"])
+    base = round(LEAD_BASE_PX.get(density, LEAD_BASE_PX["air"])
+                 * CARD_RES * TYPE_BOOST)
     return "" if px >= base else f' style="font-size:{px}px"'
 
 

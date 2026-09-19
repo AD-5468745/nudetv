@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import pathlib
 import tempfile
 import urllib.request
@@ -56,11 +57,16 @@ def _tmpdir() -> pathlib.Path:
     return d
 
 
-def _get(url: str) -> bytes | None:
+def _get(url: str, limit: int | None = None) -> bytes | None:
+    """`limit`은 **읽을 상한**이다. 그림은 `_MAX_BYTES`(400KB)를 넘으면 카드에
+    안 넣으므로 딱 그만큼만 읽는다. 다만 주소를 되찾는 글자 파일은 그보다
+    훨씬 커서(KOVO 묶음 3.3MB, 찾는 글자가 927KB 지점) 상한을 따로 준다 —
+    상한이 모자라면 **있는 것을 못 찾고 없다고 말한다.**"""
+    cap = (_MAX_BYTES if limit is None else limit) + 1
     try:
         with urllib.request.urlopen(
                 urllib.request.Request(url, headers=_UA), timeout=_TIMEOUT) as r:
-            return r.read(_MAX_BYTES + 1)
+            return r.read(cap)
     except Exception:                                    # noqa: BLE001
         return None
 
@@ -161,6 +167,40 @@ def emblem_url(league_value: str, team_key: str, *, season: str = "",
     return part.pop() if len(part) == 1 else None
 
 
+def _sniff(blob: bytes) -> str | None:
+    """받은 것이 **정말 그림인가**, 그렇다면 무슨 꼴인가 (v1.69).
+
+    두 사고를 같이 막는다 —
+
+    ① **꼴을 틀리게 적는 것.** v1.68까지 무엇을 받든 `image/png`라고 적어
+       넣었다. 네이버 로고가 전부 PNG라 여태 안 걸렸는데, 리그 로고를
+       모으면서 SVG가 넷 들어왔다(MLB·KBL·V리그 남·여). 거짓 꼬리표는
+       브라우저가 봐주는 동안만 안전하다 — 봐주지 않으면 **깨진 그림**이다.
+
+    ② **그림이 아닌 것을 그림이라 하는 것.** 요즘 사이트는 없는 주소에도
+       404 대신 **200으로 안내 페이지**를 준다(KOVO가 그렇다 — 실측).
+       그걸 그대로 박으면 카드에 깨진 그림이 나간다. 글자 라벨로 물러나는
+       것이 **언제나 낫다.**
+    """
+    b = blob[:512]
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if b.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if b.startswith(b"GIF8"):
+        return "image/gif"
+    if b.startswith(b"RIFF") and b[8:12] == b"WEBP":
+        return "image/webp"
+    if b.startswith(b"\x00\x00\x01\x00"):
+        return "image/x-icon"
+    # SVG는 글자라 지문이 없다 — 앞머리에 `<svg`가 나오는지로 가른다.
+    # (`<?xml …?>`나 주석이 먼저 오는 파일이 있어 앞 512바이트를 훑는다.)
+    head = b.lstrip()[:512].lower()
+    if head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in b.lower()):
+        return "image/svg+xml"
+    return None
+
+
 def data_uri(url: str | None) -> str | None:
     """그림을 카드에 **박아 넣을 수 있는 꼴**로. 못 받으면 None.
 
@@ -184,13 +224,131 @@ def data_uri(url: str | None) -> str | None:
         if blob is None or len(blob) > _MAX_BYTES:
             _failed.add(url)
             return None
+        # **받아 놓기 전에 그림인지 본다** — 안내 페이지를 캐시에 넣으면
+        # 그 실행 내내 깨진 그림이 나간다.
+        if _sniff(blob) is None:
+            _failed.add(url)
+            return None
         try:
             fn.write_bytes(blob)
         except OSError:
             pass                                          # 캐시 실패는 무시한다
-    uri = "data:image/png;base64," + base64.b64encode(blob).decode()
+    mime = _sniff(blob)
+    if mime is None:                                       # 캐시 파일이 상한 경우
+        _failed.add(url)
+        return None
+    uri = f"data:{mime};base64," + base64.b64encode(blob).decode()
     _data_cache[url] = uri
     return uri
+
+
+# ── 리그 로고 (v1.69) ────────────────────────────────────────
+#
+# 대표님 지시(2026-09-20): *"각 리그로고를 수집해서 함께 사용하자."*
+#
+# 소스 경로: `sports-phinf.pstatic.net/league/<상위분류>/default/<분류>.png`
+# 실측 2026-09-20 — **15개 중 8개만 있다.**
+#     ✅ KBO · EPL · 라리가 · 세리에A · 분데스 · 리그1 · 챔스 · 유로파
+#     ✗  MLB · NPB · K리그 · KBL · V리그 남녀 · MLS  (경로 변형 넷을 더 재봤지만 없다)
+#
+# **없는 리그에 아무 로고나 붙이지 않는다.** 엉뚱한 리그 로고가 붙으면
+# 손님이 사실을 잘못 안다 — 없으면 지금처럼 글자 라벨만 나간다.
+# **소스가 둘이다.** 네이버가 가진 것은 네이버에서(팀 엠블럼과 같은 자리),
+# 없는 것은 그 리그 공식 자산에서 가져온다. 실측 2026-09-20 — 15개 중 14개.
+_NV = "https://sports-phinf.pstatic.net/league/{}/default/{}.png"
+LEAGUE_LOGO_URLS: dict[str, str] = {
+    # ── 네이버 (팀 엠블럼과 같은 자리) ──
+    "KBO":        _NV.format("kbaseball", "kbo"),
+    "EPL":        _NV.format("wfootball", "epl"),
+    "LALIGA":     _NV.format("wfootball", "primera"),
+    "SERIEA":     _NV.format("wfootball", "seria"),
+    "BUNDESLIGA": _NV.format("wfootball", "bundesliga"),
+    "LIGUE1":     _NV.format("wfootball", "ligue1"),
+    "UCL":        _NV.format("wfootball", "champs"),
+    "UEL":        _NV.format("wfootball", "europa"),
+    # ── 각 리그 공식 자산 (네이버에 없다) ──
+    # MLB는 밝은 바탕용을 쓴다 — 카드가 밝은 톤이다(v1.69).
+    "MLB":        "https://www.mlbstatic.com/team-logos/league-on-light/1.svg",
+    "NPB":        "https://npb.jp/img/webclip.png",
+    "KL1":        "https://www.kleague.com/assets/images/logo/logo.png",
+    # 즐겨찾기 아이콘(`favicon.svg`)은 16px용이라 38px에서 뭉갠다 —
+    # 머리말 로고는 **머리말용 워드마크**를 쓴다(실렌더로 확인, v1.69).
+    "KBL":        "https://www.kbl.or.kr/assets/img/logo/logo-header.svg",
+    "MLS":        "https://images.mlssoccer.com/image/upload/assets/logos/"
+                  "apple-touch-icon.png",
+    # ── V리그 남·여 (v1.69, 2026-09-20) ──────────────────────────
+    # 대표님: *"없는리그는 있을 수 없어 · 수집하도록해."*
+    #
+    # KOVO 공식 사이트는 자바스크립트로 그려서 문서에 이미지 주소가 없다
+    # (curl로는 3KB짜리 껍데기만 온다 — 그래서 v1.68까지 '못 찾음'이었다).
+    # **브라우저로 실제로 열어** 주소를 뽑았다. 두 리그가 **같은 마크**를
+    # 쓴다 — KOVO 하나가 남·여를 함께 주관한다(K리그와 같은 구조다).
+    #
+    # ⚠️ 주소 끝의 `BEV74V70`은 **빌드 지문**이라 KOVO가 사이트를 새로
+    # 올리면 바뀐다. 그러면 이 주소는 404가 되고 카드는 글자 라벨로
+    # 조용히 돌아간다 — 사고는 아니지만 **아무도 모른 채 로고가 사라진다.**
+    # 그래서 아래 `_kovo_logo()`가 실패했을 때 **지금 지문을 다시 찾아온다.**
+    "VLEAGUE_M":  "https://kovo.co.kr/assets/logo-kovo-BEV74V70.svg",
+    "VLEAGUE_W":  "https://kovo.co.kr/assets/logo-kovo-BEV74V70.svg",
+}
+
+# ★ V리그 **팀 엠블럼**도 같은 자리에서 찾았다 (14개 전부, 지문 없는 주소):
+#     https://cdn.kovo.co.kr/emblems/<이름>.svg
+#     남: skywalkers · bluefangs · okman · hipass · jumbos · stars · vixtorm
+#     여: redsparks · hillstate · pinkspiders · altos · kixx · soopers · wooriwon
+#   우리 팀 코드 ↔ 저 이름을 잇는 표가 아직 없어 붙이지 않았다. 배구가
+#   개막(10월)하기 전에 이으면 된다 — **주소를 잃지 않으려고 여기 적어 둔다.**
+
+_KOVO_HOME = "https://www.kovo.co.kr/"
+_JS_MAX_BYTES = 12_000_000        # 자바스크립트 묶음은 그림이 아니라 크다
+_kovo_fixed: dict = {}
+
+
+def _kovo_logo() -> str | None:
+    """빌드 지문이 바뀌었을 때 **지금 주소**를 다시 찾는다. 못 찾으면 None.
+
+    껍데기 HTML → 자바스크립트 묶음 → 그 안의 `assets/logo-kovo-*.svg`.
+    세 걸음이라 깨질 데가 셋이지만, **평소에는 한 번도 안 돈다** —
+    위 표의 주소가 살아 있는 동안은 이 함수가 불리지 않는다.
+    """
+    if "u" in _kovo_fixed:
+        return _kovo_fixed["u"]
+    _kovo_fixed["u"] = None
+    shell = _get(_KOVO_HOME)
+    if not shell:
+        return None
+    m = re.search(rb'src="(/assets/index-[A-Za-z0-9_.-]+\.js)"', shell)
+    if not m:
+        return None
+    js = _get("https://www.kovo.co.kr" + m.group(1).decode(), limit=_JS_MAX_BYTES)
+    if not js:
+        return None
+    m2 = re.search(rb'assets/logo-kovo-[A-Za-z0-9_.-]+\.svg', js)
+    if m2:
+        _kovo_fixed["u"] = "https://kovo.co.kr/" + m2.group(0).decode()
+    return _kovo_fixed["u"]
+
+
+def league_logo(league) -> str | None:
+    """그 리그 엠블럼의 data URI. 없으면 None (= 글자 라벨만 나간다).
+
+    **없는 리그에 아무 로고나 붙이지 않는다.** 엉뚱한 리그 로고가 붙으면
+    손님이 사실을 잘못 안다 — 오류도 안 나고 아무도 못 알아챈다.
+    """
+    if league is None or not LOGOS_ENABLED:
+        return None
+    v = getattr(league, "value", str(league))
+    u = LEAGUE_LOGO_URLS.get(v)
+    if not u:
+        return None
+    got = data_uri(u)
+    # KOVO만 주소에 빌드 지문이 박혀 있다 — 404가 되면 지금 지문을 찾아온다.
+    if got is None and v.startswith("VLEAGUE"):
+        fresh = _kovo_logo()
+        if fresh and fresh != u:
+            LEAGUE_LOGO_URLS[v] = fresh
+            got = data_uri(fresh)
+    return got
 
 
 def team_logo(league, team, *, season: str = "", day: str = "",

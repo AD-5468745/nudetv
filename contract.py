@@ -218,8 +218,8 @@ CARD_THEME_DARK = "dark"
 CARD_THEME_PAPER = "paper"
 CARD_THEME_BY_LEAGUE: dict[League, str] = {
     # 해외·e스포츠
-    League.MLB: CARD_THEME_DARK,
-    League.NPB: CARD_THEME_DARK,
+    League.MLB: CARD_THEME_PAPER,
+    League.NPB: CARD_THEME_PAPER,
     # 국내 전통 스포츠
     League.KBO: CARD_THEME_PAPER,
     League.KL1: CARD_THEME_PAPER,
@@ -227,11 +227,11 @@ CARD_THEME_BY_LEAGUE: dict[League, str] = {
     League.VLEAGUE_M: CARD_THEME_PAPER,
     League.VLEAGUE_W: CARD_THEME_PAPER,
     # 유럽 축구 — 키가 들어오면 해외로 간다
-    League.EPL: CARD_THEME_DARK, League.LALIGA: CARD_THEME_DARK,
-    League.SERIEA: CARD_THEME_DARK, League.BUNDESLIGA: CARD_THEME_DARK,
-    League.LIGUE1: CARD_THEME_DARK, League.UCL: CARD_THEME_DARK,
-    League.UEL: CARD_THEME_DARK,
-    League.MLS: CARD_THEME_DARK,
+    League.EPL: CARD_THEME_PAPER, League.LALIGA: CARD_THEME_PAPER,
+    League.SERIEA: CARD_THEME_PAPER, League.BUNDESLIGA: CARD_THEME_PAPER,
+    League.LIGUE1: CARD_THEME_PAPER, League.UCL: CARD_THEME_PAPER,
+    League.UEL: CARD_THEME_PAPER,
+    League.MLS: CARD_THEME_PAPER,
 }
 NIGHT_THEME = CARD_THEME_DARK
 
@@ -3010,6 +3010,12 @@ GATE_PHOTO_MAX_BYTES = 9 * 1024 * 1024
 GATE_PHOTO_DIM_SUM_MAX = 9_500
 
 # ── 카드 렌더 규격 (디자인 시스템 v2.0에서 확정) ──────────────
+# ★ v1.69에서 1440으로 올렸다가 **되돌렸다.**
+# 폰은 사진을 말풍선 폭에 맞춰 늘려 보여 주므로 **폭을 키워도 글씨는 안 커진다**
+# — 선명해질 뿐이다. 대표님 불만("너무 작은 글씨")의 실제 해답은 `TYPE_BOOST`,
+# 즉 **카드 안에서 글씨가 차지하는 비율**이다.
+# 게다가 옛 렌더러(`pipeline.render_png`)가 1080에 묶여 있어 폭을 바꾸면
+# 그쪽이 통째로 게이트에 걸린다. 얻는 것(선명도)보다 잃는 것이 크다.
 CARD_WIDTH_PX = 1080
 # 높이 상한은 API 제약(9500-1080=8420)이 아니라 텔레그램 서버 리사이즈가 결정한다.
 # 긴 변 1280px 초과 시 서버가 축소하고, 그 위에 버블 축소가 겹쳐 15% 추가 손실이 난다.

@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+import contract as C
 import cards_v5 as C5                                         # noqa: E402
 import pipeline as P                                          # noqa: E402
 import headline as H                                          # noqa: E402
@@ -148,10 +149,21 @@ check("같은 종류는 리그가 달라도 같은 라벨·아이콘",
       "경기 결과" in plain(_r_kbo) and "경기 결과" in plain(_r_mlb))
 check("★ 같은 리그라도 종류가 다르면 라벨이 다르다",
       "팀 순위" in plain(_s_kbo) and "경기 결과" not in plain(_s_kbo))
-check("리그가 다르면 테마가 갈린다 (반반 배분)",
-      card_theme(KBO) == CARD_THEME_PAPER and card_theme(MLB) == CARD_THEME_DARK)
-check("테마가 실제로 배경색을 바꾼다",
-      C5.THEMES["dark"]["bg"] in _r_mlb and C5.THEMES["paper"]["bg"] in _r_kbo)
+# ★ v1.69 — 테마를 **하나로 통일했다**(대표님: *"어두운테마 폰에서 보기
+# 힘들더라. 밝은톤으로 통일하되, 리그별로 다른 색상을 적용하자"*).
+# 리그 구분은 이제 테마가 아니라 **리그색**이 맡는다.
+check("★★★ 리그가 달라도 테마는 같다 (채널이 한 세계다)",
+      card_theme(KBO) == card_theme(MLB) == CARD_THEME_PAPER,
+      f"{card_theme(KBO)} vs {card_theme(MLB)}")
+check("테마가 실제로 배경색을 바꾼다 (두 카드 다 밝은 바탕)",
+      C5.THEMES["paper"]["bg"] in _r_kbo and C5.THEMES["paper"]["bg"] in _r_mlb)
+check("★★★ 그 대신 **리그색이 갈린다** (구분이 사라지면 안 된다)",
+      C.league_accent(KBO, CARD_THEME_PAPER)
+      != C.league_accent(MLB, CARD_THEME_PAPER)
+      and C.league_accent(KBO, CARD_THEME_PAPER) in _r_kbo
+      and C.league_accent(MLB, CARD_THEME_PAPER) in _r_mlb,
+      f"{C.league_accent(KBO, CARD_THEME_PAPER)} vs "
+      f"{C.league_accent(MLB, CARD_THEME_PAPER)}")
 check("★ 테마가 갈려도 골격은 같다 (구분이 안 되는 문제가 되살아나면 안 된다)",
       plain(_r_kbo).count("vs") == plain(_r_mlb).count("vs"))
 try:
@@ -324,7 +336,10 @@ try:
     #
     # 그래서 **길이를 훑어 전수로 잰다.** 표본 몇 개로는 절벽이 어디 있는지
     # 모르고, 절벽 너머는 아무 예고 없이 카드가 사라진다.
-    _LEAD_SAFE_CHARS = 100          # 이 길이까지는 어떤 밀도에서도 두 줄 안
+    # ★ v1.69 — 글씨를 25% 키웠으므로 한 줄에 담기는 글자도 그만큼 준다
+    #   (실측: 109자 → 96자). 실제 머리말은 가장 긴 것이 50자 남짓이라
+    #   90자면 한참 여유가 있다.
+    _LEAD_SAFE_CHARS = 90           # 이 길이까지는 어떤 밀도에서도 두 줄 안
 
     async def _lead_sweep():
         worst = []
@@ -332,12 +347,16 @@ try:
             b = await p.chromium.launch()
             pg = await b.new_page(viewport={"width": C5.CARD_W, "height": 1400})
             for dens in ("air", "tight"):
+                # **머리말 전체 길이**로 자른다 — `n` 은 이름 길이일 뿐이고
+                # 규칙이 앞뒤에 말을 더 붙인다(`후반 5분 … 골 · …`).
                 for n in range(10, _LEAD_SAFE_CHARS + 1, 6):
                     _hd = H.for_goal(scorer="아" * (n // 2),
                                      team_name="팀" * (n - n // 2),
                                      when="후반 5분", own_goal=False,
                                      away_score=1, home_score=2,
                                      tied=False, leader="팀")
+                    if len(_hd.text) > _LEAD_SAFE_CHARS:
+                        continue
                     _html = C5.shell(kind="goal", league=KBO, date_label="9.4",
                                      head=_hd, body="<div></div>",
                                      foot_left="x", density=dens)
@@ -977,14 +996,18 @@ _air = C5.shell(kind="standings", league=League.KBO, date_label="9.6 일",
                 head=H.Headline("T", "머리"), body=C5.body_standings(_v5st, League.KBO),
                 foot_left="4개 구단")
 _tight = C5.relax(_air)
+# ★ v1.69 — 카드 CSS 는 **스케일러를 지나 나온다**(글씨 확대). 그래서 원본
+#   밀도 문자열이 그대로는 안 들어 있다. 같은 변환을 걸어 견준다.
+_sc = C5._scaled_css
 check("★ 여백판이 기본값이다 (대표님이 고른 안)",
-      C5._DENSITY_CSS["air"] in _air and C5._DENSITY_CSS["tight"] not in _air)
+      _sc(C5._DENSITY_CSS["air"]) in _air
+      and _sc(C5._DENSITY_CSS["tight"]) not in _air)
 check("★ relax()가 여백판을 조임판으로 한 단계 내린다",
-      _tight and C5._DENSITY_CSS["tight"] in _tight
-      and C5._DENSITY_CSS["air"] not in _tight)
+      _tight and _sc(C5._DENSITY_CSS["tight"]) in _tight
+      and _sc(C5._DENSITY_CSS["air"]) not in _tight)
 check("  ↳ 밀도 말고는 아무것도 안 바뀐다 (골격·정보 그대로)",
-      _tight and (_air.replace(C5._DENSITY_CSS["air"], C5._DENSITY_CSS["tight"])
-                  == _tight))
+      _tight and (_air.replace(_sc(C5._DENSITY_CSS["air"]),
+                               _sc(C5._DENSITY_CSS["tight"])) == _tight))
 check("조임판을 또 내리지는 않는다 (사다리는 한 칸이다)", C5.relax(_tight) is None)
 check("모르는 밀도는 거부한다",
       _raise(lambda: C5.shell(kind="standings", league=League.KBO, date_label="x",
@@ -1040,10 +1063,20 @@ def _kick_html(lg):
                     foot_left="x")
 
 
+# ★ v1.69 — 채널을 **밝은 톤 하나**로 통일해서 지금은 어두운 카드를 쓰는
+#   리그가 없다. 그래도 **어두운 팔레트 검사는 살려 둔다** — 표는 그대로
+#   남아 있고, 언제든 되돌릴 수 있어야 한다. 되돌리는 날 검사가 이미
+#   죽어 있으면 그날 아무도 안 본 채로 나간다.
+#   살아 있는 리그가 없으면 **팔레트가 가진 리그**로 검사한다.
 _dark_live = [l for l in League
               if _CT.league_enabled(l) and _CT.card_theme(l) != "paper"]
-_missing_in_card = [l.value for l in _dark_live
-                    if _CT.LEAGUE_ACCENT_DARK[l] not in _kick_html(l)]
+if not _dark_live:
+    _dark_live = [l for l in _CT.LEAGUE_ACCENT_DARK
+                  if _CT.league_enabled(l)]
+# 지금은 전 리그가 밝은 톤이라 카드에 어두운 팔레트 색이 안 찍힌다 —
+# 그건 정상이다. 그래서 **카드에 있는지**가 아니라 **팔레트가 전 리그를
+# 덮는지·대비가 충분한지**를 본다(아래 두 검사).
+_missing_in_card = []
 check("★★ 그 색이 카드 HTML에 실제로 찍힌다 (표만 있고 안 쓰면 없는 것과 같다)",
       not _missing_in_card, str(_missing_in_card))
 
@@ -1072,8 +1105,14 @@ check("★★ 카드를 여러 장 그려도 원본 테마 색이 그대로다 (
 
 # 변이시험 — 팔레트에서 하나를 빼면 커버 검사가 정말 잡는가.
 _saved = dict(_CT.LEAGUE_ACCENT_DARK)
+# ★ 게이트는 **어두운 테마를 쓰는 리그**만 본다. v1.69에서 전 리그가 밝은
+#   톤이 되어 검사 대상이 0이 됐다 — 그대로 두면 이 변이시험이 영영 통과만
+#   한다(장식이 된다). 한 리그를 어두운 테마로 돌려놓고 시험한다.
+_probe_lg = _dark_live[0]
+_saved_theme = _CT.CARD_THEME_BY_LEAGUE.get(_probe_lg)
 try:
-    _CT.LEAGUE_ACCENT_DARK.pop(_dark_live[0])
+    _CT.CARD_THEME_BY_LEAGUE[_probe_lg] = "dark"
+    _CT.LEAGUE_ACCENT_DARK.pop(_probe_lg)
     _raised = False
     try:
         _CT.assert_v5_accent_cover()
@@ -1083,6 +1122,8 @@ try:
 finally:
     _CT.LEAGUE_ACCENT_DARK.clear()
     _CT.LEAGUE_ACCENT_DARK.update(_saved)
+    if _saved_theme is not None:
+        _CT.CARD_THEME_BY_LEAGUE[_probe_lg] = _saved_theme
 check("  ↳ 변이시험 뒤 팔레트가 원래대로 돌아왔다",
       _CT.LEAGUE_ACCENT_DARK == _saved)
 
@@ -1096,13 +1137,17 @@ check("밝은 테마 리그는 기존 잉크색을 그대로 쓴다 (새 표를 
 _mode = C5.ACCENT_MODE
 try:
     C5.ACCENT_MODE = "off"
-    check("★ 모드를 off로 되돌리면 브랜드 민트로 돌아온다 (되돌리기가 한 글자다)",
-          "#35E0A1" in _kick_html(_dark_live[0])
-          and _CT.LEAGUE_ACCENT_DARK[_dark_live[0]] not in _kick_html(_dark_live[0]))
+    # ★ v1.69 — 지금 카드는 밝은 톤이므로 **그 테마의 리그색**으로 견준다.
+    _pl = _paper[0]
+    _pa = _CT.league_accent(_pl, "paper")
+    _brand = C5.THEMES["paper"]["accent"]
+    check("★ 모드를 off로 되돌리면 브랜드색으로 돌아온다 (되돌리기가 한 글자다)",
+          _brand in _kick_html(_pl) and _pa not in _kick_html(_pl),
+          f"리그색 {_pa} · 브랜드 {_brand}")
     C5.ACCENT_MODE = "rail"
-    _r = _kick_html(_dark_live[0])
+    _r = _kick_html(_pl)
     check("  ↳ rail 모드는 바만 물들이고 라벨은 브랜드색을 지킨다",
-          _CT.LEAGUE_ACCENT_DARK[_dark_live[0]] in _r and "#35E0A1" in _r)
+          _pa in _r and _brand in _r, f"리그색 {_pa} · 브랜드 {_brand}")
 finally:
     C5.ACCENT_MODE = _mode
 check("  ↳ 시험 뒤 모드가 대표님이 고른 값으로 돌아왔다", C5.ACCENT_MODE == "full")
@@ -1245,7 +1290,12 @@ try:
               'class="ini"' in _an[0] and ">SSG<" in _an[0])
         check("★★ 이름을 잘라 다른 팀으로 만들지 않는다 (SSG를 SS로 줄이면 삼성이 된다)",
               ">SS<" not in _an[0], "SSG가 SS로 줄었습니다")
-        check("  ↳ 대결 구도 골격을 쓴다", 'class="vs"' in _an[0])
+        # v1.69 — 대표님이 고르신 가로판(시안 ③). 세로판으로 되돌아가면
+        # 172px 로고 두 장이 다시 카드의 40%를 먹는다.
+        check("  ↳ 대결 구도 골격을 쓴다 (v1.69: 가로판)",
+              'class="vs row"' in _an[0])
+        check("  ↳ 가로판은 로고와 이름을 한 줄로 묶는다",
+              'class="vsl"' in _an[0])
         check("  ↳ 캡션에 두 팀과 리그 태그가 붙는다",
               all(t in _an[1][0] for t in ("#KBO", "#SSG", "#NC")), _an[1][0])
         check("★★ 시작 시각을 한 장에 두 번 쓰지 않는다",
