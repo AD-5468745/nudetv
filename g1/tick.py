@@ -102,6 +102,19 @@ FETCH_EVERY_PLAYING_SECONDS = 0         # 지금 진행 중이면 제동 없음
 # 시작 직전·직후도 '진행 중'으로 친다 — 킥오프 순간과 종료 직후가 가장 급하다.
 PLAYING_MARGIN_BEFORE_S = 15 * 60
 PLAYING_MARGIN_AFTER_S = 4 * 3600
+
+# ── **선발 명단이 나오는 구간은 촘촘히 본다** (v1.65) ─────────────
+#
+# 대표님 지적(2026-09-19 20:34): *"오사수나 라인업도 안보이고."*
+# 실측 그 경기(21:00 시작) — 명단은 20:23쯤 소스에 떴고, 카드 마감은
+# `시작-15분`인 20:45다. **22분짜리 창**인데 그 리그 수집은 10분에 한 번이고
+# 시계 주기까지 더해지면 한두 번 만에 창이 닫힌다. 실제로 닫혔다(발송 0).
+#
+# '진행 중' 제동 해제는 `시작-15분` 부터라 **명단 구간을 아예 안 덮는다.**
+# 명단이 뜨는 구간(대략 시작 1시간 전~마감)에만 촘촘히 본다 — 하루 대부분은
+# 여기 안 걸리므로 소스 부담은 거의 안 는다.
+LINEUP_WINDOW_BEFORE_S = 60 * 60
+FETCH_EVERY_LINEUP_WINDOW_SECONDS = 3 * 60
 # 기록(순위·부문)은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
 # NPB는 한 수집이 18페이지·22.9초라 제동이 없으면 하루 288회를 긁는다.
 RECORD_FETCH_EVERY_SECONDS = 30 * 60
@@ -1971,7 +1984,20 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             if -PLAYING_MARGIN_AFTER_S <= lead <= PLAYING_MARGIN_BEFORE_S:
                 playing = True
                 break
+        # **명단 구간**(시작 1시간 전 ~ 카드 마감)에 있는 경기가 있는가 (v1.65).
+        in_lineup_window = False
+        for g in prev:
+            if g.is_terminal:
+                continue
+            try:
+                lead = (g.start_utc - now).total_seconds()
+            except Exception:                            # noqa: BLE001
+                continue
+            if PLAYING_MARGIN_BEFORE_S < lead <= LINEUP_WINDOW_BEFORE_S:
+                in_lineup_window = True
+                break
         every = (FETCH_EVERY_PLAYING_SECONDS if playing
+                 else FETCH_EVERY_LINEUP_WINDOW_SECONDS if in_lineup_window
                  else FETCH_EVERY_LIVE_SECONDS if has_today
                  else FETCH_EVERY_SECONDS)
         if not force and last:
@@ -2676,6 +2702,41 @@ def _anchor_is_up(item, ledger, channel: str) -> bool:
 # **연결 자체가 끊긴 것**이라 사람이 채널 설정에서 손대야 한다.
 THREAD_LINK_GRACE_SECONDS = 15 * 60
 THREAD_HEALTH_WINDOW_SECONDS = 24 * 3600
+
+
+def _missed_lineups(ledger, games: list, league, channel: str, now) -> list:
+    """**명단이 있는데 카드가 끝내 안 나간 경기** (v1.65). 줄 목록.
+
+    대표님 지적(2026-09-19): *"오사수나 라인업도 안보이고."* 그 경기는
+    명단이 소스에 있었고, 큐에도 올랐고, 그런데 **마감까지 한 장도 안 나갔다.**
+    대장에는 '안 나간 것'의 줄이 안 생기므로 밖에서는 안 보인다.
+
+    그래서 **마감이 지난 뒤에 되돌아본다** — 명단이 있었는데 발송 기록이
+    없으면 그건 놓친 것이다. 사람이 채널을 눈으로 훑어야만 아는 종류의
+    누락이라, 숫자로 만들어 올린다.
+    """
+    out: list = []
+    try:
+        dead = P.LINEUP_CARD_MIN_LEAD_SECONDS
+    except Exception:                                    # noqa: BLE001
+        return out
+    for g in games:
+        m = getattr(g, "meta", None)
+        if not m or not getattr(m, "lineup", None):
+            continue
+        # 마감이 지났고, 너무 옛날은 아닌 경기만 (하루치)
+        gone = (now - (g.start_utc - timedelta(seconds=dead))).total_seconds()
+        if not (0 < gone <= 24 * 3600):
+            continue
+        try:
+            sc = f"{league.value}:{g.sports_day}:{g.game_id}"
+            rec = ledger.get(idem_key(channel, ContentType.LINEUP, sc))
+        except Exception:                                # noqa: BLE001
+            continue
+        if rec is None:
+            out.append(f"{league.value} {g.game_id[-14:]} "
+                       f"({g.start_utc.astimezone(KST):%H:%M} 시작)")
+    return out
 
 
 def _thread_health(ledger, disc, channel: str, now) -> list:
@@ -4063,6 +4124,26 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             f"★★ 묶음 카드 {len(_bs)}건이 댓글로 가려 했습니다 — 그 종류는 "
             f"경기마다 한 장으로 쪼개야 합니다: " + " · ".join(_bs[:3]))
         _bundled.clear()
+    # ── 명단이 있었는데 못 나간 경기 (v1.65) ──────────────────────
+    #
+    # 대장에는 **'안 나간 것'의 줄이 안 생긴다.** 그래서 마감이 지난 뒤에
+    # 되돌아보지 않으면 영영 안 보인다 — 실제로 대표님 눈에 먼저 띄었다.
+    try:
+        _ml: list = []
+        for _nm, _gs in (snaps or {}).items():
+            if not _gs:
+                continue
+            _ml += _missed_lineups(led, _gs, _gs[0].league, channel, now)
+        if _ml:
+            _mu: list = []
+            for x in _ml:
+                if x not in _mu:
+                    _mu.append(x)
+            lines.append(
+                f"★★ 선발 명단이 있었는데 카드가 안 나간 경기 {len(_mu)}건 — "
+                + " · ".join(_mu[:3]))
+    except Exception:                                    # noqa: BLE001
+        pass
     # ── 토론방 연결 자가진단 (v1.57) ────────────────────────────
     #
     # 대표님 지시(2026-09-18): *"계속 실측하고 모니터링하도록해."*

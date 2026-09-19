@@ -3117,6 +3117,47 @@ check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★★ 명단이 있었는데 못 나간 경기를 시계가 잡는다 (v1.65)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지적(2026-09-19 20:34): *"오사수나 라인업도 안보이고."*
+# 그 경기는 명단이 소스에 있었고 큐에도 올랐는데 **마감까지 한 장도 안 나갔다.**
+# 대장에는 **'안 나간 것'의 줄이 안 생기므로** 밖에서는 안 보인다 —
+# 실제로 대표님 눈에 먼저 띄었다.
+_ml_day = "2026-08-29"
+_ml_g = mkgame(lg=League.LALIGA, day=_ml_day, hh=18)
+_ml_g.meta.lineup = {"away": {"rows": [["A"]]}, "home": {"rows": [["B"]]}}
+_ml_now = _ml_g.start_utc + timedelta(minutes=30)      # 마감이 지난 뒤
+
+
+class _MlLed:
+    def __init__(self, keys): self.keys = set(keys)
+    def get(self, k): return object() if k in self.keys else None
+
+
+check("★★★ 명단이 있는데 발송 기록이 없으면 **잡아낸다**",
+      len(T._missed_lineups(_MlLed([]), [_ml_g], League.LALIGA, "ch", _ml_now)) == 1)
+_ml_key = C.idem_key("ch", ContentType.LINEUP,
+                     f"{League.LALIGA.value}:{_ml_g.sports_day}:{_ml_g.game_id}")
+check("  ↳ 나간 경기는 안 잡는다 (오탐이 나면 경보를 안 믿게 된다)",
+      not T._missed_lineups(_MlLed([_ml_key]), [_ml_g], League.LALIGA, "ch", _ml_now))
+check("  ↳ **마감 전에는 안 잡는다** (아직 나갈 시간이 남았다)",
+      not T._missed_lineups(_MlLed([]), [_ml_g], League.LALIGA, "ch",
+                            _ml_g.start_utc - timedelta(hours=2)))
+_ml_nolu = mkgame(lg=League.LALIGA, day=_ml_day, hh=18, h="XX", a="YY")
+check("  ↳ 명단이 애초에 없던 경기는 누락이 아니다",
+      not T._missed_lineups(_MlLed([]), [_ml_nolu], League.LALIGA, "ch", _ml_now))
+
+# 수집 주기 — 명단 구간을 덮는가
+check("★★ 명단이 나오는 구간을 **촘촘히** 본다 (그 창이 닫히기 전에 받아야 한다)",
+      T.FETCH_EVERY_LINEUP_WINDOW_SECONDS < T.FETCH_EVERY_LIVE_SECONDS,
+      f"{T.FETCH_EVERY_LINEUP_WINDOW_SECONDS}초 vs {T.FETCH_EVERY_LIVE_SECONDS}초")
+check("  ↳ 그 구간이 '진행 중' 여백보다 **넓다** (안 그러면 명단 때를 못 덮는다)",
+      T.LINEUP_WINDOW_BEFORE_S > T.PLAYING_MARGIN_BEFORE_S)
+check("  ↳ 카드 마감까지 덮는다",
+      T.LINEUP_WINDOW_BEFORE_S >= P.LINEUP_CARD_MIN_LEAD_SECONDS)
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★★ K리그 진행 중 상태 — 경기 내내 '예정'이면 안 된다 (v1.64)")
 # ══════════════════════════════════════════════════════════════
 #
