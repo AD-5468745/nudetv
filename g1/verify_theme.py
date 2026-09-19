@@ -80,6 +80,38 @@ no_logo = sorted(lg.value for lg in live
 check(f"★★★ 발행 중인 {len(live)}개 리그가 **전부 로고 주소를 갖는다**",
       not no_logo, "로고 없음: " + ", ".join(no_logo))
 
+# ── V리그 팀 엠블럼 (v1.69) ────────────────────────────────────
+# 배구만 소스가 엠블럼을 안 줘서 **우리가 손으로 이은 표**를 쓴다. 손으로
+# 이은 표는 팀이 바뀌면 조용히 낡는다 — 그 팀만 회색 원판으로 나가고
+# 오류는 한 줄도 안 난다. **이름표(`TEAM_NAMES`)에 있는 팀이 엠블럼 표에도
+# 있는지** 대조한다. 여기서도 인터넷은 안 탄다.
+#
+# `PEPPER`(페퍼저축은행)는 일부러 빠져 있다 — 지금 KOVO 명단에 없는 팀이다
+# (그 자리를 SOOP가 쓴다). 옛 이름에 새 로고를 붙이면 없는 팀을 있는 것처럼
+# 만든다. **빠뜨린 것과 일부러 뺀 것을 가르려고 여기 적는다.**
+VOLLEY_RETIRED = {"PEPPER"}
+
+for _vlg in (League.VLEAGUE_M, League.VLEAGUE_W):
+    if not C.league_enabled(_vlg):
+        continue
+    _named = set(C.TEAM_NAMES.get(_vlg) or {})
+    _emb = set(_LG._VOLLEY_EMBLEM.get(_vlg.value) or {})
+    _gap = sorted(_named - _emb - VOLLEY_RETIRED)
+    check(f"★★ {_vlg.value} — 이름표의 팀이 엠블럼 표에도 다 있다",
+          not _gap, "엠블럼 없음: " + ", ".join(_gap))
+    # 반대 방향도 본다 — 엠블럼 표에만 있는 코드는 **오타이거나 옛 코드**다.
+    _ghost = sorted(_emb - _named)
+    check("  ↳ 엠블럼 표에 이름표에 없는 코드가 없다 (오타·옛 코드)",
+          not _ghost, "유령 코드: " + ", ".join(_ghost))
+    # ★ **표가 셋이다** — 수집기(kovo)가 만드는 코드 · 이름표 · 엠블럼 표.
+    #   셋 중 하나만 이름을 바꿔도 그 팀 로고가 조용히 사라진다. 수집기가
+    #   실제로 내놓는 코드를 직접 읽어 견준다(기억으로 잇지 않는다).
+    from adapters.kovo import _TEAMS_M, _TEAMS_W                 # noqa: E402
+    _made = set((_TEAMS_M if _vlg is League.VLEAGUE_M else _TEAMS_W).values())
+    _lost = sorted(_made - _emb - VOLLEY_RETIRED)
+    check("  ↳ 수집기가 만드는 코드가 엠블럼 표에 다 있다 (표가 셋이라 어긋난다)",
+          not _lost, "수집기에만 있음: " + ", ".join(_lost))
+
 # ── 변이시험 — 검사가 실제로 듣는가 ────────────────────────────
 # 한 리그만 다른 테마로 바꿔 보고 위 검사가 잡는지 확인한다. 안 잡으면
 # 이 파일은 통과 도장만 찍어 주는 장식이다.

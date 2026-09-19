@@ -144,6 +144,11 @@ def emblem_url(league_value: str, team_key: str, *, season: str = "",
     """
     if not LOGOS_ENABLED or not (team_key or name):
         return None
+    # 배구는 소스가 엠블럼을 안 준다 — **우리 코드로 바로 잇는다**(위 표).
+    _vb = _VOLLEY_EMBLEM.get(league_value)
+    if _vb is not None:
+        slug = _vb.get(str(team_key))
+        return _KOVO_EMBLEM.format(slug) if slug else None
     ck = (league_value, season, day)
     if ck not in _url_cache:
         if league_value in _BASEBALL_CATEGORY:
@@ -292,12 +297,41 @@ LEAGUE_LOGO_URLS: dict[str, str] = {
     "VLEAGUE_W":  "https://kovo.co.kr/assets/logo-kovo-BEV74V70.svg",
 }
 
-# ★ V리그 **팀 엠블럼**도 같은 자리에서 찾았다 (14개 전부, 지문 없는 주소):
-#     https://cdn.kovo.co.kr/emblems/<이름>.svg
-#     남: skywalkers · bluefangs · okman · hipass · jumbos · stars · vixtorm
-#     여: redsparks · hillstate · pinkspiders · altos · kixx · soopers · wooriwon
-#   우리 팀 코드 ↔ 저 이름을 잇는 표가 아직 없어 붙이지 않았다. 배구가
-#   개막(10월)하기 전에 이으면 된다 — **주소를 잃지 않으려고 여기 적어 둔다.**
+# ── V리그 팀 엠블럼 (v1.69) ──────────────────────────────────
+#
+# 배구만 소스가 다르다. 야구·축구는 네이버가 일정 응답에 엠블럼 주소를
+# **경기마다** 실어 주는데, 배구는 그런 자리가 없다. 그래서 KOVO 공식
+# 엠블럼을 쓴다 — 지문 없는 고정 주소라 썩지 않는다.
+#
+# ★ **이 표는 외워서 쓴 것이 아니다.** KOVO 화면을 브라우저로 열어
+#   `그 그림이 실제로 어느 팀 이름 옆에 붙어 있는지`를 읽어 만들었다
+#   (2026-09-20 실측). 닉네임을 기억으로 이으면 **엉뚱한 팀 로고**가
+#   나가고 아무도 못 알아챈다 — 그게 로고를 안 붙이는 것보다 나쁘다.
+#
+#   jumbos      ← 인천 대한항공 점보스          skywalkers ← 천안 현대캐피탈
+#   wooriwon    ← 서울 우리카드 우리WON         stars      ← 의정부 KB손해보험
+#   vixtorm     ← 수원 한국전력 VIXTORM         okman      ← 부산 OK저축은행
+#   bluefangs   ← 대전 삼성화재 블루팡스        kixx       ← GS칼텍스 서울Kixx
+#   hipass      ← 김천 한국도로공사 하이패스    hillstate  ← 수원 현대건설
+#   pinkspiders ← 인천 흥국생명                 altos      ← 화성 IBK기업은행
+#   redsparks   ← 대전 정관장                   soopers    ← 전남광주 SOOP
+#
+# ⚠️ `PEPPER`(페퍼저축은행)는 **일부러 뺐다.** 지금 KOVO 명단에 없다 —
+#    그 자리를 SOOP가 쓴다. 같은 연고를 이어받았다고 옛 이름에 새 로고를
+#    붙이면 **없는 팀을 있는 것처럼** 만든다. 옛 경기는 글자로 나간다.
+_KOVO_EMBLEM = "https://cdn.kovo.co.kr/emblems/{}.svg"
+_VOLLEY_EMBLEM: dict[str, dict[str, str]] = {
+    "VLEAGUE_M": {
+        "KAL": "jumbos", "HDC": "skywalkers", "SFI": "bluefangs",
+        "WOORI": "wooriwon", "OK": "okman", "KEPCO": "vixtorm",
+        "KB": "stars",
+    },
+    "VLEAGUE_W": {
+        "HK": "pinkspiders", "HDE": "hillstate", "GS": "kixx",
+        "KEC": "hipass", "IBK": "altos", "KGC": "redsparks",
+        "SOOP": "soopers",
+    },
+}
 
 _KOVO_HOME = "https://www.kovo.co.kr/"
 _JS_MAX_BYTES = 12_000_000        # 자바스크립트 묶음은 그림이 아니라 크다
