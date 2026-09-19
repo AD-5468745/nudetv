@@ -1,70 +1,70 @@
 {
- "at": "2026-09-19T00:34:01.900831+00:00",
+ "at": "2026-09-19T00:36:38.329527+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 238,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "MLB": {
-   "at": "2026-09-19T00:34:01.900831+00:00",
+   "at": "2026-09-19T00:36:38.329527+00:00",
    "count": 88,
    "stale_hours": 0.0
   },
   "KBL": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 3,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_M": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "VLEAGUE_W": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 135,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "KL1": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 60,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "NPB": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 289,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "EPL": {
    "at": "2026-09-19T00:31:11.365329+00:00",
    "count": 10,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "LALIGA": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 18,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "SERIEA": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 10,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "BUNDESLIGA": {
    "at": "2026-09-19T00:31:11.365329+00:00",
    "count": 9,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "LIGUE1": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 9,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UCL": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 54,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UEL": {
    "at": "2026-09-19T00:24:00.053217+00:00",
@@ -74,7 +74,7 @@
   "MLS": {
    "at": "2026-09-19T00:26:51.980108+00:00",
    "count": 5,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   }
  },
  "korean_players": {
