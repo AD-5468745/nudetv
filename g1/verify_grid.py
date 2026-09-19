@@ -22,6 +22,7 @@ from contract import (ContentType, DISABLED_CONTENT_TYPES,    # noqa: E402
                       DISABLED_LEAGUES, KST, League,
                       QUEUED_CONTENT_TYPES)
 from pipeline import RECORD_SOURCE_LEAGUES                    # noqa: E402
+import pipeline as P                                         # noqa: E402
 
 ok = fail = 0
 
@@ -101,15 +102,21 @@ check("★ 그날 경기가 없으면 설명된다",
       ez(League.EPL, ContentType.KICKOFF, games=0) == (OK, "그날 경기 없음"))
 
 # ⑤ 분석 카드를 안 켠 리그 — UCL이 31건을 내면서 분석만 0건이라 걸렸다
+# ★ v1.67에서 유럽 5대리그·챔스를 켰다. 그래서 **지금 실제로 미대상인 리그**
+#   로 규칙을 확인한다(유로파·MLS — 순위표 소스가 없어 못 켠 리그다).
+#   규칙을 지우지 않는다 — 나중에 또 빼면 그날 바로 걸려야 한다.
+_AN_OFF = next((l for l in (League.UEL, League.MLS)
+                if l not in P.ANALYSIS_LEAGUES), League.UEL)
 check("★★ 분석 미대상 리그의 분석 0은 설명된다",
-      ez(League.UCL, ContentType.ANALYSIS, games=12)
+      ez(_AN_OFF, ContentType.ANALYSIS, games=12)
       == (OK, "분석 카드 미대상 리그"),
-      str(ez(League.UCL, ContentType.ANALYSIS, games=12)))
-check("  ↳ 대상 리그(KBO·NPB·MLB·KL1)는 이 사유로 접히지 않는다",
+      str(ez(_AN_OFF, ContentType.ANALYSIS, games=12)))
+check("  ↳ 대상 리그는 이 사유로 접히지 않는다",
       all(ez(l, ContentType.ANALYSIS, games=12)[0] == UNEXPLAINED
-          for l in (League.KBO, League.NPB, League.MLB, League.KL1)))
+          for l in (League.KBO, League.NPB, League.MLB, League.KL1,
+                    League.EPL, League.LALIGA)))
 check("  ↳ 분석이 아닌 콘텐츠에는 이 관문을 안 건다",
-      ez(League.UCL, ContentType.KICKOFF, games=12)[0] == UNEXPLAINED)
+      ez(_AN_OFF, ContentType.KICKOFF, games=12)[0] == UNEXPLAINED)
 
 
 # ── B. ★★★ 진짜 결함은 그대로 빨간불인가 (이 도구의 존재 이유) ────

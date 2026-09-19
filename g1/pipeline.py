@@ -315,7 +315,24 @@ assert LEADERBOARD_LEAGUES <= RECORD_SOURCE_LEAGUES, (
 # 만들어진다 — 필요한 것은 **순위와 팀 지표**뿐이다.
 # 기록을 실제로 받는 리그는 `tick._record_jobs()`가 정한다. 여기 넣기 전에
 # 그쪽에 있는지 확인한다(없으면 큐만 쌓이고 카드는 안 나온다).
-ANALYSIS_LEAGUES = frozenset({League.KBO, League.NPB, League.MLB, League.KL1})
+#
+# ── ★★ **유럽 축구를 켠다** (v1.67, 2026-09-19 대표님 지시: *"전부 다 켜"*) ──
+#
+# 그동안 유럽 8개 리그는 **분석 의무가 아예 없었다** — 발송 0건. 켜기 전에
+# 두 가지를 실측으로 확인했다:
+#   ① 순위표가 오는가 — `football_data.LEAGUE_TO_CODE` 가 맡는 리그만 켠다.
+#      **유로파·MLS는 그 소스에 없다.** 넣으면 영원히 0건인 의무가 또 생긴다
+#      (경기 기록실에서 이미 겪었다 — 못 채우는 의무는 감시가 아니라 소음이다).
+#   ② 카드가 그려지는가 — 분석 자격은 '블록 2개'다. 순위·승점만으로는 한 블록이라
+#      **최근 폼**이 있어야 한다. 그 폼은 우리 스냅샷의 지난 경기로 만드는데,
+#      유럽은 과거를 사흘만 들고 있어 팀당 1~2경기뿐이었다 → 전부 `None`.
+#      `naver_football.FORM_HISTORY_DAYS` 를 45일로 넓혀 해결했다(실측: EPL
+#      팀당 과거 5경기 · 분석 카드 1080×1562 생성 확인).
+ANALYSIS_LEAGUES = frozenset({
+    League.KBO, League.NPB, League.MLB, League.KL1,
+    League.EPL, League.LALIGA, League.SERIEA,
+    League.BUNDESLIGA, League.LIGUE1, League.UCL,
+})
 
 # 순위표는 결과 카드 **직후**다. 같은 틱에 둘 다 처리되면 페이서가 순서를 정하는데,
 # 순위표(PACER_PRIORITY 6)와 결과 카드(6)가 같은 값이라 예약 시각이 순서를 정한다.

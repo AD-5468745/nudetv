@@ -196,6 +196,10 @@ NAME_FIX: dict = {
 
 REQUEST_GAP_SECONDS = 1.2          # 남의 소스다 — 아끼는 쪽으로
 SCHEDULE_WINDOW_DAYS = 30          # 한 번에 받는 날짜 폭
+# 최근 폼(5경기)을 만들려면 이만큼의 지난 경기가 있어야 한다. 유럽은 주
+# 1~2경기라 한 달 반이 다섯 경기쯤이다. 창을 넓혀도 요청은 30일씩 쪼개
+# 두 번이고, 수집 제동(30분)이 그대로 걸린다.
+FORM_HISTORY_DAYS = 45
 VENUE_MAX_PER_TICK = 12            # 경기장은 필요한 것만, 한 틱에 이만큼까지
 
 # ⚠️ **대항전은 앞을 멀리 봐야 한다 — 이건 취향이 아니라 감시의 전제다.**
@@ -278,6 +282,16 @@ class NaverFootballAdapter(NoticeMixin):
         """
         if ahead_days is None:
             ahead_days = AHEAD_DAYS.get(self.league, AHEAD_DAYS_DEFAULT)
+        # ── ★ **과거를 사흘만 보면 분석을 못 만든다** (v1.67) ──────────
+        #
+        # 뒤 3일은 '결과가 늦게 채워지는 것'만 염두에 둔 값이었다. 그런데
+        # 분석 카드는 **최근 5경기 폼**을 우리 스냅샷의 지난 경기로 만든다.
+        # 실측 2026-09-19: 유럽 스냅샷이 09-16~09-21뿐이라 팀당 과거가
+        # 1~2경기, 그래서 분석 자격(블록 2개)에 못 미쳐 통째로 `None` 이었다.
+        # (K리그는 08-01~09-27을 들고 있어 팀당 10경기 — 그래서 나갔다.)
+        #
+        # 폼 다섯 경기를 담으려면 **한 달 반**은 있어야 한다(주 1~2경기).
+        back_days = max(back_days, FORM_HISTORY_DAYS)
         now = today or datetime.now(timezone.utc)
         d0 = (now.astimezone(KST) - timedelta(days=back_days)).strftime("%Y-%m-%d")
         d1 = (now.astimezone(KST) + timedelta(days=ahead_days)).strftime("%Y-%m-%d")

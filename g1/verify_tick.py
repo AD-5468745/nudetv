@@ -889,7 +889,13 @@ if _pv is not None:
 # 나머지 카드도 사진으로 나간다 — 글만 나가면 디자인이 통째로 빠진 것이다
 for _ct in (ContentType.STANDINGS, ContentType.LEADERBOARD,
             ContentType.ANALYSIS):
-    _one = next((i for i in _items if i.content_type is _ct), None)
+    # 분석은 기록이 있어야 만들어진다. 대역에 기록이 있는 리그의 항목을
+    # 고른다 — 유럽을 켜면서 첫 항목이 기록 없는 리그가 될 수 있다(v1.67).
+    _one = next((i for i in _items
+                 if i.content_type is _ct
+                 and (i.league is None or i.league.value in _records)), None)
+    if _one is None:
+        _one = next((i for i in _items if i.content_type is _ct), None)
     _gs = (_allg if _one is not None and _one.league is None
            else _full.get(_one.league.value, []) if _one is not None else [])
     _rr = None if _one is None else T.render_for(_one, _gs, records=_records,
@@ -915,9 +921,15 @@ check("순위표·리더보드 카드가 나가는 리그 표",
 # ── v1.16: **기록을 받는 리그**와 **순위표 카드가 나가는 리그**가 갈렸다 ──
 # 분석은 순위+팀지표만 있으면 되지만, 순위표 카드는 MLB 지구 6개·K리그 부문
 # 없음 같은 사정이 걸린다. 그래서 표를 둘로 나눴다.
-check("★★ 분석 리그가 전부 기록 어댑터를 갖는다 (없으면 큐만 쌓이고 카드는 안 나온다)",
-      {l.value for l in P.ANALYSIS_LEAGUES} <= set(T._record_jobs()),
-      f"어댑터 {sorted(T._record_jobs())} vs 분석 "
+# ★ 유럽 기록은 **대표님 열쇠가 있을 때만** 등록된다(`tick._record_jobs`).
+#   열쇠 없는 자리(로컬 검증)에서는 목록에 안 뜨는 것이 정상이다. 그래서
+#   '등록된 것' 이 아니라 **'등록될 수 있는 것'** 과 견준다 — 열쇠가 없어서
+#   못 붙는 것과, 소스 자체가 없어서 못 붙는 것은 다른 사실이다.
+from adapters.football_data import LEAGUE_TO_CODE as _FD_OK
+_rec_possible = set(T._record_jobs()) | {l.value for l in _FD_OK}
+check("★★ 분석 리그가 전부 기록 소스를 갖는다 (없으면 큐만 쌓이고 카드는 안 나온다)",
+      {l.value for l in P.ANALYSIS_LEAGUES} <= _rec_possible,
+      f"소스 {sorted(_rec_possible)} vs 분석 "
       f"{sorted(l.value for l in P.ANALYSIS_LEAGUES)}")
 check("★ 순위표 리그는 분석 리그의 부분집합이다 (순위표만 있고 분석이 없는 리그는 없다)",
       P.RECORD_SOURCE_LEAGUES <= P.ANALYSIS_LEAGUES,
@@ -3115,6 +3127,33 @@ check("  ↳ 묶음 글 바로가기도 같은 규칙을 쓴다 (두 화면이 �
 check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       {"morning", "league_result", "night_brief", "daily_index"}
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★★ 유럽 축구 분석을 켠다 — 재료가 있는 리그만 (v1.67)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"전부 다 켜."*
+#
+# **켜기 전에 두 가지를 실측했다.** 재료 없이 켜면 '영원히 0건인 의무'가
+# 또 생긴다 — 경기 기록실에서 이미 겪었고, 못 채우는 의무는 감시가 아니라
+# 소음이라 그 속에 진짜 구멍이 묻힌다.
+from adapters.football_data import LEAGUE_TO_CODE as _FDC2
+_an_gap = [lg.value for lg in P.ANALYSIS_LEAGUES
+           if C.SCORE_UNIT_BY_LEAGUE.get(lg) is C.ScoreUnit.GOALS
+           and lg not in _FDC2 and lg is not League.KL1]
+check("★★★ 분석 대상 축구 리그에 **순위표 소스가 다 있다**",
+      not _an_gap, "소스 없는 리그: " + ", ".join(_an_gap))
+check("  ↳ 유로파·MLS는 안 켰다 (그 소스에 순위표가 없다)",
+      League.UEL not in P.ANALYSIS_LEAGUES
+      and League.MLS not in P.ANALYSIS_LEAGUES)
+check("  ↳ 유럽 5대리그 + 챔스가 켜졌다",
+      {League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
+       League.LIGUE1, League.UCL} <= P.ANALYSIS_LEAGUES)
+from adapters.naver_football import FORM_HISTORY_DAYS as _FH
+check("★★★ 과거를 **최근 폼 5경기가 담길 만큼** 들고 온다",
+      _FH >= 40, f"{_FH}일")
+check("  ↳ 사흘만 보면 분석이 통째로 None 이 된다 (그게 유럽 0건의 원인이었다)",
+      _FH > 3)
 
 # ══════════════════════════════════════════════════════════════
 print("\n★★★ 축구 **모든 리그**에 득점자 창구가 있다 (v1.66)")
