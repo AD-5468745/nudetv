@@ -3102,28 +3102,35 @@ check("★★ '오늘의 경기' 본문도 같은 문구를 쓴다 (화면마다
           _bb_games, _BB_DAY, links=_bb_links,
           name_of=lambda lg, t: str(t.team_code)))
 
-# ── 같은 시각은 시각을 한 번만 (v1.61) ────────────────────────────
-# 대표님: *"경기마다 전부 시간이 적혀있어 눈아파."*
+# ── 경기 목록 표기 — 통일 (v1.68) ────────────────────────────────
+# 대표님(2026-09-20): *"통일감있고 깔끔하게 정리하자. 날짜 시간 텍스트는
+# 굵게. ㄴ 기호는 특수기호로. 모든 컨텐츠에 적용."*
 _tg_same = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18)
             for i in range(4)]                       # 넷 다 18:30
 _tg_txt = P.daily_index_text(_tg_same, _BB_DAY, links={},
                              name_of=lambda lg, t: str(t.team_code))
-check("★★★ 같은 시각 4경기면 시각이 **한 번만** 나온다",
+check("★★★ 같은 시각 4경기면 머리줄이 **한 번만** 나온다",
       _tg_txt.count("18:30") == 1, f"{_tg_txt.count('18:30')}번")
 check("  ↳ 경기는 넷 다 실린다 (묶었다고 빠지면 안 된다)",
-      _tg_txt.count("\n· ") == 4, str(_tg_txt.count(chr(10) + "· ")))
+      _tg_txt.count(P.GAME_BULLET) == 4, str(_tg_txt.count(P.GAME_BULLET)))
+check("★★ 머리줄에 **날짜와 시각**이 함께, **굵게** 들어간다",
+      f"<b>{_BB_DAY} 18:30</b>" in _tg_txt, _tg_txt[:180])
+check("  ↳ 유럽처럼 같은 경기일에 날짜가 갈리는 경우를 위해 날짜를 적는다",
+      _BB_DAY in _tg_txt)
 _tg_diff = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=14 + i)
             for i in range(3)]                       # 시각이 제각각
 _tg_txt2 = P.daily_index_text(_tg_diff, _BB_DAY, links={},
                               name_of=lambda lg, t: str(t.team_code))
-check("★★ 혼자 열리는 경기는 줄 안에 시각을 그대로 둔다 "
-      "(머리줄을 따로 만들면 줄만 두 배가 된다)",
-      all(f"· {h}:30" in _tg_txt2 for h in (14, 15, 16)), _tg_txt2[:160])
-check("  ↳ 묶음 글 바로가기도 같은 규칙을 쓴다 (두 화면이 달라지면 안 된다)",
+check("★★★ **시각이 하나뿐이어도 같은 꼴**이다 (한 화면에 두 모양이 섞이면 안 된다)",
+      all(f"<b>{_BB_DAY} {h}:30</b>" in _tg_txt2 for h in (14, 15, 16))
+      and _tg_txt2.count(P.GAME_BULLET) == 3, _tg_txt2[:200])
+check("  ↳ 묶음 글 바로가기도 **같은 부품**을 쓴다 (두 화면이 달라지면 안 된다)",
       P.game_link_lines(_tg_same, _BB_DAY,
                         links={g.game_id: "https://t.me/x/1" for g in _tg_same},
                         name_of=lambda lg, t: str(t.team_code)
-                        ).count("18:30") == 1)
+                        ).count(f"<b>{_BB_DAY} 18:30</b>") == 1)
+check("  ↳ 기호는 'ㄴ' 이 아니라 상자 그리기 기호다 (글꼴이 고르다)",
+      P.GAME_BULLET == "└" and "ㄴ" not in _tg_txt)
 check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       {"morning", "league_result", "night_brief", "daily_index"}
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
