@@ -331,9 +331,24 @@ html,body{{width:{CARD_BASE_W}px;background:{th['bg']};
   letter-spacing:.16em;color:{th['accent']}}}
 .lab svg{{width:30px;height:30px;flex:none}}
 .lab .lg{{color:{th['faint']};letter-spacing:.10em}}
-/* 리그 엠블럼 — 종류 라벨과 리그 이름 사이. 글자 높이에 맞춘다(v1.69). */
-.lab .lgi{{height:30px;width:auto;object-fit:contain;display:block;
-  margin-left:4px;flex:none}}
+/* 리그 엠블럼 — 종류 라벨과 리그 이름 사이 (v1.69 · v1.74에서 키움).
+   대표님(2026-09-20): *"이미지카드에 리그 로고가 너무 작아서 잘 보이지
+   않는 것들이 많네."*
+
+   ★ **`px`가 아니라 `em`으로 준다.** 30px 고정이었는데 v1.69에서 글자만
+   1.25배가 되어 로고가 상대적으로 더 작아졌다 — 고정값은 다음에 폰트를
+   또 키우면 같은 일이 반복된다. `em`은 이 줄의 글자 크기를 따라가므로
+   **한 번 정하면 다시 어긋나지 않는다.**
+   (`_scaled_css` 는 `font-size` 만 배율을 먹이고 나머지 px는 그대로 두므로,
+    px로 두면 로고만 제자리에 남는다.)
+
+   ⚠️ **폭 상한을 같이 둔다.** 로고는 두 종류다 — 정사각 배지(KBO·EPL·라리가)와
+   가로 워드마크(KOVO·K LEAGUE·MLB·KBL). 높이만 키우면 워드마크는 폭이 함께
+   늘어 머리줄을 먹어치운다(실렌더로 확인: KOVO가 리그 이름을 밀어냈다).
+   `max-width` + `object-fit:contain` 이면 워드마크는 폭에 맞춰 줄고,
+   배지는 높이를 다 쓴다 — **한 규칙으로 두 종류를 다 담는다.** */
+.lab .lgi{{height:2.1em;width:auto;max-width:6em;object-fit:contain;
+  display:block;margin-left:6px;flex:none}}
 .lab .dt{{margin-left:auto;color:{th['faint']};letter-spacing:.06em;font-weight:700}}
 /* 야구 타순 (v1.63) — 번호·수비위치·이름 세 칸. 번호는 자릿수가 고르므로
    `tabular-nums` 로 줄을 맞춘다. */

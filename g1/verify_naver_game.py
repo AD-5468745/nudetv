@@ -459,5 +459,59 @@ check("★★ 이름표를 기본값 없이 조회하는 자리가 이 모듈에
       and _src.count("_src_name(league,") == 4,
       f"_src_name 호출 {_src.count('_src_name(league,')}회")
 
+# ── 표기와 조회는 **다른 이름**이다 (v1.74) ──────────────────────
+#
+# 대표님 지적으로 유럽 네 팀의 화면 표기를 바로잡았다
+# (`인테르→인터밀란` · `로마→AS로마` · `밀란→AC밀란` · `크리스털→크리스털 팰리스`).
+#
+# ★ 그러면서 **새 사고 자리가 생겼다.** 소스는 여전히 `인테르`라고 부른다 —
+# 조회를 교정된 이름으로 하면 그 경기를 못 찾고, 앵커·라인업·득점 속보가
+# **통째로 사라진다.** 방금 고친 v1.73 사고와 정확히 같은 모양이다.
+# 그래서 둘이 갈라져 있는지를 검사가 지킨다.
+print("\n표기와 조회는 다른 이름이다 (v1.74)")
+
+from contract import team_name as _tname, TEAM_NAME_FIX as _FIX   # noqa: E402
+import cards_v5 as _C5n                                          # noqa: E402
+
+
+class _R4:
+    def __init__(self, lg, code): self.league, self.team_code = lg, code
+
+
+_PAIRS = [(League.SERIEA, "인테르", "인터밀란"),
+          (League.SERIEA, "로마", "AS로마"),
+          (League.SERIEA, "밀란", "AC밀란"),
+          (League.EPL, "크리스털", "크리스털 팰리스")]
+
+for _lg4, _src, _shown in _PAIRS:
+    _t = _R4(_lg4, _src)
+    check(f"★★★ {_src}: 소스 조회는 **원래 이름**을 쓴다 (안 그러면 경기가 사라진다)",
+          NG._src_name(_lg4, _t) == _src, NG._src_name(_lg4, _t))
+    check(f"  ↳ {_src}: 화면에는 `{_shown}` 로 나간다",
+          _tname(_t) == _shown and _C5n._nm(_lg4, _t) == _shown,
+          f"계약={_tname(_t)} 카드={_C5n._nm(_lg4, _t)}")
+
+# **표기를 정하는 곳이 하나인가** — 둘이면 화면마다 이름이 갈린다
+check("★★ 카드와 본문 글이 **같은 이름**을 쓴다 (교정표를 둘 다 거친다)",
+      all(_tname(_R4(l, c)) == _C5n._nm(l, _R4(l, c))
+          for l, c, _ in _PAIRS)
+      and _tname(_R4(League.MLB, "샌디에고")) == "샌디에이고",
+      _tname(_R4(League.MLB, "샌디에고")))
+
+# 교정한 이름이 **카드 폭을 넘지 않는가** — 넘으면 그 줄이 접힌다
+from contract import TEAM_NAME_MAX_LEN as _MAXL                   # noqa: E402
+_long = [v for v in _FIX.values() if len(v) > _MAXL]
+check(f"★★ 교정한 이름이 전부 {_MAXL}자 이하다 (넘으면 카드 줄이 접힌다)",
+      not _long, "너무 김: " + ", ".join(_long))
+
+# (변이) 조회를 교정된 이름으로 바꾸면 검사가 잡는가
+_sv4 = NG._src_name
+try:
+    NG._src_name = lambda lg, ref: _tname(ref)      # ← 섞어 버리는 실수
+    check("★★ (변이) 조회에 화면 이름을 쓰면 검사가 잡는다",
+          NG._src_name(League.SERIEA, _R4(League.SERIEA, "로마")) != "로마")
+finally:
+    NG._src_name = _sv4
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)
