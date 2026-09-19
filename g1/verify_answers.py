@@ -315,6 +315,10 @@ class _It:
         self.league = League.KBO
         self.sports_day = "2026-09-17"
         self.game_id = gid
+        # v1.59 — 실제 QueueItem 은 언제나 scope 를 가진다. 댓글 자리 판정이
+        # **범위에 그 경기 번호가 있는지**를 보므로(묶음 카드 차단) 대역도
+        # 같은 꼴이어야 한다.
+        self.scope = f"{self.league.value}:{self.sports_day}:{gid}"
 
 
 _st = D.DiscussionState(pathlib.Path(tempfile.mkdtemp()) / "r.json")
@@ -546,6 +550,7 @@ class _It11:
     def __init__(self, lg, day, gid, ct):
         self.league, self.sports_day, self.game_id = lg, day, gid
         self.content_type = ct
+        self.scope = f"{lg.value}:{day}:{gid}"       # v1.59 — 위와 같은 이유
 
 
 _CH11 = "-100777"

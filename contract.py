@@ -3439,6 +3439,27 @@ BRAND_BUTTON_TEXT = "경기 보러가기"
 # 맡는다 — 문구는 우리가 정하고, 문은 텔레그램 것을 쓴다.
 BUTTON_CONTENT_TYPES: frozenset = frozenset({"kickoff", "lineup", "goal_flash"})
 
+# ── **본채널로 나가는 묶음 글** (v1.59) ──────────────────────────
+#
+# 대표님 지시(2026-09-19): *"본채널에 날라가는 모든 묶음정보에는 앵커로
+# 바로가기를 추가해."*
+#
+# 여러 경기를 한 장에 담는 글이다. 담긴 경기 하나하나로 갈 길이 없으면
+# 손님은 채널을 위아래로 뒤져 그 경기 앵커를 직접 찾아야 한다.
+#
+# ⚠️ **버튼은 '댓글 남기기' 줄을 덮는다**(2026-09-17 실측). 그래서 이 표에는
+# **댓글이 필요 없는 글만** 들어간다. 경기 앵커는 절대 여기 넣지 않는다 —
+# 거기서는 댓글 줄이 곧 토론방 입구다.
+BUNDLE_LINK_CONTENT: frozenset = frozenset({
+    "morning", "league_result", "night_brief", "daily_index"})
+# 끝난 경기도 버튼에 넣는 글 — 전체 결과는 끝난 경기가 본문이다.
+BUNDLE_KEEP_FINISHED: frozenset = frozenset({"league_result", "night_brief"})
+
+assert not (BUNDLE_LINK_CONTENT & BUTTON_CONTENT_TYPES), (
+    "같은 글에 브랜드 버튼과 경기 버튼을 둘 다 달 수 없다 — 하나를 고른다")
+assert "anchor" not in BUNDLE_LINK_CONTENT, (
+    "앵커에 버튼을 달면 '댓글 남기기' 줄이 덮인다 (2026-09-17 실측)")
+
 # 토론방으로 보내는 버튼 문구 — **지금은 쓰지 않는다**(위 주석 참조).
 # 되살릴 때를 위해 남겨 둔다.
 DISCUSSION_BUTTON_TEXT = "🗣 토론방 · 경기정보 보기"

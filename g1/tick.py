@@ -54,6 +54,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       CorrectionSkip,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
+                      BUNDLE_LINK_CONTENT, BUNDLE_KEEP_FINISHED,
                       LINEUP_ENABLED, MUST_ALERT_ON_MISS,
                       GOAL_FLASH_ENABLED, goal_flash_enabled_for, goal_key,
                       DUTY_ALERT_ENABLED, unqueued_kickoffs, unqueued_per_game,
@@ -2423,6 +2424,22 @@ def _thread_for(item, ledger, disc, channel: str):
         return None
     if not item.game_id or item.league is None:
         return None
+    # ── ★★ **묶음 카드는 댓글로 보내지 않는다** (v1.59) ─────────────
+    #
+    # 대표님 지적(2026-09-19): *"한화엘지 앵커로 경기시작 카드가 발송되었어.
+    # 나머지 경기 앵커에는 아무것도 들어가지 않았어."*
+    #
+    # 킥오프가 **시각 버킷**(`KBO:2026-09-19@17:00`)으로 묶여 있었다. 한 장을
+    # 어느 한 경기의 댓글에 넣으면 **나머지 경기는 영영 빈 채로 남는다** —
+    # 그리고 그것이 조용하다. 두 달 동안 KBO 4경기 중 3경기가 그랬다.
+    #
+    # 그래서 **판정을 여기에 못 박는다**: 댓글로 갈 자격은
+    # `그 경기 하나만 담은 카드`에만 있다. 범위 문자열에 그 경기 번호가
+    # 들어 있지 않으면 묶음이다 — 종류를 새로 만들 때 같은 실수를 해도
+    # 여기서 잡히고, 조용히 지나가지 않는다.
+    if str(item.game_id) not in str(item.scope or ""):
+        _bundled.append(f"{item.content_type.value} {item.scope}")
+        return None
     try:
         scope = f"{item.league.value}:{item.sports_day}:{item.game_id}"
         rec = ledger.get(idem_key(channel, ContentType.ANCHOR, scope))
@@ -2435,6 +2452,8 @@ def _thread_for(item, ledger, disc, channel: str):
 
 # 집(앵커 댓글)을 못 찾은 경기별 콘텐츠. 틱이 매번 거둬 운영 알림에 싣는다.
 _homeless: list = []
+# **묶음인데 댓글로 가려던 것.** 있으면 그 종류는 경기별로 쪼개야 한다.
+_bundled: list = []
 
 
 def _anchor_is_up(item, ledger, channel: str) -> bool:
@@ -2786,17 +2805,19 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             _r5 = _try_v5("lineup",
                           lambda R: R.lineup_card(_one, _lg, now=_now()))
         elif item.content_type is ContentType.KICKOFF:
-            # **같은 시각에 시작하는 경기를 한 장에 담는다** (2026-09-07 대표님).
-            # scope가 곧 시각 버킷 키다 — 스냅샷에서 그 키를 가진 경기를 다시 모은다.
-            # (큐 항목의 `game_id`는 사람이 읽을 대표 경기일 뿐이다.)
-            from contract import start_alert_bucket as _bk
+            # ★★ **경기마다 한 장** (v1.59 — 큐도 함께 바뀌었다).
+            #
+            # 전에는 `scope`가 시각 버킷이라 그 시각의 경기를 다시 모아
+            # **한 장**에 담았다. 그 한 장은 어느 한 경기의 댓글에만 들어가고
+            # 나머지 경기는 빈 채로 남는다(실측 2026-09-19 KBO 4경기 중 3경기).
+            #
             # v1.26 — 여기 `g.status is Status.SCHEDULED`가 있었다. 큐를 통과한
             # KBO 킥오프가 **발송 직전에** 여기서 전부 걸러졌다(전 기간 0건).
             # 판정은 계약 한 곳(`is_upcoming`)에 있다.
-            _same = [g for g in games
-                     if is_upcoming(g, _now()) and _bk(g) == item.scope]
+            _one = next((g for g in games if g.game_id == item.game_id), None)
+            _same = [_one] if (_one is not None and is_upcoming(_one, _now())) else []
             if not _same:
-                return None                 # 전부 시작했거나 취소됐다 — 알릴 것이 없다
+                return None                 # 시작했거나 취소됐다 — 알릴 것이 없다
             # v1.29 — 기록을 함께 넘긴다(순위·최근 흐름·맞대결 텍스트).
             # **없으면 None으로 간다** — 기록은 30분에 한 번 긁으므로 없는 틱이
             # 있고, 그때도 카드는 그대로 나가야 한다.
@@ -3330,6 +3351,29 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             if item.content_type.value in BUTTON_CONTENT_TYPES:
                 payload.buttons = brand_button()
 
+            # ── **묶음 글에는 경기 앵커 바로가기를 단다** (v1.59) ──────
+            #
+            # 대표님: *"본채널에 날라가는 모든 묶음정보에는 앵커로
+            # 바로가기를 추가해."* 전체 예고·전체 결과는 여러 경기를 한 장에
+            # 담는데, 담긴 경기로 갈 길이 없으면 손님이 채널을 뒤져야 한다.
+            #
+            # 주소는 **저장된 글 번호에서 그때그때 만든다**(v1.57) — 채널이
+            # 공개/비공개로 바뀌어도 이미 적힌 것까지 함께 따라간다.
+            if item.content_type.value in BUNDLE_LINK_CONTENT:
+                try:
+                    import cards_v5 as _C5g
+                    _gpool = (pool if item.league is None else games) or pool
+                    _gb = P.anchor_buttons(
+                        _gpool, item.sports_day or "",
+                        links=_index_links(item.sports_day or ""),
+                        name_of=lambda lg, t: _C5g._nm(lg, t),
+                        drop_finished=(item.content_type.value
+                                       not in BUNDLE_KEEP_FINISHED))
+                    if _gb:
+                        payload.buttons = _gb
+                except Exception:                        # noqa: BLE001
+                    pass                                 # 버튼 때문에 글을 잃지 않는다
+
             # ── **오늘의 경기에는 경기 버튼을 붙인다** (v1.50) ─────
             #
             # 대표님: *"쉽게 선택하고, 클릭해서 토론방으로 넘어가지게"*.
@@ -3772,6 +3816,20 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         if len(_hs) > 3:
             lines.append(f"  ↳ 같은 일이 이번 틱에 {len(_hs)}건")
         _homeless.clear()
+    # ── 묶음 카드가 댓글로 가려 했다 (v1.59) ──────────────────────
+    #
+    # 이게 뜨면 **그 종류는 아직 경기별로 안 쪼개진 것**이다. 한 경기만
+    # 받고 나머지는 빈 채로 남는다 — 사람이 채널을 눈으로 훑어야만 아는
+    # 종류의 사고라, 숫자로 만들어 올린다.
+    if _bundled:
+        _bs: list = []
+        for n in _bundled:
+            if n not in _bs:
+                _bs.append(n)
+        lines.append(
+            f"★★ 묶음 카드 {len(_bs)}건이 댓글로 가려 했습니다 — 그 종류는 "
+            f"경기마다 한 장으로 쪼개야 합니다: " + " · ".join(_bs[:3]))
+        _bundled.clear()
     # ── 토론방 연결 자가진단 (v1.57) ────────────────────────────
     #
     # 대표님 지시(2026-09-18): *"계속 실측하고 모니터링하도록해."*

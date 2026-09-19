@@ -2075,23 +2075,32 @@ _kick = [i for i in _pgq if i.content_type is ContentType.KICKOFF]
 # 경기마다 한 장이면 동시 시작이 그대로 도배가 된다 —
 # 유로파 18경기가 04:00에 함께 시작하고 KBO 5경기는 전부 17:00이다.
 # 시험 표본은 18:30×2 + 14:30×1이라 **2묶음**이 정답이다.
-_want_kick = len({C.start_alert_bucket(g) for g in _pg_games})
-check(f"같은 시각 경기가 한 장으로 묶인다 ({len(_kick)}건 / 경기 {len(_pg_games)}개 "
-      f"· 시각 {_want_kick}종)", len(_kick) == _want_kick,
+# ★★★ **v1.59에서 다시 '경기마다 한 장'으로 돌아왔다** — 묶은 이유가 사라졌다.
+#
+# 2026-09-07에 묶은 이유는 **전부 본채널로 나갔기 때문**이다("동시 시작이
+# 그대로 도배가 된다"). 그런데 v1.39부터 킥오프는 **그 경기 토론방 댓글**로
+# 들어간다 — 채널에는 한 장도 안 보인다. 도배될 곳이 없어졌다.
+#
+# 그대로 두었더니 정반대 사고가 났다: 묶음 한 장은 **어느 한 경기의 댓글에만**
+# 들어가고 나머지는 빈 채로 남는다. 실측 2026-09-19, KBO 4경기 중 3경기가
+# 아무것도 못 받았다. 대표님: *"나머지 경기 앵커에는 아무것도 들어가지 않았어.
+# 각 경기마다 분석글, 맞대결 정보들이 따로따로 각각 들어가게 해야할 것 같아."*
+#
+# ⚠️ **본채널로 나가는 묶음(전체 예고·전체 결과)은 그대로 묶는다.** 거기는
+# 묶는 것이 맞고, 대신 각 경기 앵커로 가는 바로가기를 단다(v1.59).
+_up_games = [g for g in _pg_games if C.is_upcoming(g, _pg_now)]
+check(f"★★★ 킥오프가 **경기마다 한 장**이다 ({len(_kick)}건 / 시작 전 경기 "
+      f"{len(_up_games)}개)", len(_kick) == len(_up_games),
       str([i.scope for i in _kick]))
-check("★★ 킥오프 멱등키가 묶음마다 전부 다르다 (같으면 한 묶음만 나가고 나머지가 먹힌다)",
+check("★★ 킥오프 멱등키가 경기마다 전부 다르다 (같으면 하나만 나가고 나머지가 먹힌다)",
       len({i.idem_key for i in _kick}) == len(_kick),
       str(sorted(i.idem_key for i in _kick))[:200])
-# **키에서 경기 식별자가 빠졌어도 중복은 여전히 구조적으로 막힌다** —
-# 리그·날짜·시각이 유일하기 때문이다. 오히려 시각 고정이 더 안전하다:
-# 묶음 안의 한 경기가 취소돼 내용이 바뀌어도 키가 그대로라 재발송이 안 된다.
-check("★★ 킥오프 scope가 리그·날짜·시각으로 유일하다",
-      all(i.scope.startswith("KBO:2026-08-29@") for i in _kick)
-      and len({i.scope for i in _kick}) == len(_kick),
-      str([i.scope for i in _kick]))
-check("  ↳ 같은 시각 경기는 같은 묶음에 들어간다 (한 장에 다 실린다)",
-      len(_kick) < len(_pg_games),
-      f"묶음 {len(_kick)} vs 경기 {len(_pg_games)}")
+check("★★★ 킥오프 scope에 **그 경기 번호가 들어 있다** — 댓글로 갈 자격의 조건",
+      all(i.game_id and i.game_id in i.scope for i in _kick),
+      str([(i.game_id, i.scope) for i in _kick][:2]))
+check("  ↳ 같은 시각 경기도 각각 한 장씩 받는다 (셋 중 둘이 비는 일이 없다)",
+      len({i.game_id for i in _kick}) == len(_kick),
+      f"킥오프 {len(_kick)} vs 서로 다른 경기 {len({i.game_id for i in _kick})}")
 
 # ═════════════════════════════════════════════════════════════
 print("\n★★★ 킥오프 큐는 '상태'가 아니라 '아직 시작 안 했다'로 담는다 (v1.21)")
@@ -2115,7 +2124,8 @@ _lv_now = datetime(2026, 8, 29, 9, 6, tzinfo=timezone.utc)      # KST 18:06
 _lvq = P.build_queue(_lv_games, _lv_now, "-100test", floor_hours=0)
 _lvk = [i for i in _lvq if i.content_type is ContentType.KICKOFF]
 check("★★★ 소스가 LIVE라 해도 시작 전이면 킥오프가 큐에 담긴다 (그 사고의 재현)",
-      len(_lvk) == 1, f"{len(_lvk)}건 · {[i.scope for i in _lvk]}")
+      len(_lvk) == len(_lv_games),      # v1.59 — 경기마다 한 장이라 2경기면 2건
+      f"{len(_lvk)}건 · {[i.scope for i in _lvk]}")
 
 # **반대쪽도 지켜야 한다** — 이미 시작한 경기에 '곧 시작'을 보내면 거짓말이다.
 _lv_after = datetime(2026, 8, 29, 9, 40, tzinfo=timezone.utc)   # KST 18:40
@@ -2331,21 +2341,23 @@ check("(재확인) 킥오프 의무 분모는 상태와 무관하다",
       "LIVE·SCHEDULED 어느 쪽이든 의무 1건")
 
 # ── 예약 시각 — 창이 [T-10분, T-1분]인가 ──────────────────────
-# 묶음이 된 뒤로는 `game_id`가 대표 경기일 뿐이므로, **그 묶음의 첫 경기**로 잰다.
-_bucket_first = {}
-for g in _pg_games:
-    _k = C.start_alert_bucket(g)
-    if _k not in _bucket_first or g.start_utc < _bucket_first[_k]:
-        _bucket_first[_k] = g.start_utc
+# ★ v1.59 — **묶음을 버렸다.** 전에는 `game_id`가 대표 경기일 뿐이라
+# '그 묶음의 첫 경기'로 쟀다. 이제 항목 하나가 경기 하나를 가리키므로
+# **그 경기 자신의 시작 시각**으로 잰다 — 대표 경기라는 개념이 사라졌다.
+# (묶음을 버린 이유는 아래 'v1.59' 절에 있다: 한 장은 한 댓글에만 들어간다.)
+_start_of = {g.game_id: g.start_utc for g in _pg_games}
 _lead_ok = all(
-    abs((_bucket_first[i.scope] - i.scheduled_utc).total_seconds()
+    abs((_start_of[i.game_id] - i.scheduled_utc).total_seconds()
         - C.KICKOFF_LEAD_SECONDS) < 1 for i in _kick)
 check(f"★ 킥오프 예약이 경기 시작 {C.KICKOFF_LEAD_SECONDS // 60}분 전이다", _lead_ok,
-      str([(str(i.scheduled_utc), str(_bucket_first[i.scope])) for i in _kick][:1]))
+      str([(str(i.scheduled_utc), str(_start_of[i.game_id])) for i in _kick][:1]))
 check("★★ 창 끝(예약+유예)이 경기 시작보다 앞이다 — 경기 시작 이후 발송이 구조적으로 불가능",
       all(i.scheduled_utc
           + timedelta(seconds=C.GRACE_SECONDS[ContentType.KICKOFF])
-          < _bucket_first[i.scope] for i in _kick))
+          < _start_of[i.game_id] for i in _kick))
+check("★★★ (재확인) 킥오프는 경기마다 한 장이다",
+      len({i.game_id for i in _kick}) == len(_kick),
+      f"킥오프 {len(_kick)}건 · 경기 {len(_pg_games)}건")
 check("킥오프에 앞창이 없다 ('10분 뒤 시작'이 일찍 나가면 거짓말)",
       C.LOOKAHEAD_SECONDS_BY_CONTENT.get(ContentType.KICKOFF) == 0)
 
@@ -2981,6 +2993,95 @@ check("  ↳ 리그가 있는 카드는 그대로 막힌다 (문지기를 푼 �
           render_at_utc=_LF_NOW), [], all_games=[_lf_game]) is None)
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★★ 댓글로 가는 것은 **전부 경기마다 한 장**이다 (v1.59)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지적(2026-09-19): *"한화엘지 앵커로 29분 후 경기시작 카드가
+# 발송되었어. 나머지 경기 앵커에는 아무것도 들어가지 않았어."*
+#
+# 킥오프가 **시각 버킷**으로 묶여 있었다(`KBO:2026-09-19@17:00`). 묶음 한 장은
+# 어느 한 경기의 댓글에만 들어가고 **나머지는 영영 빈 채로 남는다.** 분석은
+# v1.40에서 같은 이유로 묶음을 버렸는데 킥오프는 그때 같이 안 바꿨다 —
+# 그래서 두 달 동안 KBO 4경기 중 3경기가 조용히 비어 있었다.
+#
+# **표본으로는 못 잡는다.** 리그 하나만 보면 그 리그가 마침 하루 1경기일 때
+# 통과한다. 그래서 **모든 리그 · 댓글로 가는 모든 종류**를 훑는다.
+_TS_DAY = "2026-09-19"
+_TS_NOW = datetime(2026, 9, 19, 3, 0, tzinfo=timezone.utc)
+_bad_bundle, _checked = [], 0
+for _lg in League:
+    if not C.league_enabled(_lg):
+        continue
+    # 같은 시각에 **여러 경기**를 둔다 — 묶음 사고는 그때만 드러난다.
+    try:
+        _gs = [mkgame(lg=_lg, h=f"H{i}", a=f"A{i}", day=_TS_DAY, hh=22)
+               for i in range(3)]
+    except Exception:                                    # noqa: BLE001
+        continue                                          # 팀 코드가 없는 리그는 건너뛴다
+    try:
+        _items = P.build_queue(_gs, _TS_NOW, "ch", floor_hours=0)
+    except Exception:                                    # noqa: BLE001
+        continue
+    for _it in _items:
+        if _it.content_type.value not in ("analysis", "pregame", "lineup",
+                                          "kickoff", "goal_flash",
+                                          "final_flash", "boxscore"):
+            continue
+        _checked += 1
+        _gid = str(getattr(_it, "game_id", "") or "")
+        if not _gid or _gid not in str(_it.scope):
+            _bad_bundle.append(f"{_lg.value}/{_it.content_type.value}: {_it.scope}")
+check(f"★★★ 댓글로 가는 항목은 전부 그 경기 하나만 가리킨다 "
+      f"(리그 전체 · 항목 {_checked}건)",
+      not _bad_bundle, " · ".join(sorted(set(_bad_bundle))[:4]))
+check("  ↳ 실제로 훑을 것이 있었다 (0건이면 시험이 아무것도 안 본 것)",
+      _checked > 0, f"{_checked}건")
+
+# ══════════════════════════════════════════════════════════════
+print("\n★★★ 본채널 묶음 글에는 **경기 앵커 바로가기**가 붙는다 (v1.59)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"본채널에 날라가는 모든 묶음정보에는 앵커로
+# 바로가기를 추가해."*
+#
+# 묶음 글(전체 예고·전체 결과·오늘의 경기)은 여러 경기를 한 장에 담는다.
+# 담긴 경기로 갈 길이 없으면 손님은 채널을 위아래로 뒤져야 한다.
+_BB_DAY = "2026-09-19"
+_bb_games = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18)
+             for i in range(3)]
+_bb_links = {g.game_id: f"https://t.me/ch/{100+i}"
+             for i, g in enumerate(_bb_games)}
+_bb = P.anchor_buttons(_bb_games, _BB_DAY, links=_bb_links,
+                       name_of=lambda lg, t: str(t.team_code))
+check("★★★ 묶음 글의 경기 수만큼 버튼이 생긴다",
+      len(_bb) == len(_bb_games), f"버튼 {len(_bb)} / 경기 {len(_bb_games)}")
+check("  ↳ 버튼마다 **그 경기 앵커 주소**가 붙는다 (전부 https)",
+      all(r[0]["url"] in _bb_links.values()
+          and r[0]["url"].startswith("https://") for r in _bb))
+check("  ↳ 앵커가 아직 없는 경기는 버튼도 없다 (갈 곳이 없으면 안 만든다)",
+      not P.anchor_buttons(_bb_games, _BB_DAY, links={},
+                           name_of=lambda lg, t: str(t.team_code)))
+# 전체 결과는 끝난 경기가 본문이다 — 빼면 안 된다
+_bb_fin = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18,
+                  status=Status.FINAL,
+                  score=Score(3, 1, ScoreUnit.RUNS)) for i in range(3)]
+_bb_fl = {g.game_id: f"https://t.me/ch/{200+i}" for i, g in enumerate(_bb_fin)}
+check("★★ 전체 결과는 **끝난 경기도** 버튼에 넣는다 (그게 본문이다)",
+      len(P.anchor_buttons(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=False,
+                           name_of=lambda lg, t: str(t.team_code))) == 3)
+check("  ↳ 전체 예고는 끝난 경기를 뺀다 (지나간 것이 위에 쌓이면 못 찾는다)",
+      not P.anchor_buttons(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=True,
+                           name_of=lambda lg, t: str(t.team_code)))
+# 계약이 정한 표 — 앵커는 절대 들어가면 안 된다
+check("★★★ 앵커는 묶음 표에 없다 (버튼이 '댓글 남기기' 줄을 덮는다)",
+      "anchor" not in C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
+check("  ↳ 브랜드 버튼 표와 겹치지 않는다 (한 글에 버튼은 한 종류)",
+      not (C.BUNDLE_LINK_CONTENT & C.BUTTON_CONTENT_TYPES))
+check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
+      {"morning", "league_result", "night_brief", "daily_index"}
+      <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★ 토론방 연결을 시계가 스스로 잰다 (v1.57)")
 # ══════════════════════════════════════════════════════════════
 #
@@ -3018,6 +3119,21 @@ r = _rec(ContentType.LINEUP, "L:d:g0", 5, _TH_NOW - timedelta(minutes=30), threa
 _rows[r.idem_key] = r
 _good = T._thread_health(_FakeLed(_rows), _FakeDisc({100: 11, 101: 12, 102: 13}),
                          "ch", _TH_NOW)
+# 안전망 — 묶음이 섞여 들어와도 댓글로는 못 간다
+class _TSItem:
+    content_type = ContentType.KICKOFF
+    league = League.KBO
+    sports_day = "2026-09-19"
+    game_id = "g1"
+    scope = "KBO:2026-09-19@17:00"        # 묶음 꼴 (경기 번호가 없다)
+_old_disc2, T.DISCUSSION_CHAT_ID = T.DISCUSSION_CHAT_ID, "-100x"
+_r = T._thread_for(_TSItem(), _FakeLed({}), _FakeDisc({}), "ch")
+T.DISCUSSION_CHAT_ID = _old_disc2
+check("★★ 묶음 꼴이 들어와도 댓글 자리를 내주지 않는다 (안전망)", _r is None)
+check("  ↳ 그리고 **조용히 넘기지 않는다** — 사람에게 올릴 줄이 쌓인다",
+      bool(T._bundled), str(T._bundled[:2]))
+T._bundled.clear()
+
 check("정상일 때는 조용하다 (한밤중)", not _good, str(_good))
 check("★ 정상이어도 하루 한 번(아침 9시)은 말한다 — 조용한 것과 죽은 것은 다르다",
       any("정상" in x for x in T._thread_health(

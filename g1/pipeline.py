@@ -562,6 +562,30 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
 DAILY_INDEX_MAX_BUTTONS = 24
 
 
+def anchor_buttons(games: list, day: str, *, links: dict, name_of=None,
+                   drop_finished: bool = True, limit: int = 0) -> list:
+    """그 글에 실린 경기들의 **앵커로 가는 버튼**. `[[{text,url}], …]`.
+
+    대표님 지시(2026-09-19): *"본채널에 날라가는 모든 묶음정보에는 앵커로
+    바로가기를 추가해."*
+
+    묶음 글(전체 예고 · 전체 결과 · 오늘의 경기)은 여러 경기를 한 장에 담는다.
+    담긴 경기 하나하나로 갈 길이 없으면 손님은 그 경기 이야기를 못 찾는다 —
+    채널을 위아래로 뒤져 그 경기 앵커를 직접 찾아야 한다.
+
+    ⚠️ **버튼은 '댓글 남기기' 줄을 덮는다**(2026-09-17 실측). 그래서 이 버튼은
+    **댓글이 필요 없는 묶음 글에만** 단다. 경기 앵커에는 절대 달지 않는다 —
+    거기서는 댓글 줄이 곧 토론방 입구다.
+
+    `drop_finished` — 끝난 경기를 뺄지. 전체 예고는 빼고(지나간 것이 위에
+    쌓이면 지금 열리는 경기를 못 찾는다), **전체 결과는 끝난 경기가 본문**이라
+    넣는다.
+    """
+    return _game_buttons(games, day, links=links, name_of=name_of,
+                         drop_finished=drop_finished,
+                         limit=limit or DAILY_INDEX_MAX_BUTTONS)
+
+
 def daily_index_buttons(games: list, day: str, *, links: dict,
                         name_of=None, now=None) -> list:
     """'오늘의 경기' 글에 붙일 **경기 버튼**. `[[{text,url}], …]`.
@@ -578,18 +602,27 @@ def daily_index_buttons(games: list, day: str, *, links: dict,
     ⚠️ **끝난 경기는 뺀다.** 지나간 경기 버튼이 위에 쌓이면 지금 열리는
     경기를 찾기 어려워진다 — 목록의 뜻이 '오늘 볼 것'이기 때문이다.
     """
+    return _game_buttons(games, day, links=links, name_of=name_of,
+                         drop_finished=now is not None,
+                         limit=DAILY_INDEX_MAX_BUTTONS)
+
+
+def _game_buttons(games: list, day: str, *, links: dict, name_of=None,
+                  drop_finished: bool = True,
+                  limit: int = DAILY_INDEX_MAX_BUTTONS) -> list:
+    """버튼을 만드는 **한 곳.** 두 벌로 두면 한쪽만 고쳐져 표기가 갈린다."""
     nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
     lk = links or {}
     rows: list = []
     todays = [g for g in games if g.sports_day == day and lk.get(g.game_id)]
     for g in sorted(todays, key=lambda x: x.start_utc):
-        if now is not None and g.is_terminal:
+        if drop_finished and g.is_terminal:
             continue
         k = g.start_utc.astimezone(KST)
         label = (f"{LEAGUE_EMOJI.get(g.league, '•')} {k:%H:%M}  "
                  f"{nm(g.league, g.away)} vs {nm(g.league, g.home)}")
         rows.append([{"text": label[:64], "url": lk[g.game_id]}])
-        if len(rows) >= DAILY_INDEX_MAX_BUTTONS:
+        if len(rows) >= limit:
             break
     return rows
 
@@ -784,26 +817,37 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # v1.26 — 판정을 계약(`contract.is_upcoming`)에 모았다. 같은 판정이
         # 렌더·발송 재판정에도 있었는데 그쪽이 옛 조건이라 큐만 고쳐서는
         # 카드가 안 그려졌다(KBO 킥오프 전 기간 0건). 이제 고칠 곳은 하나다.
-        _kick: dict = defaultdict(list)
+        # ── ★★ **경기마다 한 장** (v1.59, 2026-09-19 대표님 지적) ──────
+        #
+        # 대표님: *"한화엘지 앵커로 29분 후 경기시작 카드가 발송되었어.
+        # 나머지 경기 앵커에는 아무것도 들어가지 않았어."*
+        #
+        # 킥오프는 **같은 시각에 시작하는 경기를 한 묶음**으로 보냈다. 전 채널이
+        # 한 줄이던 시절에는 그게 맞았다 — 5경기 알림 5건이 1건이 되니까.
+        # 그런데 앵커+댓글 구조에서는 **묶음 카드가 갈 곳이 없다.** 한 장을
+        # 어느 한 경기의 댓글에 넣으면 나머지 경기는 빈 채로 남는다.
+        # 실측 2026-09-19: `KBO@17:00` 한 장이 한화-LG 댓글(323)에만 들어가고
+        # KIA-NC·두산-KT·삼성-롯데 셋은 아무것도 못 받았다.
+        #
+        # 분석이 v1.40에서 이미 같은 이유로 묶음을 버렸다. **킥오프는 그때
+        # 같이 안 바꿨다** — 그래서 두 달을 조용히 셋 중 둘이 비어 있었다.
+        #
+        # ⚠️ 묶음 키(`start_alert_bucket`)는 **버리지 않는다.** 채널로 나가는
+        # 시작 알림(START_ALERT)이 아직 그 키를 쓴다 — 그건 묶는 것이 맞다.
         for g in games:
             if not is_upcoming(g, now):
                 continue                  # 끝났거나 취소·연기됐거나 이미 시작했다
-            _kick[start_alert_bucket(g)].append(g)
-        for _bk, _bg in _kick.items():
-            _first = min(x.start_utc for x in _bg)
-            _at = _first - timedelta(seconds=KICKOFF_LEAD_SECONDS)
+            _at = g.start_utc - timedelta(seconds=KICKOFF_LEAD_SECONDS)
             if _at > hi or not keep_in_queue(_at, now, ContentType.KICKOFF):
                 continue
-            _rev = max((x.start_rev or 0) for x in _bg)
+            _scope_k = f"{league.value}:{g.sports_day}:{g.game_id}"
             items.append(QueueItem(
-                idem_key=idem_key(channel, ContentType.KICKOFF, _bk,
-                                  start_rev=_rev),
-                content_type=ContentType.KICKOFF, scope=_bk,
+                idem_key=idem_key(channel, ContentType.KICKOFF, _scope_k,
+                                  start_rev=(g.start_rev or 0)),
+                content_type=ContentType.KICKOFF, scope=_scope_k,
                 scheduled_utc=_at, league=league,
-                sports_day=_bg[0].sports_day,
-                # **경기 하나를 대표로 남긴다.** 렌더가 버킷을 다시 계산하지만,
-                # 대장·로그에 무엇에 대한 항목인지 남아 있어야 사람이 읽는다.
-                game_id=sorted(x.game_id for x in _bg)[0]))
+                sports_day=g.sports_day, game_id=g.game_id,
+                render_at_utc=_at))
 
         for g in games:
             _scope = f"{league.value}:{g.sports_day}:{g.game_id}"
