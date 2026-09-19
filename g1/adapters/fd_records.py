@@ -217,6 +217,100 @@ def _streak_of(form: str) -> tuple:
     return (kind, n if kind is not StreakKind.NONE else 0)
 
 
+# ── 우리 창고로 흐름을 센다 (v1.71) ──────────────────────────────
+#
+# football-data 무료 등급 순위표에 **`form`이 안 온다**(실측 2026-09-20:
+# 1위 아스널 4경기 전승인데 `form: None`). 그래서 유럽 리그 앵커의
+# `흐름` 줄이 통째로 비어 있었다 — 카드가 거짓말을 하진 않지만 대표님이
+# *"실제 데이터가 너무 빈약해"* 라고 하신 바로 그 자리다.
+#
+# 재료는 이미 있다. 우리는 **유럽 경기를 45일치 갖고 있다**
+# (`naver_football.FORM_HISTORY_DAYS`). 끝난 경기를 최근순으로 훑으면
+# 연승·연패가 그대로 나온다.
+#
+# ★ **다만 창고 끝에 닿으면 세지 않는다.**
+#   창고가 45일이라, 3연승이 창고 맨 앞 경기까지 이어지면 **그 앞이 어땠는지
+#   우리는 모른다.** 진짜 6연승인데 "3연승"이라고 찍으면 그건 없는 사실을
+#   만든 것이다(심각도 `높음` — 사람이 잘못 안다). 연속을 **끊는 경기를
+#   실제로 봤을 때만** 길이를 주장한다. 종료 시각을 지어내지 않고 '우리가
+#   안 시각'만 적는 것과 같은 규율이다(`GameMeta.first_final_at`).
+STREAK_MIN_GAMES = 2              # 한 경기는 '연속'이 아니다
+LAST10_EXACT = 10                 # '최근10'은 10경기일 때만 참이다
+
+# ── 창고가 얼마나 깊은가 (실측 2026-09-20) ──────────────────────
+#   수집기를 직접 돌려 셌다 (`FORM_HISTORY_DAYS = 45`):
+#     EPL    끝난 경기 45건 · 08-21~09-19 · **팀당 5경기**
+#     라리가 끝난 경기 62건 · 08-15~09-19 · **팀당 6~7경기**
+#
+# → `흐름`은 채워진다. 연속은 보통 2~4라 끊는 경기가 창 안에 들어온다.
+# → `최근10`은 **지금은 못 채운다.** 다만 창이 좁아서가 아니라
+#   **시즌이 5라운드밖에 안 지났기 때문이다**(football-data `playedGames: 4`).
+#   창을 넓혀도 받아올 옛 경기가 아직 없다 — 그래서 **지금 넓히지 않는다.**
+#   남의 소스를 더 두드려 봐야 얻는 것이 0이다.
+#
+#   ★ 다시 볼 조건: **시즌이 10라운드를 넘긴 뒤에도 `최근10`이 비면**,
+#     그때는 창(45일)이 원인이다 — 주 1경기 기준 10경기는 약 75일이다.
+#     그때 `naver_football.FORM_HISTORY_DAYS`를 올리면 된다.
+
+
+def _result_for(game, code: str) -> Optional[str]:
+    """그 팀에게 이 경기가 `W`/`D`/`L` 중 무엇이었나. 못 세면 None."""
+    sc = getattr(game, "score", None)
+    if sc is None or not getattr(game, "is_terminal", False):
+        return None
+    if game.home.team_code == code:
+        mine, theirs = sc.home, sc.away
+    elif game.away.team_code == code:
+        mine, theirs = sc.away, sc.home
+    else:
+        return None
+    return "W" if mine > theirs else ("L" if mine < theirs else "D")
+
+
+def _recent_results(our_games: list, code: str) -> list:
+    """그 팀의 끝난 경기 결과를 **최근이 앞**으로. 없으면 빈 목록."""
+    rows = []
+    for g in our_games or ():
+        r = _result_for(g, code)
+        if r:
+            rows.append((g.start_utc, r))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in rows]
+
+
+def _streak_from_archive(our_games: list, code: str) -> tuple:
+    """우리 창고로 센 (종류, 길이). 확신 못 하면 `(NONE, 0)`.
+
+    창고 끝까지 같은 결과로 이어지면 **그 앞을 모르므로 주장하지 않는다.**
+    """
+    res = _recent_results(our_games, code)
+    if len(res) < STREAK_MIN_GAMES:
+        return (StreakKind.NONE, 0)
+    last = res[0]
+    n = 0
+    for r in res:
+        if r != last:
+            break
+        n += 1
+    if n == len(res):
+        return (StreakKind.NONE, 0)   # 끊는 경기를 못 봤다 — 길이를 모른다
+    if n < STREAK_MIN_GAMES:
+        return (StreakKind.NONE, 0)
+    kind = {"W": StreakKind.WIN, "L": StreakKind.LOSS,
+            "D": StreakKind.DRAW}[last]
+    return (kind, n)
+
+
+def _last10_from_archive(our_games: list, code: str) -> Optional[WLD]:
+    """우리 창고로 센 최근 10경기. **딱 10경기일 때만** 돌려준다 —
+    7경기를 세어 놓고 '최근10'이라고 적으면 카드가 거짓말을 한다."""
+    res = _recent_results(our_games, code)
+    if len(res) < LAST10_EXACT:
+        return None
+    ten = res[:LAST10_EXACT]
+    return WLD(ten.count("W"), ten.count("L"), ten.count("D"))
+
+
 def fetch(league: League, code: str, our_games: list,
           token: str) -> Optional[RecordBook]:
     """그 대회 순위표. 못 만들면 None — **반쪽 표는 안 만든다.**"""
@@ -264,6 +358,9 @@ def fetch(league: League, code: str, our_games: list,
         pts = int(r.get("points") or (won * 3 + draw))
         if lead_pts is None:
             lead_pts = pts
+        _sk, _sn = _streak_of(r.get("form"))
+        if _sk is StreakKind.NONE or _sn == 0:
+            _sk, _sn = _streak_from_archive(our_games, ours_code)
         stands.append(Standing(
             league=league, season=season, team_code=ours_code,
             rank=int(r.get("position") or (len(stands) + 1)),
@@ -272,9 +369,11 @@ def fetch(league: League, code: str, our_games: list,
             pct=f"{pts / (games * 3):.3f}" if games else "0.000",
             # 승차 — 축구는 **승점 차**다(`contract.gap_label`).
             games_behind=str(lead_pts - pts),
-            last10=None,
-            streak_kind=_streak_of(r.get("form"))[0],
-            streak_len=_streak_of(r.get("form"))[1], group=None))
+            # 소스가 주면 소스가 먼저, 안 주면 우리 창고로 센다.
+            # **두 벌을 만들지 않는다** — 소스가 `form`을 주기 시작하면
+            # 그 순간부터 자동으로 그쪽을 쓴다.
+            last10=_last10_from_archive(our_games, ours_code),
+            streak_kind=_sk, streak_len=_sn, group=None))
     if not stands:
         return None
 

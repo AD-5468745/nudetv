@@ -447,5 +447,77 @@ check("★★★ 아는 팀으로 **동시 경기**를 풀어낸다 (표가 빨�
 check("  ↳ 그래도 단서 없는 팀은 **추측하지 않는다**",
       "LIV" not in _prop and "CHE" not in _prop, str(_prop))
 
+# ── 유럽 흐름·최근10을 우리 창고로 센다 (v1.71) ────────────────────
+#
+# football-data 무료 등급은 순위표에 `form`을 안 준다(실측 2026-09-20).
+# 그래서 유럽 앵커의 `흐름`·`최근10` 두 줄이 비어 있었다. 우리 창고
+# (45일치 경기)로 세되, **모르는 것은 주장하지 않는다.**
+print("\n유럽 흐름 — 우리 창고로 세기 (v1.71)")
+
+from contract import Score as _Sc, ScoreUnit as _SU, TeamRef as _TR  # noqa: E402
+from datetime import timedelta as _td                                # noqa: E402
+
+
+class _FbG:
+    """끝난 축구 경기 하나. `day`가 작을수록 옛날이다."""
+    def __init__(self, day, home, away, hs, as_):
+        lg = League.EPL
+        self.home, self.away = _TR(lg, home), _TR(lg, away)
+        self.score = _Sc(away=as_, home=hs, unit=_SU.GOALS)
+        self.start_utc = _dt2(2026, 9, 1, 12, 0, tzinfo=_tz2.utc) \
+            + _td(days=int(day))
+        self.is_terminal = True
+
+
+# 아스널이 최근 3연승, 그 앞에 패배가 하나 있다 → **끊는 경기를 봤다**
+_won3 = [_FbG(1, "ARS", "X1", 0, 2),       # 패 (연속을 끊는 경기)
+         _FbG(5, "ARS", "X2", 3, 0),       # 승
+         _FbG(9, "X3", "ARS", 0, 1),       # 승 (원정)
+         _FbG(13, "ARS", "X4", 2, 1)]      # 승 ← 가장 최근
+_k, _n = _FD._streak_from_archive(_won3, "ARS")
+check("★★ 우리 창고로 연승을 센다 (소스가 form을 안 줘도)",
+      _k is StreakKind.WIN and _n == 3, f"{_k} {_n}")
+
+# ★ 같은 3연승인데 **끊는 경기가 창고에 없다** → 길이를 모른다
+_k2, _n2 = _FD._streak_from_archive(_won3[1:], "ARS")
+check("★★★ 창고 끝까지 이어지면 **주장하지 않는다** "
+      "(진짜 6연승을 3연승이라 찍으면 사람이 잘못 안다)",
+      _k2 is StreakKind.NONE and _n2 == 0, f"{_k2} {_n2}")
+
+# 한 경기는 연속이 아니다
+check("  ↳ 한 경기는 '연속'이 아니다",
+      _FD._streak_from_archive([_FbG(1, "ARS", "X1", 0, 2),
+                                _FbG(5, "ARS", "X2", 3, 0)], "ARS")[1] == 0)
+
+# 무승부가 연승을 끊는다
+_dr = [_FbG(1, "ARS", "X1", 0, 2), _FbG(5, "ARS", "X2", 3, 0),
+       _FbG(9, "ARS", "X3", 1, 1)]
+check("  ↳ 무승부가 연승을 끊는다 (승-무를 2연승으로 읽지 않는다)",
+      _FD._streak_from_archive(_dr, "ARS")[0] is not StreakKind.WIN,
+      str(_FD._streak_from_archive(_dr, "ARS")))
+
+# 최근10 — **딱 10경기일 때만** 참이다
+_nine = [_FbG(d, "ARS", f"X{d}", 2, 0) for d in range(1, 10)]
+check("★★★ 9경기를 '최근10'이라 적지 않는다 (라벨이 거짓이 된다)",
+      _FD._last10_from_archive(_nine, "ARS") is None)
+_ten = _nine + [_FbG(10, "ARS", "X10", 0, 1)]
+_l10 = _FD._last10_from_archive(_ten, "ARS")
+check("  ↳ 10경기가 차면 센다 (최근 10경기만, 그보다 옛것은 안 섞는다)",
+      _l10 is not None and _l10.total == 10 and _l10.win == 9 and _l10.loss == 1,
+      str(_l10))
+_eleven = [_FbG(0, "ARS", "X0", 0, 5)] + _ten      # 더 옛 경기를 하나 붙인다
+_l11 = _FD._last10_from_archive(_eleven, "ARS")
+check("  ↳ 11경기가 있어도 **최근 10경기**만 센다",
+      _l11 is not None and _l11.total == 10 and _l11.win == 9, str(_l11))
+
+# 남의 경기는 안 센다
+check("  ↳ 그 팀이 안 뛴 경기는 안 센다",
+      _FD._streak_from_archive([_FbG(1, "X1", "X2", 1, 0)], "ARS")[1] == 0)
+
+# 소스가 form을 주면 **소스가 이긴다** (두 벌을 만들지 않는다)
+check("★★ 소스가 form을 주면 그것을 쓴다 (창고 셈은 없을 때만)",
+      _FD._streak_of("L,W,W")[0] is StreakKind.WIN
+      and _FD._streak_of("L,W,W")[1] == 2)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

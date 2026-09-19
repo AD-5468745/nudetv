@@ -817,6 +817,12 @@ def _streak_text(st) -> str:
         return f"{n}연승"
     if n >= 2 and kind is _SK.LOSS:
         return f"{n}연패"
+    # **무승부 연속 (v1.71).** 야구·농구에는 사실상 없지만 축구에는 흔하고,
+    # `3무`는 실제 정보다 — 버리면 그 팀 칸이 `—`가 되어 '흐름 줄'이 통째로
+    # 사라진다(실측 2026-09-20: EPL 본머스 3연무가 그렇게 없어졌다).
+    # **`연무`라고 쓰지 않는다** — 그런 말을 안 쓴다. `3무`로 적는다.
+    if n >= 2 and kind is _SK.DRAW:
+        return f"{n}무"
     if n == 1 and kind is _SK.WIN:
         return "1승"
     if n == 1 and kind is _SK.LOSS:
