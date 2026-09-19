@@ -3051,32 +3051,44 @@ _bb_games = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18)
              for i in range(3)]
 _bb_links = {g.game_id: f"https://t.me/ch/{100+i}"
              for i, g in enumerate(_bb_games)}
-_bb = P.anchor_buttons(_bb_games, _BB_DAY, links=_bb_links,
-                       name_of=lambda lg, t: str(t.team_code))
-check("★★★ 묶음 글의 경기 수만큼 버튼이 생긴다",
-      len(_bb) == len(_bb_games), f"버튼 {len(_bb)} / 경기 {len(_bb_games)}")
-check("  ↳ 버튼마다 **그 경기 앵커 주소**가 붙는다 (전부 https)",
-      all(r[0]["url"] in _bb_links.values()
-          and r[0]["url"].startswith("https://") for r in _bb))
-check("  ↳ 앵커가 아직 없는 경기는 버튼도 없다 (갈 곳이 없으면 안 만든다)",
-      not P.anchor_buttons(_bb_games, _BB_DAY, links={},
-                           name_of=lambda lg, t: str(t.team_code)))
+_bb = P.game_link_lines(_bb_games, _BB_DAY, links=_bb_links,
+                        name_of=lambda lg, t: str(t.team_code))
+check("★★★ 묶음 글의 경기 수만큼 바로가기 줄이 생긴다",
+      _bb.count("<a href=") == len(_bb_games),
+      f"줄 {_bb.count('<a href=')} / 경기 {len(_bb_games)}")
+check("  ↳ 줄마다 **그 경기 앵커 주소**가 붙는다",
+      all(u in _bb for u in _bb_links.values()), _bb[:120])
+check("★★ 문구가 '경기정보 보기'다 (대표님 지시 · 한 곳에서 정한다)",
+      P.LINK_LABEL == "경기정보 보기" and _bb.count(P.LINK_LABEL) == 3, _bb[:120])
+check("★★ **버튼이 아니라 글 안의 링크다** (버튼은 '댓글 남기기' 줄을 덮는다)",
+      "<a href=" in _bb and isinstance(_bb, str))
+check("  ↳ 앵커가 아직 없는 경기는 줄도 없다 (갈 곳이 없으면 안 만든다)",
+      not P.game_link_lines(_bb_games, _BB_DAY, links={},
+                            name_of=lambda lg, t: str(t.team_code)))
+check("★★★ 캡션 상한을 넘기지 않는다 — 늦게 열리는 경기부터 덜어 낸다",
+      len(P.game_link_lines(_bb_games, _BB_DAY, links=_bb_links, budget=90,
+                            name_of=lambda lg, t: str(t.team_code))) <= 90)
 # 전체 결과는 끝난 경기가 본문이다 — 빼면 안 된다
 _bb_fin = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=18,
                   status=Status.FINAL,
                   score=Score(3, 1, ScoreUnit.RUNS)) for i in range(3)]
 _bb_fl = {g.game_id: f"https://t.me/ch/{200+i}" for i, g in enumerate(_bb_fin)}
-check("★★ 전체 결과는 **끝난 경기도** 버튼에 넣는다 (그게 본문이다)",
-      len(P.anchor_buttons(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=False,
-                           name_of=lambda lg, t: str(t.team_code))) == 3)
+check("★★ 전체 결과는 **끝난 경기도** 넣는다 (그게 본문이다)",
+      P.game_link_lines(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=False,
+                        name_of=lambda lg, t: str(t.team_code)
+                        ).count("<a href=") == 3)
 check("  ↳ 전체 예고는 끝난 경기를 뺀다 (지나간 것이 위에 쌓이면 못 찾는다)",
-      not P.anchor_buttons(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=True,
-                           name_of=lambda lg, t: str(t.team_code)))
+      not P.game_link_lines(_bb_fin, _BB_DAY, links=_bb_fl, drop_finished=True,
+                            name_of=lambda lg, t: str(t.team_code)))
 # 계약이 정한 표 — 앵커는 절대 들어가면 안 된다
 check("★★★ 앵커는 묶음 표에 없다 (버튼이 '댓글 남기기' 줄을 덮는다)",
       "anchor" not in C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
-check("  ↳ 브랜드 버튼 표와 겹치지 않는다 (한 글에 버튼은 한 종류)",
+check("  ↳ 브랜드 버튼 표와 겹치지 않는다 (한 글에 한 종류)",
       not (C.BUNDLE_LINK_CONTENT & C.BUTTON_CONTENT_TYPES))
+check("★★ '오늘의 경기' 본문도 같은 문구를 쓴다 (화면마다 다른 말이 나오면 안 된다)",
+      P.LINK_LABEL in P.daily_index_text(
+          _bb_games, _BB_DAY, links=_bb_links,
+          name_of=lambda lg, t: str(t.team_code)))
 check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       {"morning", "league_result", "night_brief", "daily_index"}
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))

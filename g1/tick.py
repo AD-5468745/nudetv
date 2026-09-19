@@ -104,6 +104,9 @@ PLAYING_MARGIN_AFTER_S = 4 * 3600
 # 기록(순위·부문)은 경기가 끝나야 바뀐다. 5분마다 긁을 이유가 없다.
 # NPB는 한 수집이 18페이지·22.9초라 제동이 없으면 하루 288회를 긁는다.
 RECORD_FETCH_EVERY_SECONDS = 30 * 60
+# 보관본이 사라졌을 때만 쓰는 **짧은 제동** (v1.60). 30분 제동의 전제가
+# 깨진 상황이라 그대로 기다리면 그 리그 카드가 통째로 빈다.
+RECORD_MISSING_RETRY_SECONDS = 5 * 60
 
 # **기록이 이만큼 막히면 '사라진 것'으로 올린다 (fix52).**
 # 기록을 쓰는 콘텐츠 중 가장 자주 나가는 것이 순위표(하루 1회)·부문 순위(하루 1회)다.
@@ -301,7 +304,30 @@ def _collect_records(now: datetime, notes: list) -> dict:
                     _fresh = _load_record_archive(name, now)
                     if _fresh is not None:
                         out[name] = _fresh
-                    continue
+                        continue
+                    # ── ★★ **전제가 깨졌으면 제동을 풀어야 한다** (v1.60) ──
+                    #
+                    # 제동은 *"최근에 받았으니 보관본이 있다"* 를 전제로
+                    # 건너뛴다. 그런데 보관본이 **없으면** 지킬 것이 없다 —
+                    # 그때 건너뛰면 그 리그 기록이 30분 동안 통째로 사라지고,
+                    # 기록이 있어야 만들어지는 카드(분석·순위표·리더보드)가
+                    # **아무 말 없이** 안 나간다.
+                    #
+                    # 실측 2026-09-19: KBO·NPB **분석이 이틀 동안 0건**이었다.
+                    # 큐에 오르고 카드도 만들어지고 댓글 자리도 찾아지는데
+                    # 이 한 줄 때문에 `records` 에 그 리그가 없었다.
+                    # `_load_record_archive` 는 파일이 없으면 **로그 한 줄 없이**
+                    # None 을 돌려줬다 — 그래서 밖에서는 원인이 안 보였다.
+                    #
+                    # 소스 예의는 짧은 제동으로 지킨다(5분). 한 번 성공하면
+                    # 보관본이 생겨 저절로 원래 30분 제동으로 돌아간다.
+                    if (now - datetime.fromisoformat(last)).total_seconds() \
+                            < RECORD_MISSING_RETRY_SECONDS:
+                        continue
+                    notes.append(
+                        f"{name}: 최근에 받았다고 되어 있는데 보관본이 없습니다 "
+                        f"— 지금 다시 받습니다 (이게 없으면 그 리그 분석·"
+                        f"순위표가 조용히 사라집니다)")
             except ValueError:
                 pass
         # **실패한 소스를 5분마다 다시 때리지 않는다 (Codex 검수 2026-09-04).**
@@ -920,6 +946,9 @@ def _load_record_archive(name: str, now: datetime):
     """
     p = _record_archive_path(name)
     if not p.exists():
+        # **없는 것도 사실이다.** 전에는 여기서 조용히 None 을 돌려줘,
+        # 그 리그 기록이 사라진 이유가 밖에서 안 보였다(v1.60).
+        _archive_rejects.append(f"{name}: 보관본 파일이 없습니다 ({p.name})")
         return None
     try:
         rb = _load_recordbook(json.loads(p.read_text(encoding="utf-8")))
@@ -3351,28 +3380,43 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             if item.content_type.value in BUTTON_CONTENT_TYPES:
                 payload.buttons = brand_button()
 
-            # ── **묶음 글에는 경기 앵커 바로가기를 단다** (v1.59) ──────
+            # ── **묶음 글에는 경기 앵커 바로가기를 단다** (v1.59·60) ──────
             #
             # 대표님: *"본채널에 날라가는 모든 묶음정보에는 앵커로
             # 바로가기를 추가해."* 전체 예고·전체 결과는 여러 경기를 한 장에
             # 담는데, 담긴 경기로 갈 길이 없으면 손님이 채널을 뒤져야 한다.
+            #
+            # ★ v1.60 — **버튼이 아니라 글 안의 링크다.** 대표님이 '오늘의 경기'
+            #   글을 보시고: *"버튼이 아니라 앵커로 가게하는 사진처럼하자."*
+            #   덤으로 버튼의 부작용도 피한다 — **버튼은 '댓글 남기기' 줄을
+            #   덮는다**(2026-09-17 실측).
             #
             # 주소는 **저장된 글 번호에서 그때그때 만든다**(v1.57) — 채널이
             # 공개/비공개로 바뀌어도 이미 적힌 것까지 함께 따라간다.
             if item.content_type.value in BUNDLE_LINK_CONTENT:
                 try:
                     import cards_v5 as _C5g
+                    from contract import (TELEGRAM_CAPTION_MAX as _CAPMAX,
+                                          TELEGRAM_TEXT_MAX as _TXTMAX)
                     _gpool = (pool if item.league is None else games) or pool
-                    _gb = P.anchor_buttons(
+                    _base = payload.caption if photos else payload.text
+                    _room = ((_CAPMAX if photos else _TXTMAX)
+                             - len(_base or "") - 2)
+                    _ln = P.game_link_lines(
                         _gpool, item.sports_day or "",
                         links=_index_links(item.sports_day or ""),
                         name_of=lambda lg, t: _C5g._nm(lg, t),
                         drop_finished=(item.content_type.value
-                                       not in BUNDLE_KEEP_FINISHED))
-                    if _gb:
-                        payload.buttons = _gb
+                                       not in BUNDLE_KEEP_FINISHED),
+                        budget=max(_room, 0))
+                    if _ln:
+                        if photos:
+                            payload = replace(payload,
+                                              caption=(_base or "") + _ln)
+                        else:
+                            payload = replace(payload, text=(_base or "") + _ln)
                 except Exception:                        # noqa: BLE001
-                    pass                                 # 버튼 때문에 글을 잃지 않는다
+                    pass                                 # 링크 때문에 글을 잃지 않는다
 
             # ── **오늘의 경기에는 경기 버튼을 붙인다** (v1.50) ─────
             #

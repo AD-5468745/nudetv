@@ -537,8 +537,8 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
             k = g.start_utc.astimezone(KST)
             row = (f"{k:%H:%M} {nm(lg, g.away)} vs {nm(lg, g.home)}")
             url = lk.get(g.game_id)
-            lines.append(f"· {row} → <a href=\"{esc(url)}\">보기</a>" if url
-                         else f"· {row}")
+            lines.append(f"· {row} → <a href=\"{esc(url)}\">{LINK_LABEL}</a>"
+                         if url else f"· {row}")
         lines.append("")
     lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
     out = "\n".join(lines).strip()
@@ -555,6 +555,45 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
         keep.append(ln)
         used += len(ln) + 1
     return "\n".join(keep + ["", tailline]).strip()
+
+
+# 바로가기 문구는 **한 곳에서 정한다** (v1.60 · 대표님: *"보기 라는 단어대신,
+# 경기정보 보기라고 하면되"*). 두 곳에 적으면 화면마다 다른 말이 나온다.
+LINK_LABEL = "경기정보 보기"
+
+
+def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
+                    drop_finished: bool = True, budget: int = 0) -> str:
+    """묶음 글 아래에 붙일 **경기별 바로가기 줄**. 없으면 빈 문자열.
+
+    대표님 지시(2026-09-19): *"버튼이 아니라 앵커로 가게하는 사진처럼하자."*
+
+    **버튼이 아니라 글 안의 링크다.** 이유가 둘이다 —
+      · 대표님이 '오늘의 경기' 글에서 보신 그 모양과 같아야 한다
+      · **버튼은 '댓글 남기기' 줄을 덮는다**(2026-09-17 실측). 링크는 안 덮는다
+
+    `budget` 이 있으면 그 글자 수 안에 들어가도록 **늦게 열리는 경기부터**
+    줄을 덜어 낸다. 캡션 상한(1024자)을 넘기면 그 글이 통째로 안 나간다 —
+    '오늘의 경기'가 그렇게 사흘을 사라졌다(v1.57).
+    """
+    nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
+    lk = links or {}
+    rows = [g for g in games
+            if g.sports_day == day and lk.get(g.game_id)
+            and not (drop_finished and g.is_terminal)]
+    rows.sort(key=lambda g: g.start_utc)
+    while rows:
+        out = ["", "<b>경기별 정보</b>"]
+        for g in rows:
+            k = g.start_utc.astimezone(KST)
+            out.append(
+                f"· {k:%H:%M} {nm(g.league, g.away)} vs {nm(g.league, g.home)}"
+                f" → <a href=\"{esc(lk[g.game_id])}\">{LINK_LABEL}</a>")
+        txt = "\n".join(out)
+        if not budget or len(txt) <= budget:
+            return txt
+        rows.pop()                      # 늦게 열리는 경기부터 덜어 낸다
+    return ""
 
 
 # 한 글에 붙일 수 있는 버튼 수. 텔레그램은 더 받아 주지만, 손님이 스크롤로
