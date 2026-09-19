@@ -3150,6 +3150,23 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # 들어갈 수 없다. 이제 그 경기의 문패(앵커) 아래에 첫 댓글로 붙는다.
         rb = (records or {}).get(item.league.value if item.league else "")
         if rb is None:
+            # ★ **말없이 사라지지 않게 한다** (v1.73).
+            #
+            # 빈 분석을 안 내는 판단은 옳다 — 그런데 v1.72까지 **아무 말도 안
+            # 남겼다.** 알림에는 `카드를 못 만듦` 한 줄뿐이라, 어느 리그가 왜
+            # 빠졌는지 알 길이 없었다. 유럽 분석이 전 기간 0건인데도
+            # **원인을 못 짚은 이유가 이 침묵이다.**
+            #
+            # 기록실이 비는 길은 하나뿐이다: `fd_records.fetch` 가 None을
+            # 돌려준 것(팀 대조 미완성·순위표 구조 등). 그쪽은 이미 이유를
+            # 적어 알림에 싣는다 — 여기서 **리그 이름만 이어 주면** 두 줄이
+            # 한 사건으로 읽힌다.
+            _R5n = sys.modules.get("render_v5")
+            if _R5n is not None:
+                _R5n.note_fallback(
+                    f"분석 {item.league.value if item.league else '?'} "
+                    f"{item.game_id or item.scope} — **그 리그 기록실이 없어서** "
+                    f"못 만들었습니다 (순위표 수집이 실패했는지 보세요)")
             return None                     # 기록이 없다 — 빈 분석을 내지 않는다
         _one = next((g for g in games if g.game_id == item.game_id), None)
         if _one is None or item.league is None:
@@ -3193,6 +3210,15 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         except Exception:                                # noqa: BLE001
             _recb = None
         if not _recb:
+            # 분석과 같은 이유로 **이름을 남긴다** (v1.73). 이 창구는 경기
+            # 직후에 아직 비어 있을 수 있고, 그때는 유예(6시간) 안에 다시
+            # 온다 — 그래서 한 줄 남는다고 사고인 것은 아니다. 다만 **끝까지
+            # 안 채워진 경기**를 찾으려면 그 경기 이름이 어딘가 남아야 한다.
+            _R5b = sys.modules.get("render_v5")
+            if _R5b is not None:
+                _R5b.note_fallback(
+                    f"흐름 {_lg.value} {item.game_id} — 기록 창구가 아직 "
+                    f"비어 있습니다 (유예 안에 다시 시도합니다)")
             return None
         return _try_v5("boxscore", lambda R: R.boxscore_card(
             _one, _lg, record=_recb, now=_now()))

@@ -406,5 +406,58 @@ check("★★ 변이시험 — 옛 방식은 1차전에도 2차전 id를 준다 
       _old_pick[("디트로이트", "클리블랜드")] == "DECL2"
       and _pk._pick(_cands, _g1, "디트로이트", "클리블랜드") == "DECL1")
 
+# ── 소스에서 팀을 찾는 이름 (v1.73) ──────────────────────────────
+#
+# **구간 속보가 만든 이래 0건이었던 진짜 이유가 여기였다.**
+#
+# 이름표(`TEAM_NAMES`)는 *소스 코드와 화면 이름이 다를 때만* 항목을 갖는다
+# (KBO `OB → 두산`). 유럽은 코드 자체가 한글 이름(`인테르`)이라 항목이 없다 —
+# 그게 정상이다. 그런데 이 모듈만 `.get(code)` 를 **기본값 없이** 불러서
+# 이름표가 빈 8개 리그가 `(None, None)` 으로 소스를 뒤졌다.
+# 예외도 경고도 없이 **언제나 0건**이었다.
+print("\n소스 조회 이름 — 기본값이 곧 규칙이다 (v1.73)")
+
+from contract import TEAM_NAMES as _TN                             # noqa: E402
+
+
+class _Ref2:
+    def __init__(self, code): self.team_code = code
+
+
+# ① 이름표에 있는 리그 — 표가 이긴다
+check("★★ 이름표에 있으면 그 이름을 쓴다 (KBO OB → 두산)",
+      NG._src_name(League.KBO, _Ref2("OB")) == "두산",
+      NG._src_name(League.KBO, _Ref2("OB")))
+
+# ② 이름표가 빈 리그 — **코드를 그대로 쓴다** (여기가 고장났던 자리)
+check("★★★ 이름표가 비면 **코드를 그대로** 쓴다 (None을 만들지 않는다)",
+      NG._src_name(League.SERIEA, _Ref2("인테르")) == "인테르",
+      repr(NG._src_name(League.SERIEA, _Ref2("인테르"))))
+
+# ③ **발행 중인 전 리그**가 None을 안 만든다 — 한 리그만 새로 늘어도 잡힌다
+import contract as _C2                                            # noqa: E402
+_bad = [l.value for l in League if _C2.league_enabled(l)
+        and not NG._src_name(l, _Ref2("ZZZ"))]
+check("★★★ 발행 중인 리그 전부에서 이름이 비지 않는다",
+      not _bad, "빈 이름: " + ", ".join(_bad))
+
+# ④ (변이) 기본값을 없애면 검사가 잡는가 — 안 잡으면 이 검사는 장식이다
+_saved_fn = NG._src_name
+try:
+    NG._src_name = lambda lg, ref: _TN.get(lg, {}).get(
+        getattr(ref, "team_code", ref))          # ← v1.72의 그 버그
+    check("★★ (변이) 기본값을 빼면 검사가 잡는다",
+          not NG._src_name(League.SERIEA, _Ref2("인테르")))
+finally:
+    NG._src_name = _saved_fn
+
+# ⑤ **두 자리가 같은 부품을 쓴다** — 한쪽만 고치면 다른 쪽이 조용히 남는다
+import inspect as _isp                                            # noqa: E402
+_src = _isp.getsource(NG)
+check("★★ 이름표를 기본값 없이 조회하는 자리가 이 모듈에 없다",
+      "TEAM_NAMES.get(league, {}).get(\n" not in _src
+      and _src.count("_src_name(league,") == 4,
+      f"_src_name 호출 {_src.count('_src_name(league,')}회")
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 sys.exit(1 if fail else 0)

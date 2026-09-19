@@ -120,6 +120,24 @@ _FOOTBALL = frozenset({League.KL1, League.EPL, League.LALIGA, League.SERIEA,
                        League.BUNDESLIGA, League.LIGUE1})
 
 
+def _src_name(league: League, ref) -> str:
+    """소스에서 그 팀을 찾을 때 쓸 이름 (v1.73).
+
+    ★ **기본값이 곧 규칙이다.** 이름표(`TEAM_NAMES`)는 *소스가 준 코드와
+    화면에 쓸 이름이 다를 때만* 항목을 갖는다. KBO `OB → 두산` 이 그렇다.
+    유럽은 코드 자체가 이미 한글 이름(`인테르`·`로마`)이라 **항목이 없다** —
+    그게 정상이고, 그때는 **코드를 그대로 쓰는 것이 맞다.**
+
+    v1.72까지 이 모듈만 `.get(code)` 를 기본값 없이 불렀다. 저장소의 다른
+    일곱 자리는 전부 `.get(code, code)` 였다. 그래서 이름표가 빈 8개 리그
+    (EPL·라리가·세리에A·분데스·리그앙·UCL·UEL·MLS)는 `(None, None)` 으로
+    소스를 뒤졌고 **언제나 0건**이었다 — 예외도 경고도 없이.
+    구간 속보가 만든 이래 0건이었던 진짜 이유가 이 기본값 하나다.
+    """
+    code = getattr(ref, "team_code", ref)
+    return TEAM_NAMES.get(league, {}).get(code, code)
+
+
 def _trim_tail(rows: list) -> list:
     """**뒤쪽의 빈 구간을 잘라낸다.**
 
@@ -435,10 +453,8 @@ class NaverGameAdapter(NoticeMixin):
                 continue
             try:
                 day = game.start_utc.astimezone(KST).strftime("%Y-%m-%d")
-                aw = TEAM_NAMES.get(league, {}).get(
-                    getattr(game.away, "team_code", game.away))
-                hm = TEAM_NAMES.get(league, {}).get(
-                    getattr(game.home, "team_code", game.home))
+                aw = _src_name(league, game.away)
+                hm = _src_name(league, game.home)
                 cands = list(self._schedule(league, day).get((aw, hm)) or ())
                 if not cands:
                     for delta in (-1, 1):
@@ -523,10 +539,8 @@ class NaverGameAdapter(NoticeMixin):
             try:
                 day = game.start_utc.astimezone(KST).strftime("%Y-%m-%d")
                 sched = self._schedule(league, day)
-                aw = TEAM_NAMES.get(league, {}).get(
-                    getattr(game.away, "team_code", game.away))
-                hm = TEAM_NAMES.get(league, {}).get(
-                    getattr(game.home, "team_code", game.home))
+                aw = _src_name(league, game.away)
+                hm = _src_name(league, game.home)
                 cands = list(sched.get((aw, hm)) or ())
                 if not cands:
                     # 한국 날짜로 못 찾으면 하루 앞뒤를 본다 — 현지 날짜가 다를 수 있다
