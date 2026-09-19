@@ -1054,6 +1054,31 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                         sports_day=g.sports_day, game_id=g.game_id,
                         render_at_utc=_gat))
 
+            # ④ **구간 속보 (v1.62)** — 전반 종료 · 연장 진입 · 5회 종료.
+            #
+            # 대표님: *"축구는 전반종료, 후반종료, 연장 알림도 넣어줄 수 있으면
+            # 좋겠다. 야구도 전후반,연장으로 나눠서 알림 넣어주고."*
+            #
+            # 골 속보와 **완전히 같은 꼴**이다 — 예약 시각을 시계가 아니라
+            # 데이터가 준다(`meta.period_seen_at`). 어느 구간을 알릴지는
+            # 계약 한 곳(`period_alert_key`)이 정한다: 경기당 2~3건.
+            for _pk, _praw in sorted((getattr(g.meta, "period_seen_at", None)
+                                      or {}).items() if g.meta else ()):
+                try:
+                    _pat = datetime.fromisoformat(_praw)
+                except (TypeError, ValueError):
+                    continue          # 깨진 값 하나가 그 경기를 죽이지 않는다
+                if _pat > hi or not keep_in_queue(_pat, now,
+                                                  ContentType.PERIOD_FLASH):
+                    continue
+                _psc = f"{league.value}:{g.sports_day}:{g.game_id}#{_pk}"
+                items.append(QueueItem(
+                    idem_key=idem_key(channel, ContentType.PERIOD_FLASH, _psc),
+                    content_type=ContentType.PERIOD_FLASH, scope=_psc,
+                    scheduled_utc=_pat, league=league,
+                    sports_day=g.sports_day, game_id=g.game_id,
+                    render_at_utc=_pat))
+
     # 리그 결과 카드 — sports_day의 미종결 0건일 때. 큐에는 하드 데드라인으로 예약
     by_day: dict[str, list[Game]] = defaultdict(list)
     for g in games:

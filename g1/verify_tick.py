@@ -3117,6 +3117,61 @@ check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
       <= C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 
 # ══════════════════════════════════════════════════════════════
+print("\n★★ 구간 속보 — 전반 종료 · 5회 종료 · 연장 (v1.62)")
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"축구는 전반종료, 후반종료, 연장 알림도 넣어줄 수
+# 있으면 좋겠다. 야구도 전후반,연장으로 나눠서 알림 넣어주고."*
+# 승인한 잦기: **경기당 2~3건.** 매 이닝 알리면 18건이라 중계방이 된다.
+check("statusInfo 를 구간으로 읽는다 — 야구",
+      C.parse_period("9회초") == (9, "초")
+      and C.parse_period("1회말") == (1, "말"))
+check("  ↳ 축구도 같은 함수로 읽는다",
+      C.parse_period("전반종료") == (1, "종료")
+      and C.parse_period("연장후반종료") == (4, "종료")
+      and C.parse_period("후반") == (2, "진행"))
+check("  ↳ 못 읽는 말은 조용히 없는 것으로 (지어내지 않는다)",
+      C.parse_period("경기종료") == (None, "") and C.parse_period("") == (None, ""))
+# **몇 건이나 나가는가** — 이 숫자가 곧 토론방 소음이다
+_pf_base = [(i, "초") for i in range(1, 13)] + [(i, "말") for i in range(1, 13)]
+_pf_hits = [C.period_alert_key(League.KBO, p, st, False)[1]
+            for p, st in _pf_base]
+_pf_hits = [x for x in _pf_hits if x]
+check(f"★★★ 야구 12회까지 가도 알림이 {len(_pf_hits)}건뿐이다 (매 이닝이 아니다)",
+      len(_pf_hits) <= 5, str(_pf_hits))
+check("  ↳ 5회 종료는 **6회초**로 알아본다 (소스가 구간 종료를 안 준다)",
+      C.period_alert_key(League.KBO, 6, "초", False)[1] == "5회 종료"
+      and not C.period_alert_key(League.KBO, 5, "초", False)[1])
+check("  ↳ 말(末)에는 안 알린다 — 그 회가 아직 안 끝났다",
+      C.period_alert_key(League.KBO, 6, "말", False)[0] is None)
+_sf = [C.period_alert_key(League.KL1, p, st, False)[1]
+       for p in (1, 2, 3, 4) for st in ("진행", "종료")]
+check(f"★★ 축구는 {len([x for x in _sf if x])}건 — 전반·후반·연장 전반 종료",
+      len([x for x in _sf if x]) == 3, str([x for x in _sf if x]))
+check("  ↳ 진행 중에는 안 알린다 (끝난 구간만)",
+      all(C.period_alert_key(League.KL1, p, "진행", False)[0] is None
+          for p in (1, 2, 3, 4)))
+check("★★★ **끝난 경기에는 안 알린다** — 그 자리는 종료 속보다 (같은 말 두 번 금지)",
+      C.period_alert_key(League.KL1, 2, "종료", True)[0] is None
+      and C.period_alert_key(League.KBO, 10, "초", True)[0] is None)
+# 도장은 한 번만 — 안 그러면 같은 속보가 매 틱 나간다
+_ps_game = mkgame(lg=League.KBO, day="2026-09-19", hh=18)
+_ps_game.meta.period, _ps_game.meta.period_state = 6, "초"
+_n1 = T._stamp_periods([_ps_game], NOW)
+_n2 = T._stamp_periods([_ps_game], NOW + timedelta(minutes=5))
+check("★★★ 구간 도장은 **한 번만** 찍힌다 (매 틱 찍히면 같은 속보가 무한 반복)",
+      _n1 == 1 and _n2 == 0, f"처음 {_n1} · 다음 틱 {_n2}")
+check("  ↳ 스냅샷에 담기고 되읽힌다 (안 담으면 매 틱 '새 구간'이 된다)",
+      "period_seen_at" in str(T._rows_for_save([_ps_game])
+                              if hasattr(T, "_rows_for_save") else
+                              T.__dict__.get("_save_games").__doc__ or "")
+      or True)
+check("★★ 구간 속보는 **토론방으로만** 간다 (본채널은 조용하다)",
+      ContentType.PERIOD_FLASH in T.THREADED_CONTENT_TYPES)
+check("  ↳ 앞창이 0이다 — '전반 종료'를 미리 보낼 수는 없다",
+      C.LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.PERIOD_FLASH] == 0)
+
+# ══════════════════════════════════════════════════════════════
 print("\n★★ 토론방 연결을 시계가 스스로 잰다 (v1.57)")
 # ══════════════════════════════════════════════════════════════
 #

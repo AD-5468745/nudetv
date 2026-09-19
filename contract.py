@@ -745,6 +745,91 @@ def goal_needs_bump(league: "League | None") -> bool:
     return league in GOAL_MINUTE_IS_ELAPSED
 
 
+# ══════════════════════════════════════════════════════════════
+# 구간 속보 — 전반 종료 · 연장 진입 · 5회 종료 (v1.62)
+# ══════════════════════════════════════════════════════════════
+#
+# 대표님 지시(2026-09-19): *"축구는 전반종료, 후반종료, 연장 알림도 넣어줄 수
+# 있으면 좋겠다. 야구도 전후반,연장으로 나눠서 알림 넣어주고."*
+#
+# **재료는 이미 온다.** 우리가 매 틱 긁는 일정 응답(`fields=basic`)의
+# `statusInfo` 가 그대로 준다 — 실측 2026-09-19:
+#     야구  `2회초` · `1회말`
+#     축구  `전반종료` · `후반` · `경기종료`
+# 그래서 수집을 새로 만들 필요가 없다. **해석만 하면 된다.**
+
+# `statusInfo` 를 (구간번호, 구간상태)로 읽는다.
+#   야구  "9회초"   → (9, "초")
+#   축구  "전반종료" → (1, "종료") · "후반"  → (2, "진행")
+#         "연장전반" → (3, "진행") · "연장후반종료" → (4, "종료")
+_PERIOD_FOOTBALL = (
+    ("연장후반", 4), ("연장전반", 3), ("후반", 2), ("전반", 1),
+)
+
+
+def parse_period(status_info: str) -> tuple:
+    """`statusInfo` → `(구간번호, 상태)`. 못 읽으면 `(None, "")`.
+
+    상태는 야구가 `"초"/"말"`, 축구가 `"진행"/"종료"` 다. 종목이 달라도
+    **한 칸**을 쓴다(`GameMeta.period` · `period_state`) — 카드도 함수 하나로
+    넷을 다 그리는 것과 같은 원칙이다.
+    """
+    t = str(status_info or "").strip()
+    if not t:
+        return (None, "")
+    m = re.match(r"^(\d+)회\s*(초|말)?", t)
+    if m:                                   # 야구
+        return (int(m.group(1)), m.group(2) or "")
+    for word, no in _PERIOD_FOOTBALL:       # 축구 — 긴 말부터 본다
+        if t.startswith(word):
+            return (no, "종료" if t.endswith("종료") else "진행")
+    return (None, "")
+
+
+# ── **언제 알릴 것인가** ────────────────────────────────────────
+#
+# 대표님 승인(2026-09-19): 경기당 2~3건. 매 이닝 알리면 경기당 18건이라
+# 토론방이 중계방이 된다.
+#
+# ⚠️ **종료 속보와 겹치지 않게 한다.** 축구의 `후반종료` 는 보통 곧
+# `경기종료` 라 그대로 알리면 같은 말이 두 번 나간다. 그래서 **경기가 아직
+# 안 끝났을 때만** 알린다 — 그건 곧 연장으로 간다는 뜻이라 알릴 값이 있다.
+# 야구 9회도 같다.
+PERIOD_ALERT_FOOTBALL = {
+    (1, "종료"): "전반 종료",
+    (2, "종료"): "후반 종료 · 연장",      # 안 끝났으면 연장이다
+    (3, "종료"): "연장 전반 종료",
+}
+# 야구는 '그 회가 끝났다'를 **다음 회 초**로 알아본다 — 소스가 구간 종료를
+# 따로 주지 않기 때문이다. 6회초 = 5회 종료, 10회초 = 연장 진입.
+PERIOD_ALERT_BASEBALL = {
+    6: "5회 종료",
+    10: "연장 진입",
+}
+
+
+def period_alert_key(league: "League", period, state: str,
+                     is_terminal: bool) -> tuple:
+    """알릴 구간이면 `(멱등키 조각, 사람이 읽을 말)`, 아니면 `(None, "")`.
+
+    `is_terminal` 이 True 면 아무것도 안 알린다 — 그 자리는 **종료 속보**가
+    맡는다. 둘 다 나가면 같은 사실이 두 번 나간다.
+    """
+    if period is None or is_terminal:
+        return (None, "")
+    if SCORE_UNIT_BY_LEAGUE.get(league) is ScoreUnit.GOALS:
+        label = PERIOD_ALERT_FOOTBALL.get((int(period), state))
+        return ((f"p{period}{state}", label) if label else (None, ""))
+    if SCORE_UNIT_BY_LEAGUE.get(league) is ScoreUnit.RUNS:
+        if state and state != "초":
+            return (None, "")            # 말에는 안 알린다 (회가 안 끝났다)
+        label = PERIOD_ALERT_BASEBALL.get(int(period))
+        if label is None and int(period) > 10:
+            label = f"{period}회 진행"    # 긴 연장은 회마다 한 번
+        return ((f"p{period}", label) if label else (None, ""))
+    return (None, "")
+
+
 def goal_clock(minute: int, added: int = 0,
                league: "League | None" = None) -> tuple[str, str]:
     """골 하나의 **공식 표기**. `(반, 숫자)`를 돌려준다.
@@ -916,6 +1001,14 @@ class GameMeta:
     # `first_final_at`과 같은 규칙: 한 번 적히면 다시 안 바꾼다.
     # 이 값이 곧 라인업 카드의 예약 시각이다.
     lineup_seen_at: Optional[str] = None
+    # **그 구간으로 넘어간 것을 처음 본 시각** (v1.62). `{구간키: iso}`.
+    # 골 속보의 `goal_seen_at` 과 같은 자리다 — 여기 없으면 매 틱 모든 구간이
+    # '새 구간'으로 보여 같은 속보가 무한히 반복된다.
+    period_seen_at: Optional[dict] = None
+    # **진행 중 점수** `(원정, 홈)` (v1.62). `Game.score` 는 **끝난 경기의
+    # 최종 점수**라는 뜻으로 온 코드가 읽는다 — 거기에 중간 점수를 넣으면
+    # 결과 판정이 통째로 흔들린다. 그래서 칸을 따로 둔다.
+    live_score: Optional[tuple] = None
 
     # ── 경기 중 득점 속보 (v1.35, 축구 전용) ──────────────────────
     #
@@ -1125,6 +1218,12 @@ class ContentType(str, Enum):
     # 대신 문구는 **경기 시각으로만** 말한다("후반 12분") — "방금"이라고
     # 하지 않으므로 몇 분 늦게 나가도 거짓이 되지 않는다.
     GOAL_FLASH = "goal_flash"
+    # ── 구간 속보 (v1.62) — 전반 종료 · 연장 진입 · 5회 종료 ──────────
+    # 대표님: *"축구는 전반종료, 후반종료, 연장 알림도 넣어줄 수 있으면
+    # 좋겠다. 야구도 전후반,연장으로 나눠서 알림 넣어주고."*
+    # **그 경기 토론방에만** 들어간다. 경기당 2~3건으로 묶는다(중계방이 되면
+    # 아무도 안 본다) — `period_alert_key` 가 그 선을 정한다.
+    PERIOD_FLASH = "period_flash"
     # ── 경기 앵커 (v1.39, 2026-09-17 대표님 설계) ──────────────────
     #
     # 대표님: *"모든 경기당 한개 앵커 생성 후 경기분석글 먼저 앵커안에 발송,
@@ -1229,6 +1328,8 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # 그 자리는 종료 속보 타임라인이 채운다(`SAFETY_NET_FOR`).
     # 그래서 `MUST_ALERT_ON_MISS`에도 넣지 않는다: 이건 누락이 아니라 설계다.
     ContentType.GOAL_FLASH: 1800,
+    # 구간도 같다 — 지나면 뜻을 잃는다 (v1.62)
+    ContentType.PERIOD_FLASH: 1800,
     ContentType.POLL: 1800,
     # v1.11k: 30분 → 3h. 창 90분이라 240분 시계에서 62%가 사라졌다.
     # 분석 카드는 경기 전 정보라 늦으면 값이 떨어지지만, 경기 시작 전이면 유효하다.
@@ -1336,6 +1437,8 @@ PACER_PRIORITY: dict[ContentType, int] = {
     # **득점 속보는 창이 30분뿐이다** — 페이서가 뒤로 미루면 그대로 사라진다.
     # 킥오프와 같은 0을 준다: 경기 중에만 값이 있는 카드라 미룰 자리가 없다.
     ContentType.GOAL_FLASH: 0,
+    # 구간 속보도 같은 자리다 (v1.62) — '전반 종료'를 후반에 보내면 거짓말이다.
+    ContentType.PERIOD_FLASH: 0,
     # 라인업도 창이 좁다(킥오프 전에만 유효) — 페이서가 뒤로 미루면 사라진다.
     ContentType.LINEUP: 1,
     ContentType.INPLAY_BOARD: 1,
@@ -1614,6 +1717,9 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # **득점 속보도 같다.** 예약이 '그 골을 처음 본 시각'이므로 그보다 이른
     # 시점에는 골이 존재하지 않는다. 앞창을 열 자리가 원리적으로 없다.
     ContentType.GOAL_FLASH: 0,
+    # **구간 속보도 같다** (v1.62). 예약이 '그 구간으로 넘어간 것을 처음 본
+    # 시각'이라, 그보다 이른 시점에는 그 구간이 아직 오지 않았다.
+    ContentType.PERIOD_FLASH: 0,
     # **일찍 보내면 안 된다.** 07:30보다 이른 '모닝 브리핑'은 이름과 어긋난다.
     # 기본 앞창을 시계 간격에 맞춰 넓히더라도 이것만은 0으로 잠근다.
     # (모닝은 대신 유예를 3시간으로 넓혀 늦게라도 나가게 했다.)

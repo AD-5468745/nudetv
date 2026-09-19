@@ -602,6 +602,25 @@ def for_lineup(away_name: str, home_name: str, minutes_left: int) -> Headline:
                     facts={"minutes": m, "away": away_name, "home": home_name})
 
 
+def for_period(label: str, *, away_name: str, home_name: str,
+               away_score: int, home_score: int) -> Headline:
+    """구간 속보 머리말 (v1.62) — `전반 종료` · `5회 종료` · `연장 진입`.
+
+    ⚠️ **'방금'이라고 쓰지 않는다.** 골 머리말과 같은 규칙이다(§108) — 이
+    카드는 우리가 그 구간을 *본* 시각에 예약되고 페이서가 미루면 더 늦는다.
+    `전반 종료`는 언제 읽어도 참이지만 `방금 전반이 끝났습니다`는 아니다.
+
+    **지어내지 않는다.** 여기 들어가는 말은 구간 이름(계약의
+    `PERIOD_ALERT_*`)과 점수뿐이고, 둘 다 소스가 준 사실이다.
+    """
+    lead = ("동점" if away_score == home_score else
+            f"{home_name if home_score > away_score else away_name} 리드")
+    return Headline(
+        rule="G-PERIOD", text=label,
+        sub=f"{away_name} {away_score} : {home_score} {home_name} · {lead}",
+        facts={"away": int(away_score), "home": int(home_score)})
+
+
 def for_goal(*, scorer: str, team_name: str, when: str, own_goal: bool,
              away_score: int, home_score: int, tied: bool, leader: str
              ) -> Headline:
@@ -1191,6 +1210,7 @@ ALL_RULES = frozenset({
     "M-SAME-TIME", "M-FIRST", "M-COUNT",
     "A-COUNTDOWN", "K-COUNTDOWN", "L-STARTING", "N-ONE",
     "G-GOAL",                      # v1.35 — 경기 중 득점 속보
+    "G-PERIOD",                    # v1.62 — 구간 속보(전반 종료·5회 종료·연장)
     "S-GAP", "S-RACE", "S-LEAD", "S-STREAK", "S-LAST10", "S-RANK",
     "L-SWEEP", "L-SPREAD", "L-TOP",
     "AN-H2H", "AN-RANKGAP", "AN-LAST10", "AN-MATCH",

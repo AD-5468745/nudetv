@@ -55,7 +55,7 @@ from _http import fetch as _fetch, make_opener
 from _notices import NoticeMixin
 
 from contract import (Goal, KST, League, ScoreUnit, SCORE_UNIT_BY_LEAGUE,
-                      Status, TEAM_NAMES)
+                      Status, TEAM_NAMES, parse_period)
 
 BASE = "https://api-gw.sports.naver.com"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
@@ -244,8 +244,15 @@ class NaverGameAdapter(NoticeMixin):
             hm = fix.get(g.get("homeTeamName"), g.get("homeTeamName"))
             if not (aw and hm and g.get("gameId")):
                 continue
+            # v1.62 — `statusInfo` 를 함께 담는다. **같은 응답에 이미 있다**
+            # (`fields=basic` 에 포함. 실측 2026-09-19: 야구 `2회초` ·
+            #  축구 `전반종료`). 여기서 안 담으면 구간을 알려고 경기마다
+            # 따로 조회해야 한다 — 하루 수백 번이다.
             out.setdefault((aw, hm), []).append(
-                (_kst_dt(g.get("gameDateTime")), g["gameId"]))
+                (_kst_dt(g.get("gameDateTime")), g["gameId"],
+                 {"info": str(g.get("statusInfo") or ""),
+                  "away": g.get("awayTeamScore"),
+                  "home": g.get("homeTeamScore")}))
         for v in out.values():
             # 시각을 못 읽은 것은 뒤로 — 시각으로 고를 수 없으니 마지막 수단이다
             v.sort(key=lambda x: (x[0] is None, x[0]))
@@ -364,7 +371,7 @@ class NaverGameAdapter(NoticeMixin):
         """후보 중 이 경기에 맞는 gameId. 못 고르면 None."""
         if len(cands) == 1:
             return cands[0][1]
-        timed = [(dt, gid) for dt, gid in cands if dt is not None]
+        timed = [(c[0], c[1]) for c in cands if c[0] is not None]
         if len(timed) != len(cands):
             # 시각을 못 읽은 후보가 섞였다 — 순서에 기대면 틀린 짝이 나온다
             self.note("같은 대진이 여럿인데 시작 시각을 못 읽음", f"{aw} vs {hm}")
@@ -378,6 +385,71 @@ class NaverGameAdapter(NoticeMixin):
                       f"{aw} vs {hm} (후보 {len(cands)})")
             return None
         return by_gap[0][1]
+
+    def enrich_live(self, games: list, league: League) -> int:
+        """**진행 중인 경기에 구간을 얹는다** (v1.62). 채운 개수.
+
+        대표님 지시(2026-09-19): *"축구는 전반종료, 후반종료, 연장 알림도
+        넣어줄 수 있으면 좋겠다. 야구도 전후반,연장으로 나눠서."*
+
+        ★ **경기마다 따로 조회하지 않는다.** 구간은 우리가 이미 매 틱 긁는
+        일정 응답(`statusInfo`)에 들어 있다. 그걸 안 쓰고 경기별 창구를 두드리면
+        하루 수백 번이 되고, 그 부담 때문에 상한을 걸면 다시 '오늘 경기가
+        대기줄 맨 뒤'가 된다(fix54에서 이미 당한 병이다).
+
+        `enrich`(종료 경기 흐름)와 **다른 함수로 둔다.** 저쪽은 경기마다
+        무거운 조회를 하고 상한이 걸려 있다. 구간은 가볍고 **모든 진행 중
+        경기에 매 틱** 필요하다 — 한 함수에 섞으면 상한을 공유하게 된다.
+
+        **예외를 던지지 않는다.** 구간이 없으면 구간 속보만 안 나갈 뿐이다.
+        """
+        if league not in NAVER_LEAGUE:
+            return 0
+        done = 0
+        for game in games:
+            if game.status is not Status.LIVE:
+                continue
+            try:
+                day = game.start_utc.astimezone(KST).strftime("%Y-%m-%d")
+                aw = TEAM_NAMES.get(league, {}).get(
+                    getattr(game.away, "team_code", game.away))
+                hm = TEAM_NAMES.get(league, {}).get(
+                    getattr(game.home, "team_code", game.home))
+                cands = list(self._schedule(league, day).get((aw, hm)) or ())
+                if not cands:
+                    for delta in (-1, 1):
+                        d2 = (game.start_utc.astimezone(KST)
+                              + timedelta(days=delta)).strftime("%Y-%m-%d")
+                        cands = list(
+                            self._schedule(league, d2).get((aw, hm)) or ())
+                        if cands:
+                            break
+                if not cands:
+                    continue
+                if len(cands) == 1:
+                    row = cands[0][2] if len(cands[0]) > 2 else {}
+                else:
+                    gid = self._pick(cands, game, aw, hm)
+                    row = next((c[2] for c in cands
+                                if c[1] == gid and len(c) > 2), {})
+                if not isinstance(row, dict) or not row.get("info"):
+                    continue
+                per, state = parse_period(row["info"])
+                if per is None:
+                    continue
+                game.meta.period, game.meta.period_state = per, state
+                # **점수도 함께 담는다** — 구간 카드의 본문이 곧 점수다.
+                # `Game.score` 는 건드리지 않는다(그건 '최종'이라는 뜻이다).
+                _a, _h = row.get("away"), row.get("home")
+                if _a is not None and _h is not None:
+                    try:
+                        game.meta.live_score = (int(_a), int(_h))
+                    except (TypeError, ValueError):
+                        pass
+                done += 1
+            except Exception:                            # noqa: BLE001
+                continue        # 구간 하나 못 채운다고 리그가 멈추지 않는다
+        return done
 
     def enrich(self, games: list, league: League, *, limit: int | None = None) -> int:
         """종료된 경기에 흐름을 채운다. 채운 개수를 돌려준다.

@@ -1848,6 +1848,49 @@ def goal_card(game, league: League, goal_id: str, *,
                                  tags=_tags("goal", league, [game])))
 
 
+def period_card(game, league: League, *, label: str,
+                now: datetime | None = None) -> tuple[str, list[str]] | None:
+    """구간 속보 (v1.62) — 전반 종료 · 연장 진입 · 5회 종료.
+
+    대표님 지시(2026-09-19): *"축구는 전반종료, 후반종료, 연장 알림도 넣어줄
+    수 있으면 좋겠다. 야구도 전후반,연장으로 나눠서 알림 넣어주고."*
+
+    **그 순간의 점수만 담는다.** 구간이 바뀌는 지점에서 손님이 알고 싶은 것은
+    '지금 몇 대 몇인가' 하나다. 흐름표·명단은 종료 속보가 싣는다 — 여기서
+    다 담으면 같은 것이 두 번 나가고 카드만 길어진다(약점 45).
+
+    ⚠️ **끝난 경기에는 안 만든다.** 그 자리는 종료 속보가 맡는다. 둘 다
+    나가면 같은 사실이 두 번 나간다(`period_alert_key` 도 같은 판정을 한다).
+    """
+    if getattr(game, "is_terminal", False):
+        return None
+    # **진행 중 점수를 쓴다.** `game.score` 는 끝난 경기의 최종 점수라
+    # 진행 중에는 비어 있다(실측 2026-09-19 NPB 3경기 전부 None).
+    _ls = getattr(getattr(game, "meta", None), "live_score", None)
+    _a, _h = (_ls if _ls else (None, None))
+    if _a is None or _h is None:
+        _sc = getattr(game, "score", None)
+        if _sc is None:
+            return None                   # 점수가 없으면 할 말이 없다
+        _a, _h = _sc.away, _sc.home
+    aw, hm = C5._nm(league, game.away), C5._nm(league, game.home)
+    head = H.for_period(label, away_name=aw, home_name=hm,
+                        away_score=_a, home_score=_h)
+    body = C5.body_score_only(
+        away_name=aw, home_name=hm, away_score=_a, home_score=_h,
+        league=league,
+        away_dot=C5.team_dot(league, game.away, side="r"),
+        home_dot=C5.team_dot(league, game.home, side="l"))
+    lab = _day_label(game.sports_day, [game])
+    foot = ((venue_name(game.venue) or "") if game.venue
+            else C5.LEAGUE_LABEL.get(league, ""))
+    html = C5.shell(kind="period", league=league, date_label=lab,
+                    head=head, body=body, foot_left=foot)
+    return html, list(C5.caption(kind="period", league=league, head=head,
+                                 date_label=lab,
+                                 tags=_tags("goal", league, [game])))
+
+
 def flash_card(game, league: League, *, now: datetime | None = None, rb=None
                ) -> tuple[str, list[str]] | None:
     """경기 종료 직후 결과 속보. 경기 하나당 한 장.

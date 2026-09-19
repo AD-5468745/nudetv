@@ -51,6 +51,7 @@ from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
+                      period_alert_key,
                       CorrectionSkip,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
@@ -1378,6 +1379,35 @@ def _mark_first_final(name: str, games: list, now: datetime) -> None:
             g.meta.first_final_at = _iso(now)        # 전환을 지금 봤다
 
 
+def _stamp_periods(games: list, now: datetime) -> int:
+    """**그 구간으로 넘어간 것을 처음 본 시각**을 적는다 (v1.62). 새로 적은 수.
+
+    골 도장(`_stamp_goals`)과 같은 규칙이다 — 예약 시각을 시계가 아니라
+    **데이터가 준다.** 소스는 구간이 바뀐 벽시계 시각을 주지 않으므로
+    (경기 시각만 준다) 우리가 처음 본 순간을 쓴다.
+
+    **한 번 적으면 안 바꾼다.** 안 그러면 매 틱 '새 구간'이 되어 같은 속보가
+    무한히 반복된다(fix49·v1.35에서 이미 당한 병).
+    """
+    n = 0
+    for g in games:
+        m = getattr(g, "meta", None)
+        if not m or m.period is None:
+            continue
+        key, label = period_alert_key(
+            g.league, m.period, m.period_state or "",
+            bool(getattr(g, "is_terminal", False)))
+        if not key:
+            continue
+        seen = dict(m.period_seen_at or {})
+        if key in seen:
+            continue
+        seen[key] = _iso(now)
+        m.period_seen_at = seen
+        n += 1
+    return n
+
+
 def _save_games(name: str, games: list) -> None:
     """스냅샷 저장. **있던 것을 0건으로 덮지 않는다 (v1.11h).**
 
@@ -1444,6 +1474,13 @@ def _save_games(name: str, games: list) -> None:
         # **골을 처음 본 시각** (v1.35). fix49와 같은 자리다 — 여기 없으면
         # 매 틱 모든 골이 '새 골'로 보여 같은 속보가 무한히 반복된다.
         "goal_seen_at": g.meta.goal_seen_at or None,
+        # **구간을 처음 본 시각** (v1.62). `goal_seen_at` 과 같은 이유로 담는다.
+        "period_seen_at": g.meta.period_seen_at or None,
+        # **진행 중 점수** (v1.62). 담아야 하는 이유가 `line_score`(fix49)와
+        # 똑같다: 카드는 메모리가 아니라 **되읽은 스냅샷**으로 그린다. 여기
+        # 없으면 구간 카드가 언제나 점수를 못 찾아 한 장도 안 나간다.
+        # 매 틱 `enrich_live` 가 덮어쓰므로 묵은 값이 남지 않는다.
+        "live_score": list(g.meta.live_score) if g.meta.live_score else None,
         # 하이라이트 유무 (v1.49). **False는 안 담는다** — 스냅샷이 커진다.
         "has_video": True if g.meta.has_video else None,
     } for g in games]
@@ -1550,6 +1587,9 @@ def _load_games(name: str) -> list:
                           # v1.17 — 없으면 None이라 옛 스냅샷도 그냥 읽힌다.
                           lineup=d.get("lineup") or None,
                           lineup_seen_at=d.get("lineup_seen_at"),
+                          period_seen_at=d.get("period_seen_at") or None,
+                          live_score=(tuple(d["live_score"])
+                                      if d.get("live_score") else None),
                           # v1.35 — 없으면 빈 dict라 옛 스냅샷도 그냥 읽힌다.
                           goal_seen_at=dict(d.get("goal_seen_at") or {}),
                           # 없으면 False — 옛 스냅샷도 그냥 읽힌다.
@@ -1880,6 +1920,20 @@ def collect(now: datetime, force: bool = False) -> tuple[dict, list[str], list[s
             # 유럽은 이름표가 비어 `None vs None`이 되어 매칭이 언제나 실패했다.
             # 여기서 gameId로 직접 받아 그 구멍을 메운다.
             _enrich_lineup(name, lg, games, now, soft)
+            # **진행 중인 경기에 구간을 얹는다 (v1.62).** 추가 조회가 없다 —
+            # 구간은 위에서 이미 받은 일정 응답(`statusInfo`)에 들어 있다.
+            try:
+                from adapters.naver_game import NaverGameAdapter as _NGA
+                global _FLOW_ADAPTER
+                if _FLOW_ADAPTER is None:
+                    _FLOW_ADAPTER = _NGA()
+                _np = _FLOW_ADAPTER.enrich_live(games, lg)
+                _ns = _stamp_periods(games, now)
+                if _ns:
+                    print(f"  [구간] {name} 새 구간 {_ns}건 (구간 확인 {_np}건)")
+            except Exception as _e:                      # noqa: BLE001
+                # 구간이 없으면 구간 속보만 안 나간다 — 리그를 죽이지 않는다.
+                soft.append(f"{name}: 구간 확인 실패 {_e.__class__.__name__}")
             _mark_first_final(name, games, now)
             _save_games(name, games)
             dt = _time.monotonic() - t0
@@ -2415,6 +2469,8 @@ THREADED_CONTENT_TYPES = frozenset({
     ContentType.ANALYSIS, ContentType.PREGAME, ContentType.LINEUP,
     ContentType.KICKOFF, ContentType.GOAL_FLASH, ContentType.FINAL_FLASH,
     ContentType.BOXSCORE,
+    # 구간 속보도 **그 경기 토론방에만** (v1.62) — 본채널은 그대로 조용하다.
+    ContentType.PERIOD_FLASH,
 })
 
 # ── **경기별 콘텐츠는 채널에 안 나온다 (v1.41)** ────────────────
@@ -2963,6 +3019,29 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             return None
         return _try_v5("boxscore", lambda R: R.boxscore_card(
             _one, _lg, record=_recb, now=_now()))
+
+    elif item.content_type is ContentType.PERIOD_FLASH:
+        # ── **구간 속보 (v1.62)** — 전반 종료 · 연장 진입 · 5회 종료 ──
+        # scope 뒤의 `#키`가 어느 구간인지 말한다. 그 키로 **다시 판정한다** —
+        # 보내는 순간 경기가 끝났으면 만들지 않는다(그 자리는 종료 속보다).
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _lg is None or _one is None or _one.meta is None:
+            return None
+        _pk = item.scope.split("#", 1)[1] if "#" in item.scope else ""
+        _label = ""
+        _m = _one.meta
+        _k2, _lb2 = period_alert_key(
+            _lg, _m.period, _m.period_state or "",
+            bool(getattr(_one, "is_terminal", False)))
+        if _k2 == _pk and _lb2:
+            _label = _lb2
+        else:
+            # 구간이 이미 지나갔다 — 그때의 말은 스냅샷에 없다. 지어내지 않고
+            # 만들지 않는다. 그 구간은 종료 속보 흐름표가 싣는다.
+            return None
+        return _try_v5("period", lambda R: R.period_card(
+            _one, _lg, label=_label, now=_now()))
 
     elif item.content_type is ContentType.PREGAME:
         # ── **경기 전 정보 (2차 · v1.44)** ──────────────────────────

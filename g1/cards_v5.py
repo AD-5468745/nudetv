@@ -77,6 +77,10 @@ KIND_META = {
     # 무엇이 최종 점수인지 스크롤에서 구분되지 않는다. 골망 모양이다.
     "goal":     ("득점", "M12 2l9 6.5v9L12 22 3 17.5v-9zM12 2v20M3 8.5h18"
                          "M3 17.5h18"),
+    # v1.62 — 구간 속보(전반 종료·5회 종료·연장 진입). **득점·결과와 다른
+    # 그림**을 쓴다: 한 경기 댓글에 구간·득점·결과가 연달아 붙으므로, 같은
+    # 그림이면 스크롤에서 무엇이 무엇인지 안 갈린다. 반으로 나뉜 원이다.
+    "period":   ("경기 중", "M12 3a9 9 0 100 18 9 9 0 100-18zM12 3v18"),
     "standings": ("팀 순위", "M3 20h5v-6H3zM9.5 20h5V4h-5zM16 20h5v-9h-5z"),
     "leaders":  ("부문 순위", "M8.5 13.5L7 22l5-2.6L17 22l-1.5-8.5"),
     "analysis": ("경기 분석", "M12 4v16M5 8h14M7.5 8l-3 6h6zM16.5 8l-3 6h6z"),
@@ -762,6 +766,24 @@ def body_scoreboard(games: list, league: League, *,
                               away_dot=team_dot(league, g.away, side="r"),
                               home_dot=team_dot(league, g.home, side="l")))
     return "".join(out)
+
+
+def body_score_only(*, away_name: str, home_name: str,
+                    away_score: int, home_score: int,
+                    league: "League | None" = None,
+                    away_dot: str = "", home_dot: str = "") -> str:
+    """점수 한 줄만. 구간 속보(v1.62)가 쓴다.
+
+    **흐름표를 안 붙인다.** 구간이 바뀌는 지점에서 손님이 알고 싶은 것은
+    '지금 몇 대 몇인가' 하나다. 나머지는 종료 속보가 싣는다 — 여기서 다
+    담으면 같은 것이 두 번 나가고 카드만 길어진다.
+    """
+    a, h = int(away_score), int(home_score)
+    mid = f'<span class="sc">{a} <i>:</i> {h}</span>'
+    return _score_row(away_name=away_name, home_name=home_name, mid=mid,
+                      lc=("t2" if a > h else "t2 dim"),
+                      rc=("t2" if h > a else "t2 dim"),
+                      away_dot=away_dot, home_dot=home_dot)
 
 
 def _score_row(*, away_name: str, home_name: str, mid: str,
@@ -1763,6 +1785,7 @@ FOLLOW_MAX = 4096
 KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
               "canceled": "🌧", "postponed": "🕓",
               "goal": "⚽", "standings": "📊", "anchor": "🆚", "pregame": "📝", "boxscore": "📒",
+              "period": "⏱",
               "leaders": "🏅", "analysis": "⚖️", "night": "🌙"}
 
 
