@@ -1135,9 +1135,10 @@ def analysis_card(rb, game, league: League, day: str, *,
         rows, na, nh, _wld(sa.record), _wld(sh.record),
         away_dot=C5.team_dot(league, game.away, side="l", big=True),
         home_dot=C5.team_dot(league, game.home, side="r", big=True))
+    # **카드에 남기는 것은 비교표와 상대전적 막대뿐이다** (v1.76).
+    # 최근 폼 점그림과 예상글은 위에서 만든 `_detail` 로 내려간다 —
+    # 둘 다 글로 읽는 편이 더 정확하고, 카드는 그만큼 짧아진다.
     body = _core
-    if form_rows:
-        body += C5.body_form(form_rows, title=form_title)
     _w2 = rb.between(a, h)
     if (_w2 is None or not _w2.total) and history:
         _got = P.h2h_from_games(history, a, h)
@@ -1155,13 +1156,41 @@ def analysis_card(rb, game, league: League, day: str, *,
                               lines=tuple(_SP.polite_lines(list(verdict.lines))))
         except Exception:                                # noqa: BLE001
             pass
-        body += C5.body_verdict(verdict)
+        pass                          # v1.76 — 예상글은 텍스트로 내려갔다
     foot = " · ".join([x for x in (kst, place) if x]) or day
     lab = _day_label(day, [game])
 
     def _shell(_b):
         return C5.shell(kind="analysis", league=league, date_label=lab,
                         head=head, body=_b, foot_left=foot)
+
+    # ── ★ **카드는 요약, 상세는 텍스트** (v1.76) ───────────────────
+    #
+    # 대표님(2026-09-22): *"이미지카드로는 간단한 요약만 보여주고 상세내용은
+    # 텍스트로 같이 넣어줘야지."*
+    #
+    # 실측해 보니 **정반대로 쓰고 있었다** — 캡션은 94자(상한 1024자)뿐인데
+    # 카드는 넘쳐서 2119px로 죽고 있었다. 이어 보내는 텍스트(`parts[1:]`)는
+    # 발송 경로까지 멀쩡한데 **한 번도 안 쓰였다.**
+    #
+    # 그래서 카드에서 덜어낸 블록을 **버리지 않고 텍스트로 내린다.** 사진은
+    # 한눈에 들어오는 비교표만 남고, 근거는 글로 따라간다 —
+    # 카드 높이 문제와 "데이터가 빈약하다"는 지적이 **같이** 풀린다.
+    _detail: list = []
+    if form_rows:
+        _fl = [f"<b>{form_title}</b>"]
+        for _nm3, _res, _last in form_rows:
+            _dots = "".join({"W": "승", "L": "패", "D": "무"}.get(r, "·")
+                            for r in _res)
+            _fl.append(f"· {C5.esc(_nm3)}  {_dots}   <i>{C5.esc(_last)}</i>")
+        _detail.append("\n".join(_fl))
+    if _w2 is not None and getattr(_w2, "total", 0):
+        _d2 = f" {_w2.draw}무" if _w2.draw else ""
+        _detail.append(f"<b>올 시즌 맞대결</b>\n"
+                       f"· {C5.esc(na)} {_w2.win}승{_d2} {_w2.loss}패")
+    if verdict and getattr(verdict, "lines", ()):
+        _detail.append("<b>예상</b>\n"
+                       + "\n".join(f"· {C5.esc(x)}" for x in verdict.lines))
 
     html = _shell(body)
     # 짧은 판 둘. **문자열을 잘라내지 않고 블록을 다시 조립한다** — 잘라내기는
@@ -1181,6 +1210,7 @@ def analysis_card(rb, game, league: League, day: str, *,
     return html, _shorter, list(C5.caption(
         kind="analysis", league=league, head=head, date_label=lab,
         note=record_asof_note(rb),      # v1.31
+        detail_blocks=_detail,          # v1.76 — 카드에서 덜어낸 상세
         tags=_tags("analysis", league, [game])))
 
 

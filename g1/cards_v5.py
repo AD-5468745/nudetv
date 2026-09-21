@@ -1947,6 +1947,9 @@ async def audit(page, html: str) -> list[str]:
 # 그 한 줄은 카드와 같은 말을 하지만 중복이 아니다. **매체가 다르다** —
 # 알림은 글자만 보이고, 카드는 열어야 보인다.
 CAPTION_MAX = 1024
+# 이어 보내는 텍스트의 상한 — 사진 캡션(1024)과 **다른 값이다**.
+# 계약이 가진 값을 그대로 쓴다(두 벌로 적으면 한쪽이 낡는다).
+from contract import TELEGRAM_TEXT_MAX as TEXT_MAX          # noqa: E402
 FOLLOW_MAX = 4096
 
 KIND_EMOJI = {"morning": "📋", "start": "⏰", "kickoff": "🔔", "result": "✅",
@@ -2012,6 +2015,7 @@ def strip_tag_line(text: str) -> str:
 def caption(*, kind: str, league: Optional[League], head: Headline,
             date_label: str = "", extra_lines: Optional[list[str]] = None,
             extra_title: str = "", note: str = "", hint: str = "",
+            detail_blocks: Optional[list[str]] = None,
             tags: Optional[list[str]] = None) -> list[str]:
     """`[0]`은 사진에 붙는 캡션, `[1:]`은 이어 보내는 텍스트.
 
@@ -2069,8 +2073,48 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
             parts[0] = cand
         return parts
 
+    def _with_detail(base: list[str]) -> list[str]:
+        """**카드에서 덜어낸 상세**를 붙인다 (v1.76).
+
+        대표님: *"이미지카드로는 간단한 요약만 · 상세내용은 텍스트로."*
+
+        붙이는 자리는 둘이다 —
+          · 캡션에 **들어가면** 캡션 끝에 (알림 한 번, 사진과 한 덩어리)
+          · **안 들어가면** 이어 보내는 텍스트로 (상한 4096자)
+        캡션을 잘라 넣지 않는다. 잘린 상세는 상세가 아니다.
+
+        `<blockquote expandable>` 로 감싼다 — 손님이 펼쳐서 보게 하고,
+        안 펼치면 채널이 글로 뒤덮이지 않는다(종료 속보가 이미 쓰는 방식).
+        """
+        if not detail_blocks:
+            return base
+        body = "\n\n".join(x for x in detail_blocks if x and x.strip())
+        if not body:
+            return base
+        block = f"<blockquote expandable>{body}</blockquote>"
+        cand = base[0] + "\n\n" + block
+        if len(cand) <= CAPTION_MAX:
+            base[0] = cand
+            return base
+        # 캡션에 안 들어간다 — 제 메시지로 내보낸다. 넘치면 블록 단위로 쪼갠다.
+        out = list(base)
+        cur = ""
+        for blk in detail_blocks:
+            if not (blk and blk.strip()):
+                continue
+            nxt = (cur + "\n\n" + blk) if cur else blk
+            if len(f"<blockquote expandable>{nxt}</blockquote>") > TEXT_MAX:
+                if cur:
+                    out.append(f"<blockquote expandable>{cur}</blockquote>")
+                cur = blk
+            else:
+                cur = nxt
+        if cur:
+            out.append(f"<blockquote expandable>{cur}</blockquote>")
+        return out
+
     if not extra_lines:
-        return _tagged([head_line[:CAPTION_MAX]])
+        return _tagged(_with_detail([head_line[:CAPTION_MAX]]))
 
     # 카드에 없는 것이 있을 때만 인용블록을 붙인다(부문 순위의 '그 밖의 부문' 등).
     title = f"\n\n<b>{esc(extra_title)}</b>" if extra_title else ""
@@ -2104,7 +2148,7 @@ def caption(*, kind: str, league: Optional[League], head: Headline,
         out.append("<b>(이어서)</b>\n<blockquote expandable>"
                    + "\n".join(esc(x) for x in rest[:k]) + "</blockquote>")
         rest = rest[k:]
-    return _tagged(out)
+    return _tagged(_with_detail(out))
 
 
 def leaders_extra(leaders: dict, league: League, shown: list[str]) -> list[str]:
