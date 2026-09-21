@@ -1,10 +1,10 @@
 {
- "at": "2026-09-21T15:38:56.619266+00:00",
+ "at": "2026-09-21T15:41:19.066457+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-21T15:31:56.095422+00:00",
    "count": 238,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "MLB": {
    "at": "2026-09-21T15:38:56.619266+00:00",
@@ -48,27 +48,27 @@
   "EPL": {
    "at": "2026-09-21T15:24:39.484728+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LALIGA": {
    "at": "2026-09-21T15:24:39.484728+00:00",
    "count": 69,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "SERIEA": {
    "at": "2026-09-21T15:24:39.484728+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "BUNDESLIGA": {
    "at": "2026-09-21T15:24:39.484728+00:00",
    "count": 36,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LIGUE1": {
    "at": "2026-09-21T15:24:39.484728+00:00",
    "count": 45,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UCL": {
    "at": "2026-09-21T15:16:36.012538+00:00",
@@ -96,11 +96,10 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 6,
+ "lost_lines": 5,
  "status_lines": 7,
  "lost_kinds": [
   "empty_render",
-  "missed",
   "unqueued_kickoff",
   "unsent_day:analysis",
   "unsent_day:league_result",
