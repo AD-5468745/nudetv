@@ -352,12 +352,23 @@ html,body{{width:{CARD_BASE_W}px;background:{th['bg']};
 .lab .dt{{margin-left:auto;color:{th['faint']};letter-spacing:.06em;font-weight:700}}
 /* 야구 타순 (v1.63) — 번호·수비위치·이름 세 칸. 번호는 자릿수가 고르므로
    `tabular-nums` 로 줄을 맞춘다. */
-.bo{{display:grid;grid-template-columns:52px 96px 1fr;align-items:baseline;
+/* ★ 칸 너비를 **글자 크기로 준다** (v1.75).
+   96px 고정이었는데 v1.69에서 글씨가 1.25배가 되면서 **`지명타자`가 두 줄로
+   접혀** 카드 게이트에 걸렸다 — 야구 명단이 그날부터 한 장도 안 나갔다
+   (실측 2026-09-22: `접힘(2.0줄): 지명타자`). 로고와 똑같은 사고다:
+   글자만 커지고 칸은 제자리에 남았다.
+   `em`은 이 줄의 글자를 따라가므로 **다음에 폰트를 또 키워도 안 접힌다.**
+   `지명타자`가 KBO에서 가장 긴 수비위치(4글자)다. */
+.bo{{display:grid;grid-template-columns:2.2em 5.2em 1fr;align-items:baseline;
+  font-size:22px;
   padding:13px 0;border-top:1px solid {th['line']}}}
 .bo .n{{font-size:26px;font-weight:800;color:{th['accent']};
   font-variant-numeric:tabular-nums}}
 .bo .p{{font-size:22px;color:{th['faint']}}}
 .bo .nm{{font-size:29px;font-weight:700;color:{th['ink']}}}
+/* 타순 두 팀을 나란히 (v1.75 — 세로로 쌓으면 상한을 넘는다) */
+.bo2{{display:grid;grid-template-columns:1fr 1fr;gap:0 40px;align-items:start}}
+.bo2 .lu{{min-width:0}}
 .lead{{font-size:62px;font-weight:800;letter-spacing:-.035em;line-height:1.14;
   margin-top:26px;color:{th['ink']}}}
 .sub{{font-size:27px;color:{th['dim']};margin-top:16px;font-weight:500;
@@ -887,7 +898,15 @@ def body_batting_order(teams: list) -> str:
         out.append(f'<div class="lu"><div class="luh">'
                    f'<span class="nm">{esc(t["name"])}</span>'
                    f'<span class="fm2">선발 타순</span></div>{rows}</div>')
-    return "".join(out)
+    # ★ **두 팀을 나란히 놓는다** (v1.75).
+    #   세로로 쌓으면 9+9 = 18줄이라 카드가 2291px가 되어 **상한 2000px를
+    #   넘어 통째로 사라졌다**(실측 2026-09-22 — 야구 명단이 전 기간 0건이었던
+    #   두 이유 중 하나. 다른 하나는 `지명타자` 접힘이었다).
+    #   타순은 좌우로 견주는 표다 — 나란히 놓는 것이 원래 더 읽기 좋다.
+    #   칸 하나가 약 480px라 번호(2.2em)·수비위치(5.2em)를 빼도 이름 자리가
+    #   260px 남는다(한글 3~4자면 충분하다).
+    return f'<div class="bo2">{"".join(out)}</div>' if len(out) == 2 \
+        else "".join(out)
 
 
 def body_score_only(*, away_name: str, home_name: str,

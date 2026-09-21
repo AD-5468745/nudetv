@@ -110,8 +110,11 @@ def measure(name: str, built, *, snug: bool = True) -> None:
         check(f"★★ {name} — 카드가 만들어진다", False, "None이 돌아왔습니다")
         return
     html = built[0] if isinstance(built, tuple) else built
+    # **짧은 판을 함께 넘긴다** — 분석·나이트는 사다리가 있어야 상한을 지난다.
+    # 여기서 안 넘기면 검사가 실제 발송보다 **더 엄하게** 재어 헛짖는다.
+    short = built[1] if isinstance(built, tuple) and len(built) == 3 else None
     png = _OUT / f"{name}.png"
-    r = R5.render_png(html, png)
+    r = R5.render_png(html, png, short)
     if r is None:
         check(f"★★★ {name} — 상한 {MAX}px 안에 그려진다", False,
               "높이 게이트에 걸려 **통째로 사라집니다**")
@@ -178,7 +181,51 @@ _lu = _G(_lg, "AAA", "BBB", hh=12,
 measure("선발 라인업(11+11)",
         R5.lineup_card(_lu, _lg, now=_lu.start_utc - timedelta(minutes=40)))
 
-# ── ⑤ 구간 속보 ──────────────────────────────────────────────────
+# ── ④-2 야구 선발 타순 (v1.75 추가) ──────────────────────────────
+#
+# ★ 축구 명단만 재고 **야구 타순을 빼놓아 두 가지 사고를 다 놓쳤다**:
+#   ① `지명타자`가 두 줄로 접힘 (수비위치 칸이 96px 고정인데 글씨가 1.25배)
+#   ② 9+9를 세로로 쌓아 2291px — 상한 2000px 초과
+#   둘 다 v1.69의 글씨 확대가 드러낸 것이고, 야구 명단은 그 뒤로 0건이었다.
+#   **같은 종류라도 종목이 다르면 다른 카드다** — 따로 재야 한다.
+_bo = [{"name": "한화 이글스",
+        "order": [(i + 1, p, f"선수이름{i}") for i, p in enumerate(
+            ["지명타자", "중견수", "좌익수", "1루수", "우익수",
+             "3루수", "포수", "유격수", "2루수"])]}
+       for _ in range(1)]
+_bo.append({"name": "LG 트윈스",
+            "order": [(i + 1, p, f"타자이름{i}") for i, p in enumerate(
+                ["지명타자", "중견수", "좌익수", "1루수", "우익수",
+                 "3루수", "포수", "유격수", "2루수"])]})
+_blu = _G(League.KBO, "HH", "LG", hh=9,
+          meta=GameMeta(lineup={"away": {"order": [list(x) for x in _bo[0]["order"]]},
+                                "home": {"order": [list(x) for x in _bo[1]["order"]]}}))
+measure("야구 선발 타순(9+9 · 지명타자 포함)",
+        R5.lineup_card(_blu, League.KBO,
+                       now=_blu.start_utc - timedelta(minutes=40)))
+
+# ── ⑤ 분석 카드 (v1.75 추가) ─────────────────────────────────────
+#
+# ★ **이 검사에 분석을 안 넣어서 사고를 못 잡았다.**
+#   v1.74까지 앵커·결과·순위·명단·구간만 쟀다. 그 사이 분석 카드가
+#   여백판 2119px · 조임판 2042px 로 상한을 넘어 **통째로 사라지고
+#   있었다**(실측 2026-09-22, 이틀 내내 0건). 높이를 재는 검사를 만들어
+#   놓고 정작 가장 긴 카드를 빼놓은 것이다.
+#
+# 분석은 블록이 넷(비교·최근폼·상대전적·예상)이라 **가장 길어지기 쉽다.**
+_asrows = [_st(League.KBO, "AAA", 1, 80, 52, 2, StreakKind.WIN, 5),
+           _st(League.KBO, "BBB", 9, 52, 80, 2, StreakKind.LOSS, 4)]
+_ag = _G(League.KBO, "AAA", "BBB", venue="고척스카이돔", hh=9)
+_arb = _RB(_asrows, WLD(9, 7, 0))
+# 최근 5경기 · 예상글까지 다 찬 판 — 실제로 가장 긴 조합이다
+_hist = [_G(League.KBO, "AAA", "BBB", status=Status.FINAL, hh=9,
+            score=Score(away=i, home=9 - i, unit=ScoreUnit.RUNS))
+         for i in range(5)]
+measure("분석(블록 4개·전부 찬 판)",
+        R5.analysis_card(_arb, _ag, League.KBO, "2026-09-20",
+                         history=_hist, now=NOW))
+
+# ── ⑥ 구간 속보 ──────────────────────────────────────────────────
 _pd = _G(League.KBO, "AAA", "BBB", status=Status.LIVE,
          meta=GameMeta(live_score=(7, 6)))
 measure("구간 속보", R5.period_card(_pd, League.KBO, label="연장 진입", now=NOW))

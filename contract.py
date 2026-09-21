@@ -4203,13 +4203,53 @@ def defer_for_precision(scheduled_utc: datetime, now_utc: datetime,
 
 
 
-def is_late(scheduled_utc: datetime, now_utc: datetime, content_type: ContentType) -> bool:
+# ── **소스가 결과를 늦게 올리는 리그는 발송 유예도 따로 준다** (v1.75) ──
+#
+# `STALE_GRACE_BY_LEAGUE`(경보 유예)와 같은 이유, 다른 자리다. 저쪽은
+# "언제부터 사람을 불러야 하나", 이쪽은 "언제까지 내보내도 되나"다.
+#
+# ★ **실측 2026-09-22.** NPB 종료 속보가 9-18부터 한 건도 안 나갔다. 원장에
+#   이유가 그대로 남아 있었다 — `지각 폐기 — 예약보다 361~366분 늦음`.
+#   유예가 360분인데 **매번 1~6분 차이로 넘긴 것**이다.
+#   9-16·17에는 같은 키로 정상 발송됐다(경기 후 약 4시간). 소스 지연이
+#   조금 늘자 그대로 선을 넘었다.
+#
+#   npb.jp 는 결과 게시가 **중앙값 +314분**이다(`adapters/npb.py` 머리말).
+#   유예 360분은 그 중앙값 바로 위라, 조금만 늦어도 절반이 사라지는 자리에
+#   선이 그어져 있었다. 꼬리까지 담도록 **9시간**으로 넓힌다.
+#
+# ⚠️ **이건 절반만 근본수정이다.** 진짜 문제는 우리가 NPB 결과를 6시간 늦게
+#   안다는 것이고, 그건 소스가 느려서다. **진짜 수정은 더 빠른 소스에서
+#   종결을 읽는 것**이다 — 네이버는 같은 경기를 훨씬 일찍 종결로 준다
+#   (우리는 이미 `naver_game.enrich` 로 NPB 흐름을 받고 있다).
+#   그걸 하기 전까지, 지금은 **늦게라도 나가는 쪽**이 안 나가는 쪽보다 낫다.
+GRACE_BY_LEAGUE: dict[tuple, int] = {
+    (ContentType.FINAL_FLASH, League.NPB): 9 * 3600,
+    (ContentType.BOXSCORE, League.NPB): 9 * 3600,
+}
+
+
+def grace_for(content_type: ContentType, league: "Optional[League]" = None) -> int:
+    """그 콘텐츠·그 리그의 유예(초). 예외가 없으면 종류별 기본값."""
+    if league is not None:
+        hit = GRACE_BY_LEAGUE.get((content_type, league))
+        if hit is not None:
+            return hit
+    return GRACE_SECONDS[content_type]
+
+
+def is_late(scheduled_utc: datetime, now_utc: datetime,
+            content_type: ContentType, league: "Optional[League]" = None) -> bool:
     """지각 판정. 기준은 큐에서 집행을 시작한 시각.
 
     단 REJUDGE_AT_SEND 콘텐츠는 실제 API 전송 직전에 이 함수를 다시 호출해야 한다 —
     페이서 대기 3분이 '10분 뒤 시작' 문안을 거짓말로 만들기 때문이다.
+
+    `league`를 주면 **리그별 유예**를 본다(위 `GRACE_BY_LEAGUE`). 안 주면
+    종류별 기본값이라 기존 부르는 쪽은 그대로 돈다.
     """
-    return (now_utc - scheduled_utc).total_seconds() > GRACE_SECONDS[content_type]
+    return ((now_utc - scheduled_utc).total_seconds()
+            > grace_for(content_type, league))
 
 
 # ── 사라진 발행을 기록으로 남기는 여유 (v1.11i) ──────────────────────
@@ -4226,10 +4266,16 @@ DROP_REPORT_MARGIN_SECONDS = 6 * 3600
 
 
 def keep_in_queue(scheduled_utc: datetime, now_utc: datetime,
-                  content_type: ContentType) -> bool:
-    """큐에 남겨 둘 것인가. 여기서 남긴 뒤 is_late()가 버림을 판정·기록한다."""
+                  content_type: ContentType,
+                  league: "Optional[League]" = None) -> bool:
+    """큐에 남겨 둘 것인가. 여기서 남긴 뒤 is_late()가 버림을 판정·기록한다.
+
+    ★ **`is_late()`와 같은 자를 쓴다** (v1.75). 여기가 기본 유예로 먼저
+    잘라내면, 리그별로 유예를 넓혀도 그 항목은 큐에 아예 안 올라와
+    **넓힌 것이 아무 효과가 없다.** 두 곳이 같은 표를 봐야 한다.
+    """
     age = (now_utc - scheduled_utc).total_seconds()
-    return age <= GRACE_SECONDS[content_type] + DROP_REPORT_MARGIN_SECONDS
+    return age <= grace_for(content_type, league) + DROP_REPORT_MARGIN_SECONDS
 
 
 # ─────────────────────────────────────────────────────────────────────

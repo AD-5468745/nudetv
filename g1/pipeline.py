@@ -953,7 +953,8 @@ def build_queue(games: list[Game], now: datetime, channel: str,
             if not is_upcoming(g, now):
                 continue                  # 끝났거나 취소·연기됐거나 이미 시작했다
             _at = g.start_utc - timedelta(seconds=KICKOFF_LEAD_SECONDS)
-            if _at > hi or not keep_in_queue(_at, now, ContentType.KICKOFF):
+            if _at > hi or not keep_in_queue(_at, now, ContentType.KICKOFF,
+                                             league):
                 continue
             _scope_k = f"{league.value}:{g.sports_day}:{g.game_id}"
             items.append(QueueItem(
@@ -1009,7 +1010,8 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 _deadline = g.start_utc - timedelta(
                     seconds=LINEUP_CARD_MIN_LEAD_SECONDS)
                 if (_lat is not None and _lat <= _deadline and _lat <= hi
-                        and keep_in_queue(_lat, now, ContentType.LINEUP)):
+                        and keep_in_queue(_lat, now, ContentType.LINEUP,
+                                          league)):
                     items.append(QueueItem(
                         idem_key=idem_key(channel, ContentType.LINEUP, _scope),
                         content_type=ContentType.LINEUP, scope=_scope,
@@ -1027,8 +1029,12 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                     _fat = datetime.fromisoformat(_ff)
                 except (TypeError, ValueError):
                     _fat = None
+                # ★ **리그를 함께 넘긴다** (v1.75). NPB는 소스가 결과를
+                #   6시간 늦게 올려 기본 유예(360분)를 1~6분 차이로 넘기고
+                #   **매번 버려졌다**. 여기서 안 넘기면 유예를 넓혀도 그
+                #   항목이 큐에 아예 안 올라와 넓힌 것이 헛일이 된다.
                 if _fat is not None and _fat <= hi and keep_in_queue(
-                        _fat, now, ContentType.FINAL_FLASH):
+                        _fat, now, ContentType.FINAL_FLASH, league):
                     items.append(QueueItem(
                         idem_key=idem_key(channel, ContentType.FINAL_FLASH,
                                           _scope),
@@ -1048,7 +1054,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                     # 못 채웠으면 렌더가 None을 내고 유예(6시간) 안에 다시 온다.
                     _bx = _fat + timedelta(minutes=3)
                     if _bx <= hi and keep_in_queue(
-                            _bx, now, ContentType.BOXSCORE):
+                            _bx, now, ContentType.BOXSCORE, league):
                         items.append(QueueItem(
                             idem_key=idem_key(channel, ContentType.BOXSCORE,
                                               _scope),
@@ -1141,7 +1147,8 @@ def build_queue(games: list[Game], now: datetime, channel: str,
         # (전에는 `lo <= deadline` 이라 마감이 1분만 지나도 그날 결과가 통째로 사라졌다)
         if deadline > hi:
             continue
-        if not keep_in_queue(deadline, now, ContentType.LEAGUE_RESULT):
+        if not keep_in_queue(deadline, now, ContentType.LEAGUE_RESULT,
+                             league):
             continue
 
         # **그날 경기가 전부 끝났으면 마감을 기다리지 않는다 (v1.11d, 대표님 지시:
@@ -1275,7 +1282,8 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 an_at = max(an_at, now)
                 if an_at >= _g.start_utc or an_at > hi:
                     continue
-                if not keep_in_queue(an_at, now, ContentType.ANALYSIS):
+                if not keep_in_queue(an_at, now, ContentType.ANALYSIS,
+                                     league):
                     continue
                 scope = f"{league.value}:{_g.sports_day}:{_g.game_id}"
                 items.append(QueueItem(

@@ -607,9 +607,20 @@ for _name, _fn in _v5cases:
     else:
         check(f"★ {_name} 카드가 예외 없이 만들어진다", bool(_made), "None을 돌려줬다")
     if _made:
-        _html, _parts = _made
+        # **세 값을 주는 카드가 있다** — (카드, 짧은판, 캡션).
+        # 나이트가 그랬고 v1.75부터 분석도 그렇다(상한을 넘어 사라지던 것을
+        # 사다리로 살렸다). `tick._try_v5` 가 길이로 가르는 것과 **같은 규칙**을
+        # 쓴다 — 여기서 다르게 풀면 검사만 터진다.
+        if len(_made) == 3:
+            _html, _short, _parts = _made
+        else:
+            _html, _parts = _made
+            _short = None
         check(f"  ↳ {_name}: 골격을 지났다", '<div class="card">' in _html)
         check(f"  ↳ {_name}: 캡션이 비지 않는다", bool(_parts) and bool(_parts[0].strip()))
+        if _short:
+            check(f"  ↳ {_name}: 짧은 판도 골격을 지났다",
+                  all('<div class="card">' in x for x in _short))
 
 # ═════════════════════════════════════════════════════════════
 print("\n7.5 ★★ 기록이 얄팍한 리그도 v5로 만든다 (NPB 조건 · v1.15c)")
@@ -647,7 +658,7 @@ else:
     check("★★ 팀 기록·최근10이 없어도 분석 카드를 만든다", bool(_thin),
           "None — 그 틱에 카드가 안 나간다")
 if _thin:
-    _th, _tp = _thin
+    _th, _tp = (_thin[0], _thin[-1])   # v1.75: 분석은 (카드, 짧은판, 캡션)
     check("  ↳ 상대전적 블록이 실제로 실린다", "시즌 상대전적" in _th)
     check("  ↳ 최근 폼 블록이 실제로 실린다", 'class="fm"' in _th)
 # ★★ 변이시험 — 옛 기준(표 줄 수 3)이면 이 표본은 통과하지 못한다

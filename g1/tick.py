@@ -2939,8 +2939,22 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         """
         try:
             import render_v5 as _R5
-            if not _R5.USE_V5.get(kind):
+            # ★ **'표에 없음'과 '일부러 꺼 둠'을 가른다** (v1.75).
+            #
+            # v1.74까지 `USE_V5.get(kind)` 하나로 둘을 같이 처리했다. 그래서
+            # 종류를 표에 **등록하는 걸 빠뜨리면** 꺼 둔 것과 똑같이 조용히
+            # 되돌아갔다 — 구간 속보가 만든 이래 0건이었던 진짜 이유다
+            # (카드·큐·도장은 전부 정상이었고, 아무 데도 기록이 안 남았다).
+            #
+            # 꺼 둔 것은 판단이고, 표에 없는 것은 **배선 사고**다. 사고는
+            # 사고라고 말해야 한다.
+            if kind not in _R5.USE_V5:
+                _R5.note_fallback(
+                    f"`{kind}` 카드가 USE_V5 표에 없습니다 — 등록을 빠뜨리면 "
+                    f"그 종류가 **통째로, 조용히** 안 나갑니다")
                 return None
+            if not _R5.USE_V5[kind]:
+                return None                   # 일부러 꺼 둔 것 — 조용히 넘어간다
             made = build(_R5)
             if not made:
                 return None
@@ -3594,7 +3608,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # START_ALERT(우선순위 0)가 LEAGUE_RESULT(6) 뒤로 밀려 페이서 대기 동안
     # 거짓말이 됐다(그리고 REJUDGE_AT_SEND에 걸려 통째로 사라졌다).
     for item in (Pacer.order(due) if not hold else []):
-        if is_late(item.scheduled_utc, now, item.content_type):
+        if is_late(item.scheduled_utc, now, item.content_type, item.league):
             # **버린 것을 조용히 넘기지 않는다.**
             # 늦은 것을 버리는 건 설계대로다("늦은 안내는 거짓말이다"). 그런데
             # 그걸 로그에 안 남기면, 시계가 뜸해져 매일 모닝 브리핑을 놓쳐도
@@ -4000,7 +4014,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     for _it in items:
         if _it.content_type not in MUST_ALERT_ON_MISS:
             continue
-        if not is_late(_it.scheduled_utc, now, _it.content_type):
+        if not is_late(_it.scheduled_utc, now, _it.content_type, _it.league):
             continue                      # 아직 창 안이거나 창 전 — 사라진 게 아니다
         if led.get(_it.idem_key) is not None:
             continue                      # 대장에 결과가 있다(발송·폐기 무엇이든)

@@ -83,8 +83,16 @@ def duty(content: str, lg: League) -> bool:
         return True                       # 전 리그 공통
     if content == "analysis":
         return lg in P.ANALYSIS_LEAGUES
-    if content in ("standings", "leaderboard"):
+    if content == "standings":
         return lg in P.RECORD_SOURCE_LEAGUES
+    if content == "leaderboard":
+        # ★ **판정을 여기서 다시 적지 않는다.** 리더보드는 기록 리그에서
+        #   **한 겹 더** 걸린다 — 선수 이름이 한글로 안 나오는 리그(NPB)는
+        #   부문 순위를 안 만든다. 그 판정은 `P.LEADERBOARD_LEAGUES` 하나가
+        #   갖고 있고, 큐도 의무 대조도 그걸 본다(약점 198).
+        #   내가 `RECORD_SOURCE_LEAGUES` 로 다시 적었더니 **NPB가 매일
+        #   구멍으로 찍혔다** — 없는 사고를 만든 것이다.
+        return lg in P.LEADERBOARD_LEAGUES
     if content == "boxscore":
         return unit in C.BOXSCORE_SPORTS
     if content == "goal_flash":

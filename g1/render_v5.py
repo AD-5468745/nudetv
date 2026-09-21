@@ -63,6 +63,12 @@ USE_V5 = {
     "flash": True,           # 그 경기 종료 직후 — 흐름표가 실제로 보이는 자리
     "lineup": True,          # v1.17: 그 경기 선발 명단 — 옛 카드에 대응물이 없다
     "goal": True,            # v1.35: 경기 중 득점 속보 — 옛 카드에 대응물이 없다
+    # ★ v1.62에 카드·렌더 분기까지 다 만들어 놓고 **이 한 줄을 빠뜨렸다.**
+    #   `_try_v5` 는 `USE_V5.get(kind)` 로 묻는데, 표에 없으면 `None` 이
+    #   돌아와 **꺼 둔 것과 똑같이** 조용히 되돌아간다. 그래서 구간 속보가
+    #   만든 이래 **한 장도 안 나갔다** — 도장도 큐도 카드도 다 정상이었다.
+    #   (v1.75에서 `_try_v5` 가 '표에 없음'과 '꺼 둠'을 가르게 고쳤다.)
+    "period": True,          # v1.62: 전반 종료 · 연장 진입 · 5회 종료
     "morning": True,         # 2026-09-06 대표님: "모든 이미지 카드와 정보는 v5"
     "standings": True,       #   ↳ 그날 지적하신 카드가 이것이다
     "leaders": True,
@@ -1113,10 +1119,23 @@ def analysis_card(rb, game, league: League, day: str, *,
     # 한 카드가 같은 사실을 두 번 말하면 그만큼 자리가 낭비된다(실렌더에서 잡음).
     def _wld(rec):
         return f"{rec.win}-{rec.loss}" + (f"-{rec.draw}" if rec.draw else "")
-    body = C5.body_compare(
+    # ── ★ **짧은 판을 함께 만든다** (v1.75) ────────────────────────
+    #
+    # 실측 2026-09-22: 분석 카드가 여백판 2119px · 조임판 2042px 로
+    # **상한 2000px를 넘어 통째로 사라지고 있었다.** v1.69에서 글씨를
+    # 1.25배로 키운 대가다 — 원래도 상한 언저리였던 카드가 넘어갔다.
+    # 오류도 알림도 없었다. 사다리(`render_png`)는 짧은 판을 받으면 한 단씩
+    # 내려가는데, **분석 카드만 그 판을 안 주고 있었다.**
+    #
+    # 버리는 차례는 **덜 단단한 것부터**다:
+    #   ① 예상글(verdict) — 우리가 만든 추정이다. 사실이 아니라 견해다.
+    #   ② 최근 폼         — 상대전적·비교표와 겹치는 정보다.
+    # 비교표와 상대전적은 **끝까지 지킨다** — 그게 분석의 알맹이다.
+    _core = C5.body_compare(
         rows, na, nh, _wld(sa.record), _wld(sh.record),
         away_dot=C5.team_dot(league, game.away, side="l", big=True),
         home_dot=C5.team_dot(league, game.home, side="r", big=True))
+    body = _core
     if form_rows:
         body += C5.body_form(form_rows, title=form_title)
     _w2 = rb.between(a, h)
@@ -1139,12 +1158,30 @@ def analysis_card(rb, game, league: League, day: str, *,
         body += C5.body_verdict(verdict)
     foot = " · ".join([x for x in (kst, place) if x]) or day
     lab = _day_label(day, [game])
-    html = C5.shell(kind="analysis", league=league, date_label=lab,
-                    head=head, body=body, foot_left=foot)
-    return html, list(C5.caption(kind="analysis", league=league, head=head,
-                                 date_label=lab,
-                                 note=record_asof_note(rb),      # v1.31
-                                 tags=_tags("analysis", league, [game])))
+
+    def _shell(_b):
+        return C5.shell(kind="analysis", league=league, date_label=lab,
+                        head=head, body=_b, foot_left=foot)
+
+    html = _shell(body)
+    # 짧은 판 둘. **문자열을 잘라내지 않고 블록을 다시 조립한다** — 잘라내기는
+    # 본문 모양이 조금만 바뀌어도 조용히 어긋난다.
+    _h2h = (C5.body_h2h(na, nh, _w2.win, _w2.loss, _w2.draw)
+            if (_w2 is not None and getattr(_w2, "total", 0)) else "")
+    _form = C5.body_form(form_rows, title=form_title) if form_rows else ""
+    _ladder = [_core + _form + _h2h,          # ① 예상글을 뺀다
+               _core + _h2h]                  # ② 최근 폼까지 뺀다
+    # 원래 판과 같은 것은 안 준다 — 사다리가 같은 것을 두 번 그린다.
+    _seen = {body}
+    _shorter = []
+    for _b in _ladder:
+        if _b not in _seen:
+            _seen.add(_b)
+            _shorter.append(_shell(_b))
+    return html, _shorter, list(C5.caption(
+        kind="analysis", league=league, head=head, date_label=lab,
+        note=record_asof_note(rb),      # v1.31
+        tags=_tags("analysis", league, [game])))
 
 
 

@@ -3481,6 +3481,100 @@ check("★★ 어디로 갔는지 **모르는** 옛 줄은 누수로 세지 않�
           _FakeLed(_unknown), _FakeDisc({100: 11, 101: 12, 102: 13}), "ch", _TH_NOW)))
 T.DISCUSSION_CHAT_ID = _old_disc_id
 
+# ── 카드 종류 스위치가 **빠짐없이 등록돼 있는가** (v1.75) ──────────
+#
+# ★ 구간 속보가 만든 이래 0건이었던 진짜 이유가 이 한 줄이었다.
+#   v1.62에서 카드·큐·도장·렌더 분기를 전부 만들어 놓고 `USE_V5` 표에
+#   `"period"` 등록만 빠뜨렸다. `_try_v5` 가 `USE_V5.get(kind)` 로 물으니
+#   **표에 없는 것이 꺼 둔 것과 똑같이** 조용히 되돌아갔다 —
+#   오류도, 알림도, 로그도 없었다.
+#
+# 표가 둘이면 어긋난다. **소스에서 실제로 부르는 종류를 읽어** 견준다.
+print("\n카드 종류 스위치 — 등록을 빠뜨리면 통째로 조용히 사라진다 (v1.75)")
+
+import re as _re75                                               # noqa: E402
+import render_v5 as _R75                                         # noqa: E402
+
+import pathlib as _pl75                                          # noqa: E402
+
+_src75 = (_pl75.Path(__file__).resolve().parent
+          / "tick.py").read_text(encoding="utf-8")
+# 주석은 걷어내고 센다 — 주석 속 예시를 호출로 읽으면 헛짖는다
+_code75 = "\n".join(l.split("#")[0] for l in _src75.splitlines())
+_used75 = sorted(set(_re75.findall(r"""_try_v5\(\s*["']([a-z_]+)["']""", _code75)))
+
+check(f"★★ 시계가 부르는 카드 종류를 읽어 왔다 ({len(_used75)}종)",
+      len(_used75) >= 10, str(_used75))
+_miss75 = [k for k in _used75 if k not in _R75.USE_V5]
+check("★★★ 시계가 부르는 종류가 **전부 USE_V5 표에 있다** "
+      "(빠지면 그 종류가 통째로, 조용히 안 나간다)",
+      not _miss75, "표에 없음: " + ", ".join(_miss75))
+
+# 구간 속보가 실제로 켜져 있는가 — 이 사고의 당사자다
+check("  ↳ 구간 속보(`period`)가 표에 있고 켜져 있다",
+      _R75.USE_V5.get("period") is True, str(_R75.USE_V5.get("period")))
+
+# (변이) 한 종류를 표에서 빼면 검사가 잡는가
+_sv75 = dict(_R75.USE_V5)
+try:
+    _R75.USE_V5.pop("period", None)
+    check("★★ (변이) 표에서 한 종류를 빼면 검사가 잡는다",
+          any(k not in _R75.USE_V5 for k in _used75))
+finally:
+    _R75.USE_V5.clear(); _R75.USE_V5.update(_sv75)
+
+# **꺼 둔 것과 표에 없는 것을 가르는가** — 둘을 같이 처리하면 사고가 숨는다
+_sv76 = dict(_R75.USE_V5)
+try:
+    _R75.USE_V5["period"] = False
+    check("  ↳ 일부러 꺼 두는 것은 여전히 가능하다 (표에 있고 값만 False)",
+          "period" in _R75.USE_V5 and _R75.USE_V5["period"] is False)
+finally:
+    _R75.USE_V5.clear(); _R75.USE_V5.update(_sv76)
+
+# ── 소스가 느린 리그의 발송 유예 (v1.75) ──────────────────────────
+#
+# ★ NPB 종료 속보가 9-18부터 0건이었다. 원장에 이유가 그대로 있었다 —
+#   `지각 폐기 — 예약보다 361~366분 늦음`. 유예가 360분이라 **매번 1~6분
+#   차이로 넘겼다.** npb.jp 결과 게시가 중앙값 +314분인데 선을 360분에
+#   그어 둔 것이 원인이다(9-16·17에는 같은 키로 정상 발송됐다).
+print("\n소스가 느린 리그의 발송 유예 (v1.75)")
+
+_MIN = 60
+for _m, _want_npb, _want_kbo in ((355, False, False),   # 둘 다 산다
+                                 (365, False, True),    # NPB만 산다
+                                 (545, True, True)):    # 둘 다 죽는다
+    _at = NOW - timedelta(seconds=_m * _MIN)
+    check(f"★★ {_m}분 늦음 — NPB {'버림' if _want_npb else '**살림**'} · "
+          f"KBO {'버림' if _want_kbo else '살림'}",
+          C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.NPB) is _want_npb
+          and C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.KBO) is _want_kbo,
+          f"NPB={C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.NPB)} "
+          f"KBO={C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.KBO)}")
+
+# ★ **두 문이 같은 자를 써야 한다.** 큐가 기본 유예로 먼저 잘라내면
+#   리그별로 넓힌 것이 아무 효과가 없다 — 그 항목은 큐에 아예 안 올라온다.
+_at365 = NOW - timedelta(seconds=365 * _MIN)
+check("★★★ 큐 문과 지각 문이 **같은 유예**를 본다 "
+      "(큐가 먼저 자르면 리그별 유예가 헛일이 된다)",
+      C.keep_in_queue(_at365, NOW, ContentType.FINAL_FLASH, League.NPB)
+      and not C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB))
+
+# 리그를 안 주면 옛 동작 그대로 — 부르는 쪽을 전부 안 고쳐도 안전하다
+check("  ↳ 리그를 안 주면 종류별 기본값을 쓴다 (옛 호출부가 그대로 돈다)",
+      C.is_late(_at365, NOW, ContentType.FINAL_FLASH)
+      and C.grace_for(ContentType.FINAL_FLASH)
+      == C.GRACE_SECONDS[ContentType.FINAL_FLASH])
+
+# (변이) 예외를 지우면 검사가 잡는가
+_sv_g = dict(C.GRACE_BY_LEAGUE)
+try:
+    C.GRACE_BY_LEAGUE.clear()
+    check("★★ (변이) 리그 예외를 지우면 NPB가 다시 버려진다",
+          C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB))
+finally:
+    C.GRACE_BY_LEAGUE.clear(); C.GRACE_BY_LEAGUE.update(_sv_g)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
