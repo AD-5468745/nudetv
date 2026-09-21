@@ -341,6 +341,7 @@ ANALYSIS_LEAGUES = frozenset({
 # **계약에서 가져온다 (v1.11n).** 여기 따로 적어 두었더니 계약의 앞창과 짝이
 # 어긋나 순위표가 영원히 안 나갔다 — 두 값은 반드시 같은 곳에서 나와야 한다.
 from contract import STANDINGS_AFTER_RESULT_SECONDS      # noqa: E402,F401
+from contract import game_scope                          # noqa: E402
 
 LEADERBOARD_HOUR_KST = 12                 # 점심 리그 리더보드
 NIGHT_BRIEF_HOUR_KST = 23                 # (더 이상 쓰지 않는다 — 아래 참고)
@@ -742,6 +743,13 @@ def _game_buttons(games: list, day: str, *, links: dict, name_of=None,
     return rows
 
 
+# 큐에 오르는 순간 이미 이만큼 지났으면 **배선이 늦은 것**이다.
+# 유예(6시간)보다 훨씬 앞에 둔다 — 버려지고 나서 알면 늦다.
+LATE_BIRTH_WARN_MINUTES = 60
+LATE_BIRTHS: list = []
+"""가장 최근 큐 생성에서 **늦게 태어난 항목들**. 시계가 거둬 알림에 싣는다."""
+
+
 def build_queue(games: list[Game], now: datetime, channel: str,
                 floor_hours: int = 6, horizon_hours: int = 30) -> list[QueueItem]:
     """한 리그의 큐를 만든다. 틱의 자가치유·수집 잡의 add는 floor_hours=0으로 부른다.
@@ -756,6 +764,7 @@ def build_queue(games: list[Game], now: datetime, channel: str,
     """
     lo, hi = now + timedelta(hours=floor_hours), now + timedelta(hours=horizon_hours)
     items: list[QueueItem] = []
+    _late_births: list = []
     if not games:
         return items
     league = games[0].league
@@ -966,7 +975,10 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 render_at_utc=_at))
 
         for g in games:
-            _scope = f"{league.value}:{g.sports_day}:{g.game_id}"
+            # ★ **경기 칸을 계약이 정한다** (v1.77). 소스가 경기 이름을
+            #   바꾸는 리그(NPB)는 신원으로 센다 — 안 그러면 같은 경기가
+            #   6시간 뒤 새 경기처럼 큐에 올라 그 자리에서 버려진다.
+            _scope = game_scope(g)
 
             # ⓪ **경기 앵커 (v1.39)** — 경기 3시간 전, 경기마다 한 장.
             #
@@ -1033,6 +1045,17 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 #   6시간 늦게 올려 기본 유예(360분)를 1~6분 차이로 넘기고
                 #   **매번 버려졌다**. 여기서 안 넘기면 유예를 넓혀도 그
                 #   항목이 큐에 아예 안 올라와 넓힌 것이 헛일이 된다.
+                # ★ **늦게 태어난 항목은 이름을 남긴다** (v1.77).
+                #   이게 없어서 NPB 종료 속보가 나흘간 사라진 이유를 원장에서
+                #   역산해야 했다. 큐에 오르는 순간 이미 한참 지났으면, 그
+                #   경기가 무엇이고 언제 종료를 알았는지 **그 자리에서** 적는다.
+                if _fat is not None:
+                    _bl = (now - _fat).total_seconds() / 60
+                    if _bl > LATE_BIRTH_WARN_MINUTES:
+                        _late_births.append(
+                            f"{league.value} {g.game_id} — 종료를 "
+                            f"{_fat.astimezone(KST):%m-%d %H:%M}에 알았는데 "
+                            f"큐에는 {_bl:.0f}분 뒤에 올랐습니다")
                 if _fat is not None and _fat <= hi and keep_in_queue(
                         _fat, now, ContentType.FINAL_FLASH, league):
                     items.append(QueueItem(
@@ -1222,6 +1245,9 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                     scope=f"{league.value}:{day}",
                     scheduled_utc=st_at, league=league, sports_day=day,
                     render_at_utc=st_at - timedelta(minutes=15)))
+
+    if _late_births:
+        LATE_BIRTHS.extend(_late_births)
 
     # ── 리더보드 — 매일 12:00 KST ────────────────────────────────
     # 모닝과 같은 꼴로 잡는다(오늘 12:00과 내일 12:00). 12:00은 자정에서 12시간

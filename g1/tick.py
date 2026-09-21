@@ -4211,6 +4211,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             if n not in _seen2:
                 _seen2.append(n)
         lines += [f"유럽 순위 — {n}" for n in _seen2[:3]]
+    # ★ **늦게 태어난 항목** (v1.77). 큐에 오르는 순간 이미 한참 지난 것은
+    #   배선이 늦다는 뜻이다. NPB 종료 속보가 나흘간 사라진 원인을 원장에서
+    #   역산해야 했던 것이 이 줄이 없어서였다 — 이제 그 자리에서 말한다.
+    if P.LATE_BIRTHS:
+        _lb: list = []
+        for n in P.LATE_BIRTHS:
+            if n not in _lb:
+                _lb.append(n)
+        lines += [f"⏳ 늦게 큐에 오름 — {n}" for n in _lb[:3]]
+        if len(_lb) > 3:
+            lines.append(f"⏳ 늦게 큐에 오름 외 {len(_lb) - 3}건")
+        P.LATE_BIRTHS.clear()
     _ar = take_archive_rejects()
     if _ar:
         _seen: list = []

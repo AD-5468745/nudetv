@@ -3538,42 +3538,161 @@ finally:
 #   `지각 폐기 — 예약보다 361~366분 늦음`. 유예가 360분이라 **매번 1~6분
 #   차이로 넘겼다.** npb.jp 결과 게시가 중앙값 +314분인데 선을 360분에
 #   그어 둔 것이 원인이다(9-16·17에는 같은 키로 정상 발송됐다).
-print("\n소스가 느린 리그의 발송 유예 (v1.75)")
+print("\n리그별 발송 유예 — 구조는 남기고 예외는 비운다 (v1.77)")
 
 _MIN = 60
-for _m, _want_npb, _want_kbo in ((355, False, False),   # 둘 다 산다
-                                 (365, False, True),    # NPB만 산다
-                                 (545, True, True)):    # 둘 다 죽는다
-    _at = NOW - timedelta(seconds=_m * _MIN)
-    check(f"★★ {_m}분 늦음 — NPB {'버림' if _want_npb else '**살림**'} · "
-          f"KBO {'버림' if _want_kbo else '살림'}",
-          C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.NPB) is _want_npb
-          and C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.KBO) is _want_kbo,
-          f"NPB={C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.NPB)} "
-          f"KBO={C.is_late(_at, NOW, ContentType.FINAL_FLASH, League.KBO)}")
+# ★ **v1.75에서 NPB에 9시간을 줬다가 v1.77에서 걷어냈다.**
+#   대표님: *"빠른 오보보다 늦은 사실? 안된다 빠르고 정확해야한다."*
+#   6시간 늦은 '속보'를 내보내는 대신 **늦는 원인을 없앴다**
+#   (`game_scope` 가 소스 이름 변화를 흡수한다).
+#   그래서 지금 표는 비어 있어야 한다 — 그런데 **구조는 살아 있어야 한다.**
+#   정말 느린 소스가 나오면 그때 한 줄 적으면 되도록.
+check("★★★ 리그별 유예 예외가 **비어 있다** (임시 조치를 걷어냈다)",
+      not C.GRACE_BY_LEAGUE, str(C.GRACE_BY_LEAGUE))
 
-# ★ **두 문이 같은 자를 써야 한다.** 큐가 기본 유예로 먼저 잘라내면
-#   리그별로 넓힌 것이 아무 효과가 없다 — 그 항목은 큐에 아예 안 올라온다.
 _at365 = NOW - timedelta(seconds=365 * _MIN)
-check("★★★ 큐 문과 지각 문이 **같은 유예**를 본다 "
-      "(큐가 먼저 자르면 리그별 유예가 헛일이 된다)",
-      C.keep_in_queue(_at365, NOW, ContentType.FINAL_FLASH, League.NPB)
-      and not C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB))
+check("  ↳ 그래서 NPB도 다른 리그와 같은 유예를 쓴다",
+      C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB)
+      and C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.KBO))
 
-# 리그를 안 주면 옛 동작 그대로 — 부르는 쪽을 전부 안 고쳐도 안전하다
-check("  ↳ 리그를 안 주면 종류별 기본값을 쓴다 (옛 호출부가 그대로 돈다)",
-      C.is_late(_at365, NOW, ContentType.FINAL_FLASH)
-      and C.grace_for(ContentType.FINAL_FLASH)
-      == C.GRACE_SECONDS[ContentType.FINAL_FLASH])
-
-# (변이) 예외를 지우면 검사가 잡는가
+# **구조가 살아 있는가** — 한 줄 넣으면 그 리그만 살아나야 한다
 _sv_g = dict(C.GRACE_BY_LEAGUE)
 try:
-    C.GRACE_BY_LEAGUE.clear()
-    check("★★ (변이) 리그 예외를 지우면 NPB가 다시 버려진다",
-          C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB))
+    C.GRACE_BY_LEAGUE[(ContentType.FINAL_FLASH, League.NPB)] = 9 * 3600
+    check("★★ 예외를 한 줄 넣으면 **그 리그만** 살아난다 (구조는 남아 있다)",
+          not C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB)
+          and C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.KBO))
+    # 큐 문과 지각 문이 같은 자를 봐야 넓힌 것이 효과가 있다
+    check("★★★ 큐 문과 지각 문이 **같은 유예**를 본다 "
+          "(큐가 먼저 자르면 예외가 헛일이 된다)",
+          C.keep_in_queue(_at365, NOW, ContentType.FINAL_FLASH, League.NPB)
+          and not C.is_late(_at365, NOW, ContentType.FINAL_FLASH, League.NPB))
 finally:
     C.GRACE_BY_LEAGUE.clear(); C.GRACE_BY_LEAGUE.update(_sv_g)
+
+check("  ↳ 리그를 안 주면 종류별 기본값을 쓴다 (옛 호출부가 그대로 돈다)",
+      C.grace_for(ContentType.FINAL_FLASH)
+      == C.GRACE_SECONDS[ContentType.FINAL_FLASH])
+
+# ── 카드 종류 스위치가 **빠짐없이 등록돼 있는가** (v1.75) ──────────
+#
+# ★ 구간 속보가 만든 이래 0건이었던 진짜 이유가 이 한 줄이었다.
+#   v1.62에서 카드·큐·도장·렌더 분기를 전부 만들어 놓고 `USE_V5` 표에
+#   `"period"` 등록만 빠뜨렸다. `_try_v5` 가 `USE_V5.get(kind)` 로 물으니
+#   **표에 없는 것이 꺼 둔 것과 똑같이** 조용히 되돌아갔다 —
+#   오류도, 알림도, 로그도 없었다.
+#
+# 표가 둘이면 어긋난다. **소스에서 실제로 부르는 종류를 읽어** 견준다.
+print("\n카드 종류 스위치 — 등록을 빠뜨리면 통째로 조용히 사라진다 (v1.75)")
+
+import re as _re75                                               # noqa: E402
+import render_v5 as _R75                                         # noqa: E402
+
+import pathlib as _pl75                                          # noqa: E402
+
+_src75 = (_pl75.Path(__file__).resolve().parent
+          / "tick.py").read_text(encoding="utf-8")
+# 주석은 걷어내고 센다 — 주석 속 예시를 호출로 읽으면 헛짖는다
+_code75 = "\n".join(l.split("#")[0] for l in _src75.splitlines())
+_used75 = sorted(set(_re75.findall(r"""_try_v5\(\s*["']([a-z_]+)["']""", _code75)))
+
+check(f"★★ 시계가 부르는 카드 종류를 읽어 왔다 ({len(_used75)}종)",
+      len(_used75) >= 10, str(_used75))
+_miss75 = [k for k in _used75 if k not in _R75.USE_V5]
+check("★★★ 시계가 부르는 종류가 **전부 USE_V5 표에 있다** "
+      "(빠지면 그 종류가 통째로, 조용히 안 나간다)",
+      not _miss75, "표에 없음: " + ", ".join(_miss75))
+
+# 구간 속보가 실제로 켜져 있는가 — 이 사고의 당사자다
+check("  ↳ 구간 속보(`period`)가 표에 있고 켜져 있다",
+      _R75.USE_V5.get("period") is True, str(_R75.USE_V5.get("period")))
+
+# (변이) 한 종류를 표에서 빼면 검사가 잡는가
+_sv75 = dict(_R75.USE_V5)
+try:
+    _R75.USE_V5.pop("period", None)
+    check("★★ (변이) 표에서 한 종류를 빼면 검사가 잡는다",
+          any(k not in _R75.USE_V5 for k in _used75))
+finally:
+    _R75.USE_V5.clear(); _R75.USE_V5.update(_sv75)
+
+# **꺼 둔 것과 표에 없는 것을 가르는가** — 둘을 같이 처리하면 사고가 숨는다
+_sv76 = dict(_R75.USE_V5)
+try:
+    _R75.USE_V5["period"] = False
+    check("  ↳ 일부러 꺼 두는 것은 여전히 가능하다 (표에 있고 값만 False)",
+          "period" in _R75.USE_V5 and _R75.USE_V5["period"] is False)
+finally:
+    _R75.USE_V5.clear(); _R75.USE_V5.update(_sv76)
+
+
+# ── 소스가 경기 이름을 바꿔도 같은 경기다 (v1.77) ──────────────────
+#
+# ★ NPB 종료 속보가 나흘간 사라진 진짜 원인. npb.jp 가 박스스코어를 올리며
+#   경기 이름을 바꾸면(`20260920-YOG-YAK` → `scores-2026-0920-g-s-23`)
+#   같은 경기가 **새 경기처럼** 큐에 올라, 예약 시각은 6시간 전 그대로라
+#   그 자리에서 버려졌다(실측: 여섯 경기 전부 361~366분).
+print("\n소스가 이름을 바꿔도 같은 경기다 (v1.77)")
+
+
+class _G77:
+    def __init__(self, lg, src, start, day="2026-09-23"):
+        self.league = lg
+        self.away = TeamRef(lg, "YAK"); self.home = TeamRef(lg, "YOG")
+        self.sports_day = day
+        self.game_id = f"{lg.value}:2026:{src}"
+        self.start_utc = start
+        self.meta = GameMeta()
+
+
+_FUT77 = C.STABLE_SCOPE_FROM_UTC + timedelta(hours=17)
+_OLD77 = C.STABLE_SCOPE_FROM_UTC - timedelta(days=2)
+
+_a77 = C.game_scope(_G77(League.NPB, "20260923-YOG-YAK", _FUT77))
+_b77 = C.game_scope(_G77(League.NPB, "scores-2026-0923-g-s-23", _FUT77))
+check("★★★ 소스가 이름을 바꿔도 **같은 칸**이다 "
+      "(안 그러면 같은 경기가 두 번 큐에 오른다)", _a77 == _b77, f"{_a77} vs {_b77}")
+
+# **이미 지나간 경기는 건드리지 않는다** — 칸을 바꾸면 다시 나간다
+_c77 = C.game_scope(_G77(League.NPB, "20260920-YOG-YAK", _OLD77,
+                                     day="2026-09-20"))
+check("★★★ 선 이전 경기는 **옛 칸 그대로** (바꾸면 이미 보낸 것이 다시 나간다)",
+      "20260920-YOG-YAK" in _c77, _c77)
+
+# 이름이 안 흔들리는 리그는 손대지 않는다
+_d77 = C.game_scope(_G77(League.KBO, "20260923HHLG0", _FUT77))
+check("★★ 이름이 안 흔들리는 리그는 안 건드린다 (KBO)",
+      "20260923HHLG0" in _d77, _d77)
+
+# 신원을 못 만들면 옛 방식으로 떨어진다 — 터지지 않는다
+class _Bad77:
+    league = League.NPB; game_id = "NPB:2026:x"; sports_day = None
+    start_utc = _FUT77; meta = GameMeta(); away = None; home = None
+
+
+check("  ↳ 신원을 못 만들면 옛 방식으로 떨어진다 (예외로 리그를 죽이지 않는다)",
+      "NPB:2026:x" in C.game_scope(_Bad77()))
+
+# 임시 조치였던 유예 예외가 걷혔는가
+check("★★ NPB 유예 예외가 걷혔다 (늦게 내보내는 대신 원인을 없앴다)",
+      not C.GRACE_BY_LEAGUE
+      and C.grace_for(ContentType.FINAL_FLASH, League.NPB)
+      == C.GRACE_SECONDS[ContentType.FINAL_FLASH])
+
+# (변이) 흔들리는 리그 표를 비우면 검사가 잡는가
+_sv77 = C.SOURCE_KEY_DRIFTS
+try:
+    C.SOURCE_KEY_DRIFTS = frozenset()
+    check("★★ (변이) 흔들리는 리그 표를 비우면 두 칸이 갈라진다",
+          C.game_scope(_G77(League.NPB, "20260923-YOG-YAK", _FUT77))
+          != C.game_scope(_G77(League.NPB, "scores-2026-0923-g-s-23", _FUT77)))
+finally:
+    C.SOURCE_KEY_DRIFTS = _sv77
+
+# 늦게 태어난 항목을 말하는가
+check("★★ 큐에 늦게 오른 항목을 기록한다 (역산하지 않아도 되게)",
+      P.LATE_BIRTH_WARN_MINUTES <= 60
+      and isinstance(P.LATE_BIRTHS, list))
 
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
