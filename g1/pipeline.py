@@ -342,6 +342,10 @@ ANALYSIS_LEAGUES = frozenset({
 # 어긋나 순위표가 영원히 안 나갔다 — 두 값은 반드시 같은 곳에서 나와야 한다.
 from contract import STANDINGS_AFTER_RESULT_SECONDS      # noqa: E402,F401
 from contract import game_scope                          # noqa: E402
+from contract import (POLL_LEAD_SECONDS, POLL_MAX_PER_DAY)   # noqa: E402
+
+POLL_ENABLED = True
+"""승부 예측 투표를 켠다 (v1.78). 끄면 투표만 멈추고 나머지는 그대로 돈다."""
 
 LEADERBOARD_HOUR_KST = 12                 # 점심 리그 리더보드
 NIGHT_BRIEF_HOUR_KST = 23                 # (더 이상 쓰지 않는다 — 아래 참고)
@@ -1245,6 +1249,44 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                     scope=f"{league.value}:{day}",
                     scheduled_utc=st_at, league=league, sports_day=day,
                     render_at_utc=st_at - timedelta(minutes=15)))
+
+    # ── 승부 예측 투표 (v1.78) ───────────────────────────────────
+    #
+    # 대표님 지시: 댓글에 알림이 안 울리니 **본채널 투표로 길을 연다.**
+    # 투표는 새 글이라 알림이 울리고, 한 표 던진 손님은 그 경기로 들어온다.
+    #
+    # ★ **하루 몇 경기만** 건다(`POLL_MAX_PER_DAY`). 흩뿌리면 표도 흩어져
+    #   "아무도 참여 안 한다"처럼 보인다 — 한 경기에 모아야 참여가 보인다.
+    #   고르는 규칙은 `poll_targets` 한 곳에 있다(기록 없이 정해진다).
+    if POLL_ENABLED:
+        _by_day: dict[str, list[Game]] = defaultdict(list)
+        for g in games:
+            _by_day[g.sports_day].append(g)
+        for _pday, _pgs in _by_day.items():
+            for _pg in poll_targets(_pgs, limit=POLL_MAX_PER_DAY):
+                _pscope = game_scope(_pg)
+                _pat = _pg.start_utc - timedelta(seconds=POLL_LEAD_SECONDS)
+                if _pat <= hi and keep_in_queue(_pat, now, ContentType.POLL,
+                                                _pg.league):
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.POLL, _pscope),
+                        content_type=ContentType.POLL, scope=_pscope,
+                        scheduled_utc=_pat, league=_pg.league,
+                        sports_day=_pg.sports_day, game_id=_pg.game_id,
+                        render_at_utc=_pat))
+                # **닫기는 킥오프에 딱.** 경기 중 표가 들어오면 집계가 거짓이
+                # 된다. 투표가 안 나갔으면 닫을 것도 없다 — 시계가 판단한다.
+                _pcat = _pg.start_utc
+                if _pcat <= hi and keep_in_queue(_pcat, now,
+                                                 ContentType.POLL_CLOSE,
+                                                 _pg.league):
+                    items.append(QueueItem(
+                        idem_key=idem_key(channel, ContentType.POLL_CLOSE,
+                                          _pscope),
+                        content_type=ContentType.POLL_CLOSE, scope=_pscope,
+                        scheduled_utc=_pcat, league=_pg.league,
+                        sports_day=_pg.sports_day, game_id=_pg.game_id,
+                        render_at_utc=_pcat))
 
     if _late_births:
         LATE_BIRTHS.extend(_late_births)
@@ -3293,6 +3335,40 @@ NIGHT_LEAGUE_ORDER: tuple[League, ...] = (
     League.EPL, League.LALIGA, League.SERIEA, League.BUNDESLIGA,
     League.LIGUE1, League.UCL,
 )
+
+
+# ── 투표를 걸 경기를 고른다 (v1.78) ─────────────────────────────────
+#
+# 대표님 걱정: *"아무도 참여 안하는걸로 보이면 안되잖아."*
+# 그래서 **흩뿌리지 않는다** — 다섯 경기에 나누면 각 세 표, 한 경기에 모으면
+# 열다섯 표다. 하루 `POLL_MAX_PER_DAY` 경기에만 건다.
+#
+# ★ **기록 없이 정해지는 규칙만 쓴다.** 큐가 고르는 시각(킥오프 3시간 전)에는
+#   RecordBook 이 있다는 보장이 없다 — `analysis_target` 이 같은 이유로 같은
+#   제약을 지킨다. 두 곳이 다른 규칙을 쓰면 예약해 놓고 다른 경기를 그린다.
+#
+# 고르는 순서:
+#   ① **한국 사람이 깨어 있는 시각**에 시작하는 경기 (18~24시 KST)
+#      새벽 유럽 경기에 투표를 걸면 아무도 안 본다 — 표가 안 모인다
+#   ② 리그 우선순위 — `NIGHT_LEAGUE_ORDER` 를 그대로 쓴다(국내 먼저).
+#      **새 표를 만들지 않는다**: 이미 "한국 채널의 맨 윗자리" 기준이다
+#   ③ 같으면 시작이 이른 것 · 그래도 같으면 game_id (소스 순서에 안 흔들리게)
+POLL_PRIME_HOURS = (18, 24)           # KST — 이 사이에 시작하면 '황금 시간'
+
+
+def poll_targets(day_games: list[Game], *, limit: int) -> list[Game]:
+    """그날 투표를 걸 경기들. 없으면 빈 목록."""
+    order = {lg: i for i, lg in enumerate(NIGHT_LEAGUE_ORDER)}
+    lo, hi = POLL_PRIME_HOURS
+
+    def rank(g: Game):
+        h = g.start_utc.astimezone(KST).hour
+        prime = 0 if lo <= h < hi else 1        # 황금 시간이 먼저
+        return (prime, order.get(g.league, 99), g.start_utc, g.game_id)
+
+    live = [g for g in day_games
+            if g.status is Status.SCHEDULED and not g.is_terminal]
+    return sorted(live, key=rank)[:max(0, limit)]
 
 
 def _night_groups(games: list[Game]) -> list[tuple[League, list[Game]]]:

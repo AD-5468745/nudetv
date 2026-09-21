@@ -46,6 +46,8 @@ from contract import (BURST_AUTO_RELEASE_S, BURST_CANARY_OBSERVE_S,
                       SendRecord, SendState, TELEGRAM_PARSE_MODE,
                       TELEGRAM_PHOTO_DIM_SUM_MAX, TELEGRAM_PHOTO_MAX_BYTES,
                       TELEGRAM_TEXT_MAX, UNPLANNED_CONTENT,
+                      TELEGRAM_POLL_OPTION_MAX, TELEGRAM_POLL_OPTIONS_MAX,
+                      TELEGRAM_POLL_QUESTION_MAX,
                       WEBHOOK_ALLOWED_UPDATES,
                       WEBHOOK_SECRET_HEADER, assert_sendable,
                       correction_key_from, correction_scope, decide_correction,
@@ -643,6 +645,19 @@ class Payload:
     # 스크롤 없이 알게 한다. 원본 message_id는 대장에 있다.
     reply_to_message_id: Optional[int] = None
 
+    # ── 승부 예측 투표 (v1.78) ─────────────────────────────────
+    #
+    # 대표님 지시(2026-09-22): 댓글에는 알림이 안 울려 손님이 앵커 아래
+    # 내용을 못 알아챈다 → **본채널 투표**로 길을 연다. 투표는 새 글이라
+    # 알림이 울리고, 손님이 한 표 던지면 그 경기로 들어올 이유가 생긴다.
+    #
+    # ⚠️ **채널 투표는 익명이 강제된다** (계약 `VoteChannel` 주석 · 텔레그램이
+    # 2024-09에 비익명 생성을 버그로 막았다). 그래서 개인별 적중률은 못
+    # 만든다 — 집계만 쓴다. 집계는 **투표를 닫을 때 텔레그램이 돌려준다**
+    # (`stopPoll` → 각 항목의 득표수). 웹훅 서버가 없어도 된다.
+    poll: Optional[dict] = None
+    """`{"question": str, "options": [str, str]}`. 있으면 이 payload는 투표다."""
+
     # **보낼 곳을 이 한 건만 바꾼다 (v1.39).**
     #
     # 앵커+댓글 구조에서 세부 카드는 채널이 아니라 **토론 그룹**으로 간다.
@@ -694,6 +709,27 @@ class Payload:
         if self.follow_texts and not self.photos:
             raise GateError("이어지는 텍스트는 사진이 있을 때만 쓴다 "
                             "(사진 없으면 text 하나로 보낸다)")
+        # ── 투표 게이트 (v1.78) ────────────────────────────────
+        if self.poll is not None:
+            if self.photos or self.text or self.follow_texts:
+                raise GateError("투표는 사진·텍스트와 섞어 보내지 않는다 "
+                                "(sendPoll 은 제 메시지다)")
+            q = str(self.poll.get("question") or "")
+            opts = list(self.poll.get("options") or [])
+            if not q.strip():
+                raise GateError("투표에 물음이 없다")
+            if len(q) > TELEGRAM_POLL_QUESTION_MAX:
+                raise GateError(f"투표 물음 {len(q)}자 > {TELEGRAM_POLL_QUESTION_MAX}")
+            if not (2 <= len(opts) <= TELEGRAM_POLL_OPTIONS_MAX):
+                raise GateError(f"투표 선택지가 {len(opts)}개 "
+                                f"(2~{TELEGRAM_POLL_OPTIONS_MAX}개여야 한다)")
+            for o in opts:
+                if not str(o).strip():
+                    raise GateError("투표 선택지가 비어 있다")
+                if len(str(o)) > TELEGRAM_POLL_OPTION_MAX:
+                    raise GateError(f"투표 선택지 {len(str(o))}자 > {TELEGRAM_POLL_OPTION_MAX}")
+            if len(set(opts)) != len(opts):
+                raise GateError(f"투표 선택지가 겹친다: {opts}")
         # ★ **앨범은 버튼을 못 단다 (텔레그램 제약).**
         # sendMediaGroup에는 `reply_markup`이 없다. 여기서 조용히 빼면 대표님이
         # 지시한 버튼이 **어느 날 소리 없이 사라진다** — 그러느니 시끄럽게 막는다.
@@ -708,6 +744,14 @@ class Payload:
                     raise GateError(f"버튼에 문구나 URL이 없다: {b}")
                 if not str(b["url"]).startswith("https://"):
                     raise GateError(f"버튼 URL은 https여야 한다: {b['url']}")
+
+    @classmethod
+    def for_poll(cls, question: str, options: list[str]) -> "Payload":
+        """승부 예측 투표 하나. **두 갈래만 쓴다** — 무승부까지 넣으면
+        축구에서는 맞지만 야구에서는 거의 없는 칸이 생기고, 손님이 고르기
+        전에 규칙을 배워야 한다. 두 팀 중 하나를 고르는 것이 가장 쉽다."""
+        return cls(poll={"question": question[:TELEGRAM_POLL_QUESTION_MAX],
+                         "options": [o[:TELEGRAM_POLL_OPTION_MAX] for o in options]})
 
     @classmethod
     def from_parts(cls, photos, parts: list[str]) -> "Payload":
@@ -1096,6 +1140,18 @@ class Sender:
         # 답장은 **첫 메시지에만** 단다. 앨범의 모든 장과 후속 텍스트까지 답장으로
         # 달면 채널이 인용 더미가 된다 — 정정 한 건이 원본 한 건을 가리키면 충분하다.
         reply = p.reply_params()
+        # ── 투표 (v1.78) ───────────────────────────────────────
+        # **사진도 텍스트도 아닌 제 종류다.** 게이트가 이미 섞이는 것을 막았다.
+        if p.poll is not None:
+            res = self.tr.call("sendPoll", {
+                "chat_id": _to,
+                "question": p.poll["question"],
+                "options": json.dumps(p.poll["options"], ensure_ascii=False),
+                # 익명은 채널에서 강제된다 — 명시해도 바뀌지 않지만,
+                # **우리가 그 사실을 알고 보낸다는 것**을 코드에 남긴다.
+                "is_anonymous": True,
+                **reply})
+            return [res["message_id"]]
         if not p.photos:
             res = self.tr.call("sendMessage", {
                 "chat_id": _to, "text": p.text,
@@ -1164,6 +1220,30 @@ class Sender:
                 raise PartialSend(ids, len(p.follow_texts) - i, e) from e
             ids.append(res["message_id"])
         return ids
+
+    def close_poll(self, message_id: int, *, chat_id: str = "") -> Optional[dict]:
+        """투표를 닫고 **최종 득표수를 돌려받는다** (v1.78).
+
+        ★ 이것이 웹훅 없이 집계를 얻는 유일한 길이다. 채널 투표는 익명이라
+        `poll_answer` 업데이트가 오지 않는다(계약 `VoteChannel` 주석). 그런데
+        `stopPoll` 은 **멈춘 투표 객체를 그대로 돌려준다** — 각 선택지의
+        득표수가 거기 들어 있다. 서버를 세울 필요가 없다.
+
+        못 닫아도 **예외를 밖으로 내지 않는다.** 투표 하나 때문에 그 틱의
+        다른 발송을 죽일 이유가 없다 — 정산 줄만 빠진다.
+        """
+        try:
+            res = self.tr.call("stopPoll", {
+                "chat_id": chat_id or self.chat_id,
+                "message_id": int(message_id)})
+        except Exception:                                    # noqa: BLE001
+            return None
+        if not isinstance(res, dict):
+            return None
+        opts = res.get("options") or []
+        counts = [int(o.get("voter_count") or 0) for o in opts]
+        return {"counts": counts, "total": sum(counts),
+                "options": [str(o.get("text") or "") for o in opts]}
 
     def _finish(self, rec: SendRecord, state: SendState, ids: list[int],
                 reason: str, *, reason_code: str = "",

@@ -3694,6 +3694,59 @@ check("★★ 큐에 늦게 오른 항목을 기록한다 (역산하지 않아�
       P.LATE_BIRTH_WARN_MINUTES <= 60
       and isinstance(P.LATE_BIRTHS, list))
 
+# ── 승부 예측 투표 (v1.78) ─────────────────────────────────────────
+#
+# 대표님 지시: 댓글에 알림이 안 울리니 **본채널 투표로 길을 연다**.
+# 걱정도 함께 주셨다 — *"아무도 참여 안하는걸로 보이면 안되잖아."*
+# 그래서 **흩뿌리지 않는다**: 하루 `POLL_MAX_PER_DAY` 경기에만 건다.
+print("\n승부 예측 투표 (v1.78)")
+
+from sender import Payload as _Pay78                            # noqa: E402
+
+check("★★ 하루 투표 수에 상한이 있다 (흩뿌리면 표도 흩어진다)",
+      1 <= C.POLL_MAX_PER_DAY <= 3, str(C.POLL_MAX_PER_DAY))
+check("  ↳ 본채널 알림 총량에도 상한이 있다 "
+      "(잦으면 손님이 음소거하고 그 순간 전부 0이 된다)",
+      C.NOTIFY_MAX_PER_DAY >= C.POLL_MAX_PER_DAY)
+check("★★ 투표는 더 이상 '안 만든 것'이 아니다 (등록을 빠뜨리면 조용히 죽는다)",
+      ContentType.POLL not in C.NOT_BUILT_YET
+      and ContentType.POLL in C.LOOKAHEAD_SECONDS_BY_CONTENT
+      and ContentType.POLL_CLOSE in C.LOOKAHEAD_SECONDS_BY_CONTENT)
+check("  ↳ 정산은 아직 안 만든 것으로 남아 있다 (종료 속보에 한 줄로 붙일 자리)",
+      ContentType.POLL_SETTLEMENT in C.NOT_BUILT_YET)
+
+# **황금 시간을 먼저 고르는가** — 새벽 경기에 걸면 표가 안 모인다
+# `mkgame` 의 `hh` 는 KST 시각이다(:30 에 시작).
+_pg_prime = mkgame(League.KBO, day="2026-09-25", hh=18)   # 18:30 KST
+_pg_dawn = mkgame(League.KBO, h="SS", a="HH",
+                  day="2026-09-25", hh=4)                 # 04:30 KST
+_picked = P.poll_targets([_pg_dawn, _pg_prime], limit=1)
+check("★★★ **한국 사람이 깨어 있는 시각**의 경기를 먼저 고른다",
+      _picked and _picked[0] is _pg_prime,
+      str([g.league.value for g in _picked]))
+
+check("  ↳ 상한만큼만 고른다", len(P.poll_targets([_pg_dawn, _pg_prime],
+                                              limit=1)) == 1)
+check("  ↳ 끝난 경기에는 안 건다",
+      not P.poll_targets([], limit=2))
+
+# 투표 payload 게이트 — 같은 이름 두 개는 텔레그램이 거절한다
+try:
+    _Pay78(poll={"question": "q", "options": ["같은팀", "같은팀"]}).gate()
+    check("★★ 선택지가 겹치면 막는다 (텔레그램이 거절한다)", False, "안 막음")
+except C.GateError:
+    check("★★ 선택지가 겹치면 막는다 (텔레그램이 거절한다)", True)
+try:
+    _Pay78(poll={"question": "q", "options": ["A", "B"]}, text="x").gate()
+    check("  ↳ 투표를 사진·텍스트와 섞으면 막는다", False, "안 막음")
+except C.GateError:
+    check("  ↳ 투표를 사진·텍스트와 섞으면 막는다", True)
+
+# 닫는 시각이 킥오프여야 집계가 참이다
+check("★★★ 투표는 킥오프에 닫는다 (경기 중 표가 들어오면 집계가 거짓이 된다)",
+      C.LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.POLL_CLOSE]
+      <= C.LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.POLL])
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)

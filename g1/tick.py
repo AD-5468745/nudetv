@@ -2884,6 +2884,53 @@ def _answer_questions(transport, disc, asks, snaps, records) -> None:
 ANSWER_MAX_PER_TICK = 10
 
 
+# 투표는 사진도 텍스트도 아니라 **제 종류**다. `render_for` 가 (사진, 캡션)을
+# 돌려주는 자리에 이 표시를 얹어, 보내는 쪽이 갈래를 알아보게 한다.
+POLL_MARK = "__poll__"
+POLL_CLOSE_MARK = "__poll_close__"
+
+def _poll_store() -> dict:
+    """투표 글번호·집계를 담는 작은 기록. 없으면 빈 것."""
+    try:
+        return json.loads(_poll_path().read_text(encoding="utf-8"))
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
+def _poll_path():
+    """투표 기록은 **대장 옆**에 둔다 — 실행마다 컨테이너가 새로 뜨므로
+    메모리에 두면 다음 틱이 닫을 투표를 못 찾는다."""
+    return ROOT / "polls.json"
+
+
+def _poll_write(d: dict) -> None:
+    try:
+        _poll_path().write_text(json.dumps(d, ensure_ascii=False),
+                                encoding="utf-8")
+    except OSError:
+        pass                      # 기록 실패로 발송을 죽이지 않는다
+
+
+def _poll_remember(item, message_id: int) -> None:
+    """투표를 연 뒤 그 글번호를 적는다 — **닫을 때 이것이 필요하다.**"""
+    d = _poll_store()
+    d[str(item.scope)] = {"message_id": int(message_id)}
+    _poll_write(d)
+
+
+def _poll_message_id(item):
+    return (_poll_store().get(str(item.scope)) or {}).get("message_id")
+
+
+def _poll_save_result(item, res: dict) -> None:
+    """닫으며 받은 득표수를 적는다. 종료 속보가 정산 줄로 쓴다."""
+    d = _poll_store()
+    row = d.get(str(item.scope)) or {}
+    row["result"] = res
+    d[str(item.scope)] = row
+    _poll_write(d)
+
+
 def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                team_stats: dict | None = None,
                all_games: list | None = None) -> tuple[list, list[str]] | None:
@@ -3042,6 +3089,36 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         if not _txt:
             return None
         return [], [_txt]
+
+    elif item.content_type is ContentType.POLL:
+        # ── 승부 예측 투표 (v1.78) ──────────────────────────────
+        # **사진이 아니라 투표다.** 본채널로 나가고, 알림이 울린다 —
+        # 그게 이 기능의 전부다(③원칙: 손님이 앵커를 알아채게).
+        _lg = getattr(item, "league", None)
+        _one = next((g for g in games if g.game_id == item.game_id), None)
+        if _lg is None or _one is None:
+            return None
+        # 시작을 넘겼으면 안 연다 — 경기 중 예측은 예측이 아니다.
+        if not is_upcoming(_one, _now()):
+            # 렌더 쪽 기록기를 쓴다 — `tick` 에는 그 이름이 없다
+            # (`verify_livepath` 의 정적 검사가 잡아 줬다).
+            _R5q = sys.modules.get("render_v5")
+            if _R5q is not None:
+                _R5q.note_expired(
+                    f"승부 예측 {_lg.value} {item.game_id} — 이미 시작")
+            return None
+        import cards_v5 as _C5p
+        _aw, _hm = _C5p._nm(_lg, _one.away), _C5p._nm(_lg, _one.home)
+        if _aw == _hm:
+            return None          # 같은 이름 두 개는 텔레그램이 거절한다
+        _q = (f"{_C5p.LEAGUE_LABEL.get(_lg, _lg.value)} · "
+              f"{_one.start_utc.astimezone(KST):%H:%M} — 누가 이길까요?")
+        return POLL_MARK, [_q, _aw, _hm]
+
+    elif item.content_type is ContentType.POLL_CLOSE:
+        # 닫기는 **발송이 아니라 조작**이다. 그래서 여기서는 표시만 하고,
+        # 실제 `stopPoll` 은 보내는 자리에서 한다(그쪽이 message_id 를 안다).
+        return POLL_CLOSE_MARK, [str(item.game_id or "")]
 
     elif item.content_type is ContentType.ANCHOR:
         # ── **경기 앵커 (v1.39)** — 채널에 나가는 그 경기의 유일한 한 장 ──
@@ -3666,6 +3743,24 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                     empty_kinds.get(item.content_type.value, 0) + 1
                 continue
             photos, parts = made
+            # ── 투표는 갈래가 다르다 (v1.78) ────────────────────────
+            if photos == POLL_MARK:
+                payload = Payload.for_poll(parts[0], list(parts[1:]))
+            elif photos == POLL_CLOSE_MARK:
+                # **닫기는 발송이 아니다.** 열려 있던 투표를 멈추고 득표수를
+                # 받아 적는다. 못 닫아도 그 틱의 다른 발송을 죽이지 않는다.
+                _pid = _poll_message_id(item)
+                if not _pid:
+                    _note_skip(item, "닫을 투표를 못 찾음")
+                    continue
+                _res = snd.close_poll(_pid)
+                if _res:
+                    _poll_save_result(item, _res)
+                    print(f"    🗳 투표 닫음 {item.scope} — "
+                          f"{_res['total']}표 {_res['counts']}")
+                else:
+                    _note_skip(item, "투표를 못 닫음")
+                continue
             payload = (Payload.from_parts(photos, parts) if photos
                        else Payload(text=parts[0]))
 
@@ -3813,6 +3908,12 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             elif res.state is SendState.SENT:
                 sent += 1
                 print(f"    발송 {item.content_type.value} {item.scope} → {res.message_ids}")
+                # ★ **투표는 글번호를 적어 둔다** (v1.78). 킥오프에 닫으려면
+                #   그 번호가 필요한데, 실행마다 컨테이너가 새로 뜨므로
+                #   메모리에 두면 다음 틱이 못 찾는다 — 파일로 남긴다.
+                if (item.content_type is ContentType.POLL
+                        and res.message_ids):
+                    _poll_remember(item, res.message_ids[0])
                 # v1.39 — 오늘의 경기는 **고정**하고, 앵커는 그 글에 **바로가기를
                 # 채운다**. 실패해도 발송에는 영향이 없다(뒷정리일 뿐이다).
                 _index_after_send(item, res.message_ids, channel, tr)

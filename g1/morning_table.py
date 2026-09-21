@@ -62,6 +62,13 @@ AFTER_GAME = {"final_flash", "league_result", "boxscore", "standings",
 # 표를 그대로 읽는다 — 두 벌을 만들면 꺼 둔 것이 영영 사고로 남는다.
 DISABLED = {c.value for c in P.DISABLED_CONTENT_TYPES}
 
+# ★ **아직 안 만든 것도 구멍이 아니다** (v1.78에서 바로잡음).
+#   계약이 `NOT_BUILT_YET` 으로 이미 선언해 두고 있었는데 이 표가 그걸
+#   안 읽어서, 투표·퀴즈 같은 **만든 적 없는 10종이 매일 `0건` 사고처럼**
+#   찍혔다. 내가 판정을 두 벌로 적은 것이다(약점 198).
+#   만드는 날 계약에서 빼면 이 표도 **자동으로** 그날부터 센다.
+NOT_BUILT = {c.value for c in C.NOT_BUILT_YET}
+
 SHORT = {"anchor": "앵커", "analysis": "분석", "pregame": "사전", "lineup": "명단",
          "kickoff": "킥오프", "goal_flash": "득점", "period_flash": "구간",
          "boxscore": "흐름", "final_flash": "종료", "league_result": "결과",
@@ -78,6 +85,8 @@ def duty(content: str, lg: League) -> bool:
     unit = C.SCORE_UNIT_BY_LEAGUE.get(lg)
     if content in DISABLED:
         return False                      # 일부러 꺼 둔 것은 의무가 아니다
+    if content in NOT_BUILT:
+        return False                      # 아직 안 만든 것은 사고가 아니다
     if content in ("anchor", "lineup", "kickoff", "final_flash",
                    "league_result", "period_flash", "pregame", "morning"):
         return True                       # 전 리그 공통
@@ -158,6 +167,9 @@ def main() -> int:
         n = total.get(ct, 0)
         if n == 0 and ct not in PER_LEAGUE and ct not in CHANNEL_WIDE:
             continue                      # 아직 안 만든 기능은 표에 안 올린다
+        if ct in NOT_BUILT:
+            print(f"   {SHORT.get(ct, ct):14}{n:>7}   —   (아직 안 만듦)")
+            continue
         if ct in DISABLED:
             at = last.get(ct)
             _t = (f"{datetime.fromisoformat(at).astimezone(C.KST):%m-%d %H:%M}"

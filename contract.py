@@ -1845,6 +1845,14 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
     # 지금까지 쓰던 기본값(90분)을 **눈에 보이게** 적어 둔다.
     ContentType.LEADERBOARD: 90 * 60,
 
+    # ── 승부 예측 투표 (v1.78) ─────────────────────────────────
+    # **일찍 나가면 안 된다.** 투표 글은 앵커로 보내는 문인데, 너무 이르면
+    # 그 앵커에 아직 아무것도 없어서 손님이 빈 방을 본다(③원칙 — 접근성).
+    # 앵커와 같은 시각(킥오프 3시간 전)에 맞춰 좁게 잡는다.
+    ContentType.POLL: 10 * 60,
+    # 닫기는 **킥오프에 딱 맞춰야** 한다 — 경기 중에 표가 들어오면
+    # 집계가 거짓이 된다(④원칙 — 정확). 앞창을 가장 좁게 둔다.
+    ContentType.POLL_CLOSE: 2 * 60,
 }
 
 
@@ -1855,7 +1863,9 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
 # 아직 **만들지 않은** 종류. 계약에 이름만 있고 큐에 들어가지 않는다.
 # 만드는 날 여기서 빼면, 바로 아래 게이트가 "앞창을 정하라"고 막아 준다.
 NOT_BUILT_YET: frozenset = frozenset({
-    ContentType.POLL, ContentType.POLL_CLOSE, ContentType.POLL_SETTLEMENT,
+    # v1.78 — `POLL`·`POLL_CLOSE` 를 여기서 뺐다(만들었다). 정산은 제 카드를
+    # 만들지 않고 **종료 속보에 한 줄로** 붙이므로 여전히 안 만든 것이다.
+    ContentType.POLL_SETTLEMENT,
     ContentType.INPLAY_BOARD, ContentType.KOREAN_DAILY,
     ContentType.WEEKLY_PREVIEW, ContentType.WEEKLY_COLUMN,
     ContentType.QUIZ, ContentType.MILESTONE, ContentType.EVERGREEN,
@@ -3062,6 +3072,7 @@ TELEGRAM_POLL_CLOSE_MIN_S = 5
 TELEGRAM_POLL_CLOSE_MAX_S = 2_628_000
 TELEGRAM_POLL_OPTIONS_MAX = 12
 TELEGRAM_POLL_QUESTION_MAX = 300
+TELEGRAM_POLL_OPTION_MAX = 100        # 선택지 한 칸의 글자 상한
 TELEGRAM_DELETE_WINDOW_S = 48 * 3600
 
 # 자체 안전 마진
@@ -4325,6 +4336,38 @@ def is_late(scheduled_utc: datetime, now_utc: datetime,
 # 고치는 법: 큐 생성부는 유예 + 이 여유까지 항목을 **남기고**, 버리는 판정과 기록은
 # `is_late()` 한 곳에서만 한다. 그래야 사라진 발행이 반드시 알림에 실린다.
 DROP_REPORT_MARGIN_SECONDS = 6 * 3600
+
+
+# ── 승부 예측 투표 · 경기 직전 알림 (v1.78) ──────────────────────────
+#
+# 대표님 지시(2026-09-22): 방안 ① 승부 예측 투표 + ② 경기 직전 한 줄.
+#
+# **왜 이것이 필요한가.** 텔레그램은 **댓글에 알림을 안 울린다.** 그래서
+# 앵커 아래 분석·선발·득점이 아무리 좋아도 손님은 모른다(③원칙 — 접근성).
+# 본채널에 새 글을 내야 알림이 울리고, 거기서 앵커로 길을 열어 준다.
+#
+# ★ **알림 총량에 상한을 둔다.** 알림이 잦으면 손님이 채널을 음소거하고,
+#   그 순간 **모든 알림이 동시에 0이 된다.** 상한이 이 기능의 핵심이다.
+#   투표는 흩뿌리면 표도 흩어진다 — 한 경기에 모아야 참여가 보인다.
+POLL_MAX_PER_DAY = 2                  # 하루 투표 수 (가장 큰 경기에만)
+GAME_READY_MAX_PER_DAY = 4            # 하루 '준비됐습니다' 알림 수
+NOTIFY_MAX_PER_DAY = 6                # 본채널 알림 총량 상한 (둘을 합쳐서)
+
+# 투표를 여는 시각 — 앵커와 같다(킥오프 3시간 전). 앵커가 먼저 서 있어야
+# 투표 글에서 그 경기로 보낼 자리가 생긴다.
+POLL_LEAD_SECONDS = 3 * 3600
+# '준비됐습니다'는 킥오프 30분 전. 분석·선발이 다 찬 뒤라야 말이 참이 된다.
+GAME_READY_LEAD_SECONDS = 30 * 60
+
+
+def poll_options(away_name: str, home_name: str) -> list[str]:
+    """투표 선택지 — **두 갈래만.**
+
+    무승부 칸을 넣으면 축구에서는 맞지만 야구에는 거의 없는 칸이 생기고,
+    손님이 고르기 전에 규칙을 배워야 한다. 두 팀 중 하나가 가장 쉽다.
+    같은 이름이 둘이면 텔레그램이 거절하므로 부르는 쪽이 이름을 구분해 준다.
+    """
+    return [away_name, home_name]
 
 
 # ── 소스가 경기 이름을 바꾸는 리그 (v1.77) ───────────────────────────
