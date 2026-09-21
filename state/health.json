@@ -1,10 +1,10 @@
 {
- "at": "2026-09-21T15:34:24.558432+00:00",
+ "at": "2026-09-21T15:36:40.736080+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-21T15:31:56.095422+00:00",
    "count": 238,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "MLB": {
    "at": "2026-09-21T15:28:46.990003+00:00",
@@ -96,10 +96,11 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 5,
- "status_lines": 12,
+ "lost_lines": 6,
+ "status_lines": 10,
  "lost_kinds": [
   "empty_render",
+  "missed",
   "unqueued_kickoff",
   "unsent_day:analysis",
   "unsent_day:league_result",
