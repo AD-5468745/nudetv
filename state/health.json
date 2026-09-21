@@ -1,5 +1,5 @@
 {
- "at": "2026-09-21T21:47:11.621901+00:00",
+ "at": "2026-09-21T21:49:42.348600+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-21T21:41:26.348084+00:00",
@@ -97,9 +97,9 @@
   "이한범": "2026-09-08",
   "정우영": "2026-09-18"
  },
- "alert_lines": 2,
+ "alert_lines": 0,
  "lost_lines": 5,
- "status_lines": 18,
+ "status_lines": 16,
  "lost_kinds": [
   "empty_render",
   "unqueued_kickoff",
