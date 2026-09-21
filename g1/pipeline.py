@@ -549,17 +549,35 @@ def daily_index_text(games: list, day: str, *, links: dict | None = None,
 GAME_BULLET = "└"          # 'ㄴ' 대신 상자 그리기 기호 — 글꼴이 고르다
 
 
-def time_head(t) -> str:
-    """시각 머리줄. `· <b>2026-09-19 22:00</b>`"""
-    return f"· <b>{t:%Y-%m-%d %H:%M}</b>"
+def time_head(t, day: str = "") -> str:
+    """시각 머리줄. `· <b>22:00</b>` — 날이 넘어갈 때만 날짜를 붙인다.
+
+    ★ **같은 글자가 계속 나오면 눈이 쉴 데가 없다** (v1.79).
+    대표님이 채널을 보시고: *"오늘의 경기가 너무 눈아픈거 같거든."*
+    14경기짜리 날에는 `2026-`이 14번 반복됐다 — 그런데 그중 날짜가 실제로
+    필요한 줄은 **날이 넘어가는 유럽 경기뿐**이다.
+
+    ⚠️ 날짜를 통째로 빼지는 않는다. 유럽은 같은 '경기일' 안에서 01:30과
+    22:00 이 서로 다른 날이라, 시각만 적으면 어느 날인지 알 수 없다(v1.68).
+    `day`(그 편성일)와 다를 때만 `09-23 04:00` 처럼 붙인다.
+    """
+    if day and t.strftime("%Y-%m-%d") != day:
+        return f"· <b>{t:%m-%d %H:%M}</b>"
+    return f"· <b>{t:%H:%M}</b>"
 
 
 def game_line(text: str, url: str = "") -> str:
-    """그 시각 아래 한 경기. 주소가 있으면 바로가기를 붙인다."""
-    body = f"{GAME_BULLET} {text}"
+    """그 시각 아래 한 경기. **팀명 자체가 바로가기다** (v1.79).
+
+    전에는 줄 끝에 `→ 경기정보 보기`를 붙였다. 14경기면 같은 다섯 글자가
+    14번 반복돼 줄이 길어지고, 정작 읽을 것(팀 이름)이 묻혔다.
+    **문구를 줄인 게 아니라 자리를 옮긴 것이다** — 누르는 곳은 그대로다.
+    누를 수 있다는 것은 텔레그램이 색으로 말해 주고, 꼬리말이 한 번 더 말한다.
+    """
+    body = esc(text)          # 팀 이름은 바깥 자료에서 온다 — 반드시 막는다
     if url:
-        body += f" → <a href=\"{esc(url)}\">{LINK_LABEL}</a>"
-    return "   " + body
+        return f"   {GAME_BULLET} <a href=\"{esc(url)}\">{body}</a>"
+    return f"   {GAME_BULLET} {body}"
 
 
 def _by_time(games: list) -> list:
@@ -612,13 +630,15 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
         # 따로 만들면 줄 수만 두 배가 되고 오히려 길어진다(MLB는 대부분
         # 시각이 제각각이다).
         for _t, _grp in _by_time(gs):
-            lines.append(time_head(_grp[0].start_utc.astimezone(KST)))
+            lines.append(time_head(_grp[0].start_utc.astimezone(KST), day))
             for g in _grp:
                 lines.append(game_line(
                     f"{nm(lg, g.away)} vs {nm(lg, g.home)}",
                     lk.get(g.game_id) or ""))
         lines.append("")
-    lines.append(f"<i>전 리그 {total}경기 · 경기마다 토론방이 열립니다</i>")
+    # 꼬리말이 **한 번** 말한다 — 줄마다 `경기정보 보기`를 붙이는 대신.
+    lines.append(f"<i>전 리그 {total}경기 · 경기 이름을 누르면 "
+                 f"그 경기 정보로 갑니다</i>")
     out = "\n".join(lines).strip()
     if max_chars is None or len(out) <= max_chars:
         return out
@@ -635,9 +655,9 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
     return "\n".join(keep + ["", tailline]).strip()
 
 
-# 바로가기 문구는 **한 곳에서 정한다** (v1.60 · 대표님: *"보기 라는 단어대신,
-# 경기정보 보기라고 하면되"*). 두 곳에 적으면 화면마다 다른 말이 나온다.
-LINK_LABEL = "경기정보 보기"
+# v1.79 에서 `LINK_LABEL`(= "경기정보 보기")을 **지웠다.**
+# 줄 끝 문구 대신 **팀 이름 자체가 링크**가 됐기 때문이다(`game_line`).
+# 상수만 남겨 두면 다음에 누군가 그걸 보고 문구를 되살린다.
 
 
 def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
@@ -665,7 +685,7 @@ def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
         # 표기는 '오늘의 경기'와 **같은 부품**을 쓴다 (v1.68) —
         # 두 벌로 두면 한 화면은 굵고 다른 화면은 안 굵어진다.
         for _t, _grp in _by_time(rows):
-            out.append(time_head(_grp[0].start_utc.astimezone(KST)))
+            out.append(time_head(_grp[0].start_utc.astimezone(KST), day))
             for g in _grp:
                 out.append(game_line(
                     f"{nm(g.league, g.away)} vs {nm(g.league, g.home)}",

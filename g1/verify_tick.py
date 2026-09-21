@@ -2921,9 +2921,11 @@ _lk90 = {g.game_id: f"https://t.me/sports_preview_nudetv/{1000 + i}"
          for i, g in enumerate(_pool90)}
 _t90 = P.daily_index_text(_pool90, "2026-09-18", links=_lk90,
                           name_of=lambda lg, t: t.name)
+# v1.79 — 링크 수는 `</a>` 로 센다. 팀명 자체가 링크가 되어 `보기</a>` 라는
+# 글자가 더는 없다. **재는 뜻은 그대로다** — "링크부터 뗀다".
 check("★ 길이를 맞출 때 경기 줄이 아니라 링크부터 뗀다",
-      _t90.count("\n· ") == len(_pool90) and _t90.count("보기</a>") < len(_pool90),
-      f"경기 {_t90.count(chr(10) + '· ')}줄 · 링크 {_t90.count('보기</a>')}개 "
+      _t90.count("\n· ") == len(_pool90) and _t90.count("</a>") < len(_pool90),
+      f"경기 {_t90.count(chr(10) + '· ')}줄 · 링크 {_t90.count('</a>')}개 "
       f"/ {len(_pool90)}경기")
 # **먼저 열리는 경기의 링크를 남긴다** — 지금 눌릴 확률이 높은 쪽이다.
 _kept = [g for g in sorted(_pool90, key=lambda g: g.start_utc)
@@ -2935,7 +2937,7 @@ check("  ↳ 링크가 적으면 전부 붙는다 (평소에는 아무것도 안
       P.daily_index_text(_ix_pool(6), "2026-09-18",
                          links={g.game_id: "https://t.me/x/1"
                                 for g in _ix_pool(6)},
-                         name_of=lambda lg, t: t.name).count("보기</a>") == 5)
+                         name_of=lambda lg, t: t.name).count("</a>") == 5)
 
 # ══════════════════════════════════════════════════════════════
 print("\n★★ 바로가기 주소는 **저장하지 않고 그때그때 만든다** (v1.57)")
@@ -3070,8 +3072,13 @@ check("★★★ 묶음 글의 경기 수만큼 바로가기 줄이 생긴다",
       f"줄 {_bb.count('<a href=')} / 경기 {len(_bb_games)}")
 check("  ↳ 줄마다 **그 경기 앵커 주소**가 붙는다",
       all(u in _bb for u in _bb_links.values()), _bb[:120])
-check("★★ 문구가 '경기정보 보기'다 (대표님 지시 · 한 곳에서 정한다)",
-      P.LINK_LABEL == "경기정보 보기" and _bb.count(P.LINK_LABEL) == 3, _bb[:120])
+# ★ **팀명 자체가 바로가기다** (v1.79). 대표님: *"오늘의 경기가 너무
+#   눈아픈거 같거든"* → *"팀명에 링크 오케이"*.
+#   전에는 줄 끝에 `→ 경기정보 보기`를 붙였다. 14경기면 같은 다섯 글자가
+#   14번 반복돼 정작 읽을 것(팀 이름)이 묻혔다.
+#   **누르는 곳은 그대로다** — 문구를 줄인 게 아니라 자리를 옮긴 것이다.
+check("★★★ 팀명 자체가 링크다 (줄마다 같은 문구를 반복하지 않는다)",
+      _bb.count("</a>") == 3 and "경기정보 보기" not in _bb, _bb[:140])
 check("★★ **버튼이 아니라 글 안의 링크다** (버튼은 '댓글 남기기' 줄을 덮는다)",
       "<a href=" in _bb and isinstance(_bb, str))
 check("  ↳ 앵커가 아직 없는 경기는 줄도 없다 (갈 곳이 없으면 안 만든다)",
@@ -3097,10 +3104,28 @@ check("★★★ 앵커는 묶음 표에 없다 (버튼이 '댓글 남기기' �
       "anchor" not in C.BUNDLE_LINK_CONTENT, str(sorted(C.BUNDLE_LINK_CONTENT)))
 check("  ↳ 브랜드 버튼 표와 겹치지 않는다 (한 글에 한 종류)",
       not (C.BUNDLE_LINK_CONTENT & C.BUTTON_CONTENT_TYPES))
-check("★★ '오늘의 경기' 본문도 같은 문구를 쓴다 (화면마다 다른 말이 나오면 안 된다)",
-      P.LINK_LABEL in P.daily_index_text(
-          _bb_games, _BB_DAY, links=_bb_links,
-          name_of=lambda lg, t: str(t.team_code)))
+_idx79 = P.daily_index_text(_bb_games, _BB_DAY, links=_bb_links,
+                            name_of=lambda lg, t: str(t.team_code))
+check("★★ '오늘의 경기'도 같은 부품을 쓴다 (화면마다 다른 꼴이 나오면 안 된다)",
+      _idx79.count("</a>") == len(_bb_games) and "경기정보 보기" not in _idx79,
+      _idx79[:140])
+check("  ↳ 누를 수 있다는 것을 **꼬리말이 한 번** 말한다 (줄마다 말하지 않는다)",
+      "누르면" in _idx79)
+
+# ── 날짜는 **날이 넘어갈 때만** (v1.79) ──────────────────────────
+# 14경기짜리 날에 `2026-`이 14번 반복됐다. 그런데 날짜가 실제로 필요한 줄은
+# 날이 넘어가는 경기뿐이다 — 유럽·MLB 는 편성일 다음날 새벽·아침에 열린다.
+_t_same = datetime(2026, 9, 21, 22, 0, tzinfo=KST)
+_t_next = datetime(2026, 9, 22, 4, 0, tzinfo=KST)
+check("★★★ 같은 날이면 **시각만** 적는다 (날짜 반복이 눈을 아프게 한다)",
+      P.time_head(_t_same, "2026-09-21") == "· <b>22:00</b>",
+      P.time_head(_t_same, "2026-09-21"))
+check("★★★ 날이 넘어가면 **날짜를 붙인다** "
+      "(유럽·MLB 는 편성일 다음날에 열린다 — 빼면 어느 날인지 모른다)",
+      P.time_head(_t_next, "2026-09-21") == "· <b>09-22 04:00</b>",
+      P.time_head(_t_next, "2026-09-21"))
+check("  ↳ 편성일을 안 주면 옛 동작(날짜 없이) — 부르는 쪽이 안 깨진다",
+      "22:00" in P.time_head(_t_same))
 
 # ── 경기 목록 표기 — 통일 (v1.68) ────────────────────────────────
 # 대표님(2026-09-20): *"통일감있고 깔끔하게 정리하자. 날짜 시간 텍스트는
@@ -3113,22 +3138,36 @@ check("★★★ 같은 시각 4경기면 머리줄이 **한 번만** 나온다"
       _tg_txt.count("18:30") == 1, f"{_tg_txt.count('18:30')}번")
 check("  ↳ 경기는 넷 다 실린다 (묶었다고 빠지면 안 된다)",
       _tg_txt.count(P.GAME_BULLET) == 4, str(_tg_txt.count(P.GAME_BULLET)))
-check("★★ 머리줄에 **날짜와 시각**이 함께, **굵게** 들어간다",
-      f"<b>{_BB_DAY} 18:30</b>" in _tg_txt, _tg_txt[:180])
-check("  ↳ 유럽처럼 같은 경기일에 날짜가 갈리는 경우를 위해 날짜를 적는다",
-      _BB_DAY in _tg_txt)
+import dataclasses as _dc                                        # noqa: E402
+
+# ★ v1.79 — **날짜는 날이 넘어갈 때만** (대표님: *"너무 눈아픈거 같거든"*).
+#   v1.68에서 "날짜를 늘 적는다"로 정했던 것을 좁혔다. 이유는 그대로
+#   지킨다 — *유럽은 같은 경기일에 날짜가 갈린다*. 그 경우에만 적는다.
+check("★★ 머리줄이 **굵은 시각**이다 (같은 날이면 날짜는 안 적는다)",
+      "<b>18:30</b>" in _tg_txt and _BB_DAY not in _tg_txt, _tg_txt[:180])
+# **편성일은 9-19인데 실제로는 9-20 새벽에 열리는 경기** — 유럽·MLB 가 그렇다.
+# `sports_day` 는 시작시각에서 파생되므로 `sports_day_fixed` 로 편성일을 못 박는다
+# (안 그러면 이 경기가 9-20 편성으로 밀려 색인에서 걸러진다).
+_tg_cross = [_dc.replace(
+    mkgame(lg=League.KBO, h="HX", a="AX", day=_BB_DAY, hh=18),
+    start_utc=datetime(2026, 9, 20, 4, 0, tzinfo=KST).astimezone(timezone.utc),
+    sports_day_fixed=_BB_DAY)]
+_tg_ctxt = P.daily_index_text(_tg_cross, _BB_DAY, links={},
+                              name_of=lambda lg, t: str(t.team_code))
+check("  ↳ **날이 넘어가면** 날짜를 적는다 (유럽·MLB가 그 경우다)",
+      "09-20" in _tg_ctxt, _tg_ctxt[:180])
 _tg_diff = [mkgame(lg=League.KBO, h=f"H{i}", a=f"A{i}", day=_BB_DAY, hh=14 + i)
             for i in range(3)]                       # 시각이 제각각
 _tg_txt2 = P.daily_index_text(_tg_diff, _BB_DAY, links={},
                               name_of=lambda lg, t: str(t.team_code))
 check("★★★ **시각이 하나뿐이어도 같은 꼴**이다 (한 화면에 두 모양이 섞이면 안 된다)",
-      all(f"<b>{_BB_DAY} {h}:30</b>" in _tg_txt2 for h in (14, 15, 16))
+      all(f"<b>{h}:30</b>" in _tg_txt2 for h in (14, 15, 16))
       and _tg_txt2.count(P.GAME_BULLET) == 3, _tg_txt2[:200])
 check("  ↳ 묶음 글 바로가기도 **같은 부품**을 쓴다 (두 화면이 달라지면 안 된다)",
       P.game_link_lines(_tg_same, _BB_DAY,
                         links={g.game_id: "https://t.me/x/1" for g in _tg_same},
                         name_of=lambda lg, t: str(t.team_code)
-                        ).count(f"<b>{_BB_DAY} 18:30</b>") == 1)
+                        ).count("<b>18:30</b>") == 1)   # v1.79 — 같은 날은 시각만
 check("  ↳ 기호는 'ㄴ' 이 아니라 상자 그리기 기호다 (글꼴이 고르다)",
       P.GAME_BULLET == "└" and "ㄴ" not in _tg_txt)
 check("  ↳ 본채널로 나가는 묶음이 전부 표에 있다",
