@@ -1,5 +1,5 @@
 {
- "at": "2026-09-21T08:50:03.153444+00:00",
+ "at": "2026-09-21T08:52:42.089400+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-21T08:39:02.875008+00:00",
@@ -9,7 +9,7 @@
   "MLB": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 91,
-   "stale_hours": 0.1,
+   "stale_hours": 0.2,
    "finals_utc": [
     "00:51",
     "02:16"
@@ -18,25 +18,25 @@
   "KBL": {
    "at": "2026-09-21T08:25:14.684178+00:00",
    "count": 7,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "VLEAGUE_M": {
    "at": "2026-09-21T08:25:14.684178+00:00",
    "count": 135,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "VLEAGUE_W": {
    "at": "2026-09-21T08:25:14.684178+00:00",
    "count": 135,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "KL1": {
    "at": "2026-09-21T08:25:14.684178+00:00",
    "count": 60,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "NPB": {
-   "at": "2026-09-21T08:50:03.153444+00:00",
+   "at": "2026-09-21T08:52:42.089400+00:00",
    "count": 289,
    "stale_hours": 0.0,
    "finals_utc": [
@@ -47,32 +47,32 @@
   "EPL": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 50,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LALIGA": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 69,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "SERIEA": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 50,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "BUNDESLIGA": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 36,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LIGUE1": {
    "at": "2026-09-21T08:42:42.910360+00:00",
    "count": 45,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UCL": {
    "at": "2026-09-21T08:25:14.684178+00:00",
    "count": 72,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "UEL": {
    "at": "2026-09-21T08:39:02.875008+00:00",
@@ -95,7 +95,7 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 5,
+ "lost_lines": 4,
  "status_lines": 16,
  "lost_kinds": [
   "empty_render",
