@@ -3346,12 +3346,41 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         _one = next((g for g in games if g.game_id == item.game_id), None)
         if _lg is None or _one is None or not is_upcoming(_one, _now()):
             return None
+        _NPq = None
         try:
-            from adapters import naver_preview as _NPq
+            from adapters import naver_preview as _NPq   # noqa: PLC0415
             _pvq = _NPq.fetch(_lg, _one)
         except Exception:                                # noqa: BLE001
             _pvq = None
         if not _pvq:
+            # ── v1.80 — **왜 걸렀는지 시스템이 직접 말하게 한다.** ──────
+            #
+            # 이 자리는 `None`을 **소리 없이** 돌려주고 있었다. 그래서
+            # 사전정보가 이틀 동안 장부에 줄 하나 안 남기고 사라졌는데
+            # (2026-09-22 실측: 9/21·9/22 사전 0줄) 로그도 알림도 평온했다.
+            # 대장에는 '한 것'만 남는다 — 안 한 것은 줄이 안 생긴다.
+            #
+            # ⚠️ **짖을 곳을 가린다.** 축구·농구·배구에는 이 창구가 아예
+            # 없어서(어댑터 주석의 실측) 전부 짖게 하면 매 틱 수십 줄이 되고,
+            # 그러면 아무도 안 믿게 된다. **창구가 있는 리그에서 비었을
+            # 때만** 사고다.
+            #
+            # 두 원인을 갈라 적는다 — 고치는 곳이 서로 다르기 때문이다:
+            #   ① 그날 일정에서 대진을 못 찾음  → 이름·날짜 대조 문제
+            #   ② 번호는 찾았는데 미리보기가 빔 → 소스가 안 주는 것
+            if _NPq is not None and _lg in getattr(_NPq, "PREVIEW_LEAGUES", {}):
+                try:
+                    _gid = _NPq.game_id(_lg, _one)
+                except Exception:                        # noqa: BLE001
+                    _gid = None
+                _R5p = sys.modules.get("render_v5")
+                if _R5p is not None:
+                    _why = ("그날 일정에서 **대진을 못 찾았습니다**"
+                            " (이름·날짜 대조를 보세요)" if not _gid else
+                            f"소스 번호 {_gid} 는 찾았는데"
+                            " **미리보기가 비었습니다**")
+                    _R5p.note_fallback(
+                        f"사전 {_lg.value} {_one.game_id} — {_why}")
             return None
         return _try_v5("pregame", lambda R: R.pregame_card(
             _one, _lg, preview=_pvq, now=_now()))

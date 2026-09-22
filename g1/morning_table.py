@@ -88,8 +88,20 @@ def duty(content: str, lg: League) -> bool:
     if content in NOT_BUILT:
         return False                      # 아직 안 만든 것은 사고가 아니다
     if content in ("anchor", "lineup", "kickoff", "final_flash",
-                   "league_result", "period_flash", "pregame", "morning"):
+                   "league_result", "period_flash", "morning"):
         return True                       # 전 리그 공통
+    if content == "pregame":
+        # ★ **여기서 리그를 다시 적지 않는다** (v1.80에서 바로잡음).
+        #   사전정보는 소스에 `/preview` 창구가 있는 리그에만 있다.
+        #   그 표는 수집기가 이미 갖고 있다(`PREVIEW_LEAGUES`) — 야구 셋과
+        #   K리그·KBL. 유럽 축구·배구에는 창구가 아예 없다.
+        #
+        #   전에는 `전 리그 공통`에 섞여 있어서 **유럽 축구 5개 리그가 매일
+        #   `0건` 사고로 찍혔다** (2026-09-22 실측: 9/21 구멍 31칸 중 5칸이
+        #   허수였다). 없는 사고를 만들면 진짜 사고가 묻힌다 — 리더보드에서
+        #   NPB로 이미 한 번 당한 것과 **같은 병**이다(약점 198).
+        from adapters import naver_preview as _NP     # noqa: PLC0415
+        return lg in _NP.PREVIEW_LEAGUES
     if content == "analysis":
         return lg in P.ANALYSIS_LEAGUES
     if content == "standings":
