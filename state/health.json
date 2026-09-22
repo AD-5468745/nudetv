@@ -1,13 +1,13 @@
 {
- "at": "2026-09-22T01:38:03.647370+00:00",
+ "at": "2026-09-22T01:41:19.733362+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-22T01:28:18.239397+00:00",
+   "at": "2026-09-22T01:41:19.733362+00:00",
    "count": 238,
-   "stale_hours": 0.2
+   "stale_hours": 0.0
   },
   "MLB": {
-   "at": "2026-09-22T01:38:03.647370+00:00",
+   "at": "2026-09-22T01:41:19.733362+00:00",
    "count": 91,
    "stale_hours": 0.0,
    "finals_utc": [
@@ -17,57 +17,57 @@
   "KBL": {
    "at": "2026-09-22T01:38:03.647370+00:00",
    "count": 8,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "VLEAGUE_M": {
    "at": "2026-09-22T01:38:03.647370+00:00",
    "count": 135,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "VLEAGUE_W": {
    "at": "2026-09-22T01:38:03.647370+00:00",
    "count": 135,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "KL1": {
    "at": "2026-09-22T01:38:03.647370+00:00",
    "count": 60,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "NPB": {
    "at": "2026-09-22T01:35:34.091062+00:00",
    "count": 289,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "EPL": {
    "at": "2026-09-22T01:13:38.273418+00:00",
    "count": 50,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "LALIGA": {
    "at": "2026-09-22T01:13:38.273418+00:00",
    "count": 69,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "SERIEA": {
    "at": "2026-09-22T01:13:38.273418+00:00",
    "count": 50,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "BUNDESLIGA": {
    "at": "2026-09-22T01:13:38.273418+00:00",
    "count": 36,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "LIGUE1": {
    "at": "2026-09-22T01:13:38.273418+00:00",
    "count": 45,
-   "stale_hours": 0.4
+   "stale_hours": 0.5
   },
   "UCL": {
    "at": "2026-09-22T01:38:03.647370+00:00",
    "count": 72,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   },
   "UEL": {
    "at": "2026-09-22T01:20:25.382423+00:00",
@@ -91,7 +91,7 @@
  },
  "alert_lines": 0,
  "lost_lines": 3,
- "status_lines": 17,
+ "status_lines": 19,
  "lost_kinds": [
   "empty_render",
   "unqueued_kickoff",
