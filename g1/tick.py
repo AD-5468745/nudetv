@@ -1202,15 +1202,34 @@ def _enrich_baseball_lineup(league, games: list, now: datetime) -> int:
             and 0 < (g.start_utc - now).total_seconds()
             <= BASEBALL_LINEUP_LEAD_SECONDS]
     todo.sort(key=lambda g: g.start_utc)          # 곧 열리는 경기부터
+    # ── v1.81 — **왜 못 담았는지 시스템이 직접 말하게 한다.** ──────────
+    #
+    # 이 두 `continue` 가 소리 없이 돌아섰다. 그래서 **야구 타순이 만든 이래
+    # 한 장도 안 나갔다** (2026-09-22 실측: KBO·MLB·NPB 전 기간 `lineup` 발송
+    # 0건 · 장부 줄 0개. 축구는 같은 기간 139건 나갔다).
+    # 카드도(v1.63 `body_batting_order`) 배선도(이 함수) 다 있는데 **재료가
+    # 한 번도 안 들어왔고**, 아무 데도 그 말을 안 했다.
+    #
+    # 글월을 **경기마다 한 가지로** 고정한다 — 숫자를 넣으면 매 틱 달라져
+    # 알림 접기(dedupe)가 안 듣고 도배가 된다.
+    def _why_not(g, why: str) -> None:
+        _R5l = sys.modules.get("render_v5")
+        if _R5l is not None:
+            _R5l.note_fallback(f"타순 {league.value} {g.game_id} — {why}")
+
     for g in todo[:BASEBALL_LINEUP_MAX_PER_TICK]:
         try:
             pv = _NP.fetch(league, g)
             if not pv:
+                _why_not(g, "**미리보기를 못 받았습니다** "
+                            "(대진·날짜 대조나 소스를 보세요)")
                 continue
             aw, hm = _NP.lineup(pv, "away"), _NP.lineup(pv, "home")
             # **한쪽만 있는 명단은 명단이 아니다.** 아홉씩 다 찼을 때만 담는다
             # (v1.44의 규칙 그대로 — 투수를 빼고 정확히 9명).
             if len(aw) != 9 or len(hm) != 9:
+                _why_not(g, "미리보기는 받았는데 **타순이 9/9가 아닙니다** "
+                            "(아직 발표 전이거나 뽑는 규칙이 어긋났습니다)")
                 continue
             g.meta.lineup = {
                 "away": {"order": [list(x) for x in aw]},
