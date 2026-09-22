@@ -1,5 +1,5 @@
 {
- "at": "2026-09-22T07:01:27.576270+00:00",
+ "at": "2026-09-22T07:04:24.626011+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-22T06:58:12.344610+00:00",
@@ -19,67 +19,67 @@
   "KBL": {
    "at": "2026-09-22T06:49:22.100236+00:00",
    "count": 8,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_M": {
    "at": "2026-09-22T06:49:22.100236+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_W": {
    "at": "2026-09-22T06:49:22.100236+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "KL1": {
    "at": "2026-09-22T06:49:22.100236+00:00",
    "count": 60,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "NPB": {
-   "at": "2026-09-22T07:01:27.576270+00:00",
+   "at": "2026-09-22T07:04:24.626011+00:00",
    "count": 289,
    "stale_hours": 0.0
   },
   "EPL": {
    "at": "2026-09-22T06:53:20.162874+00:00",
    "count": 50,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LALIGA": {
    "at": "2026-09-22T06:53:20.162874+00:00",
    "count": 69,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "SERIEA": {
    "at": "2026-09-22T06:53:20.162874+00:00",
    "count": 50,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "BUNDESLIGA": {
    "at": "2026-09-22T06:53:20.162874+00:00",
    "count": 36,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "LIGUE1": {
    "at": "2026-09-22T06:53:20.162874+00:00",
    "count": 45,
-   "stale_hours": 0.1
+   "stale_hours": 0.2
   },
   "UCL": {
    "at": "2026-09-22T06:49:22.100236+00:00",
    "count": 72,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UEL": {
-   "at": "2026-09-22T06:33:22.655715+00:00",
+   "at": "2026-09-22T07:04:24.626011+00:00",
    "count": 72,
-   "stale_hours": 0.5
+   "stale_hours": 0.0
   },
   "MLS": {
-   "at": "2026-09-22T06:33:22.655715+00:00",
+   "at": "2026-09-22T07:04:24.626011+00:00",
    "count": 16,
-   "stale_hours": 0.5
+   "stale_hours": 0.0
   }
  },
  "korean_players": {
@@ -92,11 +92,10 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 4,
- "status_lines": 21,
+ "lost_lines": 3,
+ "status_lines": 22,
  "lost_kinds": [
   "empty_render",
-  "missed",
   "unsent_day:analysis"
  ],
  "stale_blocked": [],
