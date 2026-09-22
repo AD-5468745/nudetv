@@ -127,8 +127,8 @@ expect_gate("상대전적 대칭 깨기", lambda: broken(
     lambda x: x.h2h.pop(("SS","KT"))))
 expect_gate("순위 중복", lambda: broken(
     lambda x: x.standings.__setitem__(1, __import__("dataclasses").replace(x.standings[1], rank=1))))
-expect_gate("게임차 역전", lambda: broken(
-    lambda x: x.standings.__setitem__(2, __import__("dataclasses").replace(x.standings[2], games_behind="0.1"))))
+# 게임차 역전은 **고정 표본**으로 시험한다 (C-2 절 끝) — 오늘 숫자에
+# 기대면 그날 표에 따라 검사가 켜졌다 꺼졌다 한다(2026-09-23에 실제로 그랬다).
 expect_gate("부문 값 순서 뒤집기", lambda: broken(
     lambda x: x.leaders["홈런"].__setitem__(1, __import__("dataclasses").replace(
         x.leaders["홈런"][1], value="99"))))
@@ -232,6 +232,25 @@ expect_gate("동률 없이 건너뜀 [..6,8,8,10]",
             lambda: assert_recordbook(_ranked(_fix, [(_order[6], 8)] + _tie)))
 expect_gate("두 칸 건너뜀 [..8,8,11]",
             lambda: assert_recordbook(_ranked(_fix, _tie[:2] + [(_t10, 11)])))
+# ── ★ 게임차 역전 — **여기서 시험해야 하는 이유** (2026-09-23) ──────
+#
+# 전에는 이 변이를 C절에서 **오늘 순위표**로 했다. 그런데 계약은 v1.38
+# (약점 219)에서 **설명되는 역전은 통과시키도록** 바뀌었다 — 소화 경기 수가
+# 다르고 승률 순서가 지켜지면 게임차가 뒤집혀도 정상이기 때문이다
+# (NPB 센트럴 실측: 6위가 7경기를 덜 치러 게임차가 5위보다 작았다).
+#
+# 그래서 이 시험은 **그날 KBO가 어떤 표였는지에 따라 켜졌다 꺼졌다 했다.**
+# 9-22까지는 2·3위 사정이 맞아떨어져 다른 검사에 우연히 걸렸고, 9-23에는
+# 경기 수가 갈리면서 게이트가 **정상적으로** 통과시켜 `FAIL`이 떴다.
+# 게이트가 나빠진 게 아니라 **시험이 오늘 숫자에 기대고 있었다.**
+#
+# 고정 표본은 전 팀 경기 수가 같다 → 계약의 면제 조건이 성립할 수 없다 →
+# 역전은 **반드시** 막혀야 한다. 그리고 표본이 스스로 정합하므로
+# 홈+방문·승률 같은 **다른 검사가 먼저 짖어 통과를 가장하는 일도 없다.**
+_gb3 = float(_gb[_order[2]])
+assert _gb3 > 0.1, "고정 표본 3위 게임차가 0.1 이하면 이 변이는 역전이 아니다"
+expect_gate("게임차 역전 (경기 수가 같아 설명될 수 없는)",
+            lambda: assert_recordbook(_ranked(_fix, [(_order[2], 3, "0.1")])))
 expect_gate("공동인데 게임차가 다름 (파싱 밀림)",
             lambda: assert_recordbook(_ranked(_fix, [(_t8, 8, _gb[_t8]),
                                                      (_t9, 8, _gb[_t9]),
