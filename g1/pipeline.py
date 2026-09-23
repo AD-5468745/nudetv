@@ -14,7 +14,8 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from contract import (gap_label, pct_label, CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
+from contract import (SPORT_LABEL, SPORT_ORDER,
+                      gap_label, pct_label, CARD_MAX_ASPECT, CARD_MAX_HEIGHT_PX, CARD_WIDTH_PX, KST,
                       ContentType, Game, GateError, League, LEAGUE_COLORS,
                       TELEGRAM_TEXT_MAX,
                       QueueItem, SEND_JPEG_QUALITY, SEND_JPEG_SUBSAMPLING,
@@ -596,16 +597,104 @@ def _by_time(games: list) -> list:
     return out
 
 
+def daily_index_by_sport(games: list, day: str, *, links: dict | None = None,
+                         name_of=None,
+                         max_chars: int = TELEGRAM_TEXT_MAX) -> list:
+    """그날 편성을 **종목별로 나눠** 돌려준다 (v1.92).
+
+    대표님: *"축구는 축구끼리, 야구는 야구끼리 이런식으로 모아두는 것도
+    좋을 것 같아서."*
+
+    돌려주는 것: `[(종목이름, 그림, 경기수, 글)]` — 종목 차례대로.
+
+    ★ **왜 한 통을 쪼개나.** 텔레그램 채널에는 스레드(토픽)가 없다
+      (공식 문서 확인: 포럼은 슈퍼그룹 전용). 한 글 안의 특정 위치로 가는
+      링크도 없다. **글을 나누는 것만이 "모아 두기"를 실제로 해내는 길**이고,
+      나뉜 글끼리는 `t.me/…/글번호` 로 진짜 이동할 수 있다.
+
+    ★ **조립은 기존 부품을 그대로 쓴다** (`_compose_index`). 종목마다 따로
+      짜면 한 화면은 굵고 다른 화면은 안 굵어진다 — 이 저장소에서 가장
+      자주 난 사고다. 여기서 하는 일은 **경기를 나누는 것뿐**이다.
+    """
+    # ★ **깨진 것 하나가 전체를 죽이지 않게 한다** (v1.92).
+    #   `g.sports_day` 를 그냥 부르면 Game이 아닌 것이 섞였을 때 터지고,
+    #   부르는 쪽의 `except` 가 **오늘의 경기를 통째로** 삼킨다.
+    #   검증이 이걸 잡았다(`한 리그가 깨져도 나머지 큐는 살아남는다`).
+    todays = [g for g in games if getattr(g, "sports_day", None) == day]
+    if not todays:
+        return []
+    nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
+    lk = links or {}
+    order = {u: i for i, u in enumerate(SPORT_ORDER)}
+    by: dict = {}
+    for g in todays:
+        by.setdefault(SCORE_UNIT_BY_LEAGUE.get(g.league), []).append(g)
+    out: list = []
+    for unit in sorted(by, key=lambda u: order.get(u, 99)):
+        gs = by[unit]
+        label, icon = SPORT_LABEL.get(unit, ("기타", "•"))
+        txt = _compose_index(gs, day, lk, nm, max_chars=max_chars,
+                             sport=(label, icon))
+        if txt:
+            out.append((label, icon, len(gs), txt))
+    return out
+
+
+def daily_index_toc_text(games: list, day: str, *, name_of=None) -> str:
+    """맨 위 **목차 글** (v1.92). 버튼이 본문이라 글은 짧게 둔다.
+
+    버튼은 `daily_index_toc_buttons` 가 만든다 — 글 번호가 필요해서
+    발송 뒤에 붙는다. 이 글은 버튼이 없어도 **그 자체로 말이 되어야** 한다
+    (버튼이 안 붙는 날에도 손님이 뭘 보는지는 알아야 한다).
+    """
+    parts = daily_index_by_sport(games, day, links={}, name_of=name_of)
+    if not parts:
+        return ""
+    d = datetime.strptime(day, "%Y-%m-%d")
+    wd = "월화수목금토일"[d.weekday()]
+    total = sum(n for _lb, _ic, n, _t in parts)
+    head = (f"📌 <b>{d.month}월 {d.day}일 ({wd})</b> · 전 <b>{total}경기</b>")
+    line = "   ".join(f"{ic} {lb} {n}" for lb, ic, n, _t in parts)
+    return "\n".join([head, "", line, "",
+                       "<i>아래 단추를 누르면 그 종목만 모아 봅니다</i>"])
+
+
+def daily_index_toc_buttons(parts: list, ids: dict, link_of) -> list:
+    """목차 버튼. `parts`는 `daily_index_by_sport` 결과, `ids`는
+    `{종목: 글번호}`, `link_of(글번호)`는 주소를 만든다.
+
+    ★ **번호가 없는 종목은 버튼을 안 만든다.** 빈 주소 버튼은 눌러도
+      아무 데도 안 가고, 그건 없는 것보다 나쁘다(v1.57에서 배운 것).
+    """
+    row: list = []
+    for lb, ic, n, _t in parts:
+        mid = ids.get(lb)
+        if not mid:
+            continue
+        row.append({"text": f"{ic} {lb} {n}경기", "url": link_of(int(mid))})
+    if not row:
+        return []
+    # 한 줄에 둘씩 — 셋을 넘으면 글자가 잘린다(실측).
+    return [row[i:i + 2] for i in range(0, len(row), 2)]
+
+
 def _compose_index(todays: list, day: str, lk: dict, nm,
-                   *, max_chars: int | None = TELEGRAM_TEXT_MAX) -> str:
+                   *, max_chars: int | None = TELEGRAM_TEXT_MAX,
+                   sport: tuple | None = None) -> str:
     """'오늘의 경기' 한 통을 조립한다. `daily_index_text`만 부른다.
 
     `max_chars=None`이면 **자르지 않는다** — 링크를 떼며 길이를 맞추는
     쪽이 줄을 버리는 것보다 낫기 때문에, 그 단계에서는 자름을 끈다.
     """
     d = datetime.strptime(day, "%Y-%m-%d")
-    head = (f"📌 <b>{d.month}월 {d.day}일 "
-            f"({'월화수목금토일'[d.weekday()]}) 오늘의 경기</b>")
+    _wd = "월화수목금토일"[d.weekday()]
+    if sport:
+        # 종목별로 나눈 글 (v1.92) — 어느 종목인지 머리에서 바로 말한다.
+        _lb, _ic = sport
+        head = (f"{_ic} <b>{_lb}</b> · {d.month}월 {d.day}일 ({_wd})"
+                f" <b>{len(todays)}경기</b>")
+    else:
+        head = (f"📌 <b>{d.month}월 {d.day}일 ({_wd}) 오늘의 경기</b>")
 
     # 리그 묶음 순서는 **나이트 브리핑과 같은 표**를 쓴다(두 곳이면 어긋난다).
     order = {lg: i for i, lg in enumerate(NIGHT_LEAGUE_ORDER)}
@@ -637,8 +726,13 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
                     lk.get(g.game_id) or ""))
         lines.append("")
     # 꼬리말이 **한 번** 말한다 — 줄마다 `경기정보 보기`를 붙이는 대신.
-    lines.append(f"<i>전 리그 {total}경기 · 경기 이름을 누르면 "
-                 f"그 경기 정보로 갑니다</i>")
+    if sport:
+        lines.append(f"<i>{sport[0]} {total}경기 · 경기 이름을 누르면 "
+                     f"그 경기 정보로 갑니다</i>")
+        lines.append(f"#{sport[0]}")     # 눌러서 그 종목 글만 모아 본다
+    else:
+        lines.append(f"<i>전 리그 {total}경기 · 경기 이름을 누르면 "
+                     f"그 경기 정보로 갑니다</i>")
     out = "\n".join(lines).strip()
     if max_chars is None or len(out) <= max_chars:
         return out

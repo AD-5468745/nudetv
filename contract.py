@@ -4444,6 +4444,33 @@ def keep_in_queue(scheduled_utc: datetime, now_utc: datetime,
 
 
 # ─────────────────────────────────────────────────────────────────────
+# ── 종목 (v1.92 신설) ────────────────────────────────────────────────
+#
+# 대표님: *"축구는 축구끼리, 야구는 야구끼리 이런식으로 모아두는 것도 좋을
+# 것 같아서."*
+#
+# ★ **리그를 손으로 나열하지 않는다.** 득점 단위가 이미 종목을 가른다
+#   (runs=야구 · goals=축구 · points=농구 · sets=배구). 리그가 늘어도
+#   `SCORE_UNIT_BY_LEAGUE` 에만 넣으면 종목 묶음이 **저절로 따라온다** —
+#   표를 두 벌 적으면 어긋난 쪽이 조용히 이긴다(약점 198, 오늘만 네 번 당했다).
+SPORT_LABEL: dict = {
+    ScoreUnit.RUNS: ("야구", "⚾"),
+    ScoreUnit.GOALS: ("축구", "⚽"),
+    ScoreUnit.POINTS: ("농구", "🏀"),
+    ScoreUnit.SETS: ("배구", "🏐"),
+}
+
+# 채널에서 보여 줄 차례. 여기 없는 종목은 뒤에 붙는다.
+SPORT_ORDER: tuple = (ScoreUnit.RUNS, ScoreUnit.GOALS,
+                      ScoreUnit.POINTS, ScoreUnit.SETS)
+
+
+def sport_of(league: "League") -> tuple:
+    """그 리그의 (종목이름, 그림). 모르면 ("기타", "•")."""
+    return SPORT_LABEL.get(SCORE_UNIT_BY_LEAGUE.get(league), ("기타", "•"))
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 팀 표시명 (v1.11 신설)
 #
 # v1.10까지 렌더러가 KBO 어댑터의 CODE_TEAM을 직접 임포트했다.

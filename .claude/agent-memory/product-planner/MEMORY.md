@@ -1,0 +1,3 @@
+- [nudetv 텔레그램 앵커+댓글 구조](nudetv-telegram-architecture.md) — 댓글은 포럼 토픽이 아니라 linked-discussion 댓글 흉내. 채널은 포럼 미지원(공식 확인)
+- [nudetv 발송 레이트리밋 실측](nudetv-rate-limit-facts.md) — 공식 한도의 1% 미만 사용 중. "발송량 많아서 터진다"는 근거 약함
+- [2026-09-23 ledger 되감김 사고](nudetv-2026-09-23-ledger-regression.md) — 09-21~23 발송 건수가 낮은 건 사고 때문, 정상치 아님(집계 시 주의)

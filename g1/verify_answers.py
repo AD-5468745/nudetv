@@ -387,8 +387,15 @@ check("★★ 공개 채널이면 공개 주소를 쓴다",
 # 대표님: *"자주 본채널에 노출시켜서 회원들의 토론방 참여율을 높여야해"*.
 _qi = T.build_all_queues({"KBO": _IDX}, _NOWQ, "-100t")
 _idx = [i for i in _qi if i.content_type is ContentType.DAILY_INDEX]
+# v1.92 — 종목마다 한 통 + 목차 한 통이 되면서 **항목 수**는 늘었다.
+# 재는 뜻은 그대로다: **하루 두 번**, 곧 `시각이 둘`이다.
+_slots = {i.scope.split("#")[1] for i in _idx if "#" in i.scope}
 check("★★ 오늘의 경기는 하루 **두 번**이다 (자정 · 저녁)",
-      len(_idx) == 2, str(len(_idx)))
+      _slots == {"0005", "1700"}, f"{sorted(_slots)} · 항목 {len(_idx)}")
+check("  ↳ 종목마다 한 통 + 목차 한 통이 선다 (v1.92)",
+      any(i.scope.endswith("#목차") for i in _idx)
+      and any(i.scope.endswith("#야구") for i in _idx),
+      str(sorted({i.scope for i in _idx})[:4]))
 check("  ↳ 멱등키가 서로 다르다 (같으면 둘째 통이 조용히 사라진다)",
       len({i.idem_key for i in _idx}) == len(_idx),
       str(sorted(i.scope for i in _idx)))

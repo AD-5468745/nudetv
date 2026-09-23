@@ -41,7 +41,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 # 실제로 render_for가 그랬다 — Status를 결과카드 분기에서만 들여와서
 # **시작 알림은 한 번도 렌더될 수 없었다.** 필요한 이름은 여기서 전부 들여온다.
 import dataclasses
-from contract import (ContentType, GateError, KST, League, QueueItem, SendState,
+from contract import (sport_of,
+                      ContentType, GateError, KST, League, QueueItem, SendState,
                       TERMINAL_STATUSES,
                       RecordBook, Standing, LeaderEntry, StreakKind, WLD,
                       Status, UnknownStatus, assert_home_away,
@@ -2227,17 +2228,46 @@ def build_all_queues(snapshots: dict[str, list], now: datetime,
                 # 하루가 지날수록 채널 아래로 밀려 아무도 안 본다.
                 # **멱등키에 시각을 넣는다** — 안 넣으면 둘째 통이
                 # '이미 보냄'으로 조용히 사라진다(리그별 모닝이 그랬다).
+                # ── **종목마다 한 통 + 목차 한 통** (v1.92) ────────────
+                #
+                # 대표님: *"축구는 축구끼리, 야구는 야구끼리 모아두는 것도
+                # 좋을 것 같아서."*
+                #
+                # 텔레그램 채널에는 스레드가 없고(공식 문서: 포럼은 슈퍼그룹
+                # 전용), 한 글 안의 특정 위치로 가는 링크도 없다.
+                # **글을 나누는 것만이 "모아 두기"를 실제로 해내는 길**이다.
+                #
+                # 모닝이 시간대마다 한 통인 것과 같은 꼴로, 멱등키 뒤에
+                # `#종목`을 붙인다 — 안 붙이면 둘째 통부터 '이미 보냄'으로
+                # 조용히 사라진다(리그별 모닝이 그랬다).
+                #
+                # **목차는 1분 뒤로 잡는다.** 버튼에 넣을 글 번호는 종목 글이
+                # 나간 **뒤에야** 생긴다. 같은 시각에 두면 순서가 발송기
+                # 안쪽 규칙에 달리고, 그 규칙은 언제든 바뀐다(사전정보에서
+                # 이미 배운 것).
+                _sports = [lb for lb, _ic, _n, _t in P.daily_index_by_sport(
+                    _pool, _day, links={},
+                    name_of=lambda lg, t: getattr(t, "team_code", str(t)))]
                 for _h, _m in P.DAILY_INDEX_SLOTS:
                     _at = now.astimezone(KST).replace(
                         hour=_h, minute=_m,
                         second=0, microsecond=0).astimezone(timezone.utc)
-                    _scope = f"{_day}#{_h:02d}{_m:02d}"
+                    for _sp in _sports:
+                        _scope = f"{_day}#{_h:02d}{_m:02d}#{_sp}"
+                        items.append(QueueItem(
+                            idem_key=idem_key(channel,
+                                              ContentType.DAILY_INDEX, _scope),
+                            content_type=ContentType.DAILY_INDEX,
+                            scope=_scope, scheduled_utc=_at, league=None,
+                            sports_day=_day, render_at_utc=_at))
+                    _tat = _at + timedelta(minutes=1)
+                    _tsc = f"{_day}#{_h:02d}{_m:02d}#목차"
                     items.append(QueueItem(
                         idem_key=idem_key(channel, ContentType.DAILY_INDEX,
-                                          _scope),
-                        content_type=ContentType.DAILY_INDEX, scope=_scope,
-                        scheduled_utc=_at, league=None, sports_day=_day,
-                        render_at_utc=_at))
+                                          _tsc),
+                        content_type=ContentType.DAILY_INDEX, scope=_tsc,
+                        scheduled_utc=_tat, league=None, sports_day=_day,
+                        render_at_utc=_tat))
         except Exception as e:                               # noqa: BLE001
             print(f"  [큐] 오늘의 경기 생성 실패 {type(e).__name__}")
 
@@ -2555,8 +2585,37 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
         rec = state.setdefault(day, {"message_id": None, "links": {}})
 
         if item.content_type is ContentType.DAILY_INDEX:
-            rec["message_id"] = int(message_ids[0])
-            _DS.pin(transport, channel, message_ids[0])
+            _tail = item.scope.rsplit("#", 1)[-1] if "#" in item.scope else ""
+            _user = _DS.public_username(transport, channel)
+
+            def _link(mid: int) -> str:
+                return _message_link(CHANNEL_FOR_LINKS[0], mid,
+                                     username=_user)
+
+            if _tail == "목차":
+                # 목차만 고정한다 — 종목 글은 그 아래 따라붙는다.
+                rec["message_id"] = int(message_ids[0])
+                _DS.pin(transport, channel, message_ids[0])
+                _pool = _INDEX_POOL.get(day) or []
+                import cards_v5 as _C5t
+                _parts = _P.daily_index_by_sport(
+                    _pool, day, links={},
+                    name_of=lambda lg, t: _C5t._nm(lg, t))
+                _btn = _P.daily_index_toc_buttons(
+                    _parts, rec.get("sports") or {}, _link)
+                if _btn:
+                    _DS.edit_text(transport, channel, message_ids[0],
+                                  _P.daily_index_toc_text(
+                                      _pool, day,
+                                      name_of=lambda lg, t: _C5t._nm(lg, t)),
+                                  buttons=_btn)
+            elif _tail and _tail != day:
+                # 종목 글 — **번호를 적어 둔다.** 목차 버튼과 앵커 갱신이
+                # 둘 다 이 번호를 쓴다.
+                rec.setdefault("sports", {})[_tail] = int(message_ids[0])
+            else:
+                rec["message_id"] = int(message_ids[0])
+                _DS.pin(transport, channel, message_ids[0])
             _index_save(state)
             return
 
@@ -2566,11 +2625,27 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
             _index_save(state)
             _user = _DS.public_username(transport, channel)
             # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.
+            _pool = _INDEX_POOL.get(day) or []
+            import cards_v5 as _C5x
+            _lk = _index_links(day, username=_user)
+            # ── **그 경기가 속한 종목 글만 고친다** (v1.92) ──────────
+            # 앵커가 하나 설 때마다 그 종목 글의 그 줄에 바로가기가 붙는다.
+            # 다른 종목 글은 건드리지 않는다 — 안 바뀐 글을 고치면 텔레그램이
+            # `message is not modified` 로 되받고, 그게 매 앵커마다 난다.
+            _sids = rec.get("sports") or {}
+            if _sids:
+                for _lb, _ic, _n, _t in _P.daily_index_by_sport(
+                        _pool, day, links=_lk,
+                        name_of=lambda lg, t: _C5x._nm(lg, t)):
+                    _smid = _sids.get(_lb)
+                    if _smid and any(
+                            g.game_id == item.game_id
+                            and sport_of(g.league)[0] == _lb
+                            for g in _pool):
+                        _DS.edit_text(transport, channel, int(_smid), _t)
+                        break
             mid = rec.get("message_id")
-            if mid:
-                _pool = _INDEX_POOL.get(day) or []
-                import cards_v5 as _C5x
-                _lk = _index_links(day, username=_user)
+            if mid and not _sids:
                 txt = _P.daily_index_text(
                     _pool, day, links=_lk,
                     name_of=lambda lg, t: _C5x._nm(lg, t))
@@ -3166,9 +3241,33 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # ── **오늘의 경기 (v1.39)** — 전 리그 편성 한 통 ──
         import cards_v5 as _C5i
         _pool = all_games or games
-        _txt = P.daily_index_text(_pool, item.sports_day,
-                                  links=_index_links(item.sports_day),
-                                  name_of=lambda lg, t: _C5i._nm(lg, t))
+        _nmf = lambda lg, t: _C5i._nm(lg, t)          # noqa: E731
+        _lk = _index_links(item.sports_day)
+        # scope 는 `날짜#시각#종목` 또는 `날짜#시각#목차` 다 (v1.92).
+        _tail = item.scope.rsplit("#", 1)[-1] if "#" in item.scope else ""
+
+        if _tail == "목차":
+            # ── 목차 — **버튼이 본문이다** ──────────────────────────
+            # 종목 글이 먼저 나가야 글 번호가 생긴다. 아직 하나도 없으면
+            # 만들지 않는다 — 빈 목차는 있으나 마나다(다음 틱에 다시 온다).
+            _st = (_index_load().get(item.sports_day) or {}).get("sports") or {}
+            if not _st:
+                return None
+            _txt = P.daily_index_toc_text(_pool, item.sports_day,
+                                          name_of=_nmf)
+            return [], [_txt] if _txt else None
+
+        if _tail and _tail not in ("", item.sports_day):
+            # 종목 글 한 통
+            for _lb, _ic, _n, _t in P.daily_index_by_sport(
+                    _pool, item.sports_day, links=_lk, name_of=_nmf):
+                if _lb == _tail:
+                    return [], [_t]
+            return None                  # 그 종목 경기가 사라졌다
+
+        # 옛 꼴(`날짜#시각`) — 한 통짜리. 되돌릴 때를 위해 남겨 둔다.
+        _txt = P.daily_index_text(_pool, item.sports_day, links=_lk,
+                                  name_of=_nmf)
         if not _txt:
             return None
         return [], [_txt]
