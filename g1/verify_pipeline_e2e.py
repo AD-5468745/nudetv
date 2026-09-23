@@ -68,17 +68,25 @@ def say(lg: str, what: str, verdict: str, detail: str = "") -> None:
 
 
 def records_for(lg: League):
-    """그 리그 기록실. 없으면 None (분석이 기록실을 요구한다)."""
+    """그 리그 기록실. 없으면 None (분석이 기록실을 요구한다).
+
+    ★★★ **시계가 쓰는 표를 그대로 쓴다** (2026-09-23에 크게 데었다).
+    여기에 `KBO`·`NPB` 둘만 손으로 적어 두고 나머지는 `None` 을 돌려줬다.
+    그래서 **유럽 7개·MLB·K리그는 기록실을 부른 적조차 없으면서** 화면에는
+    `기록실을 못 받음` 이라고 찍혔다 — 없는 고장을 만든 것이다.
+
+    그 한 줄 때문에 오늘 반나절을 **토큰 탓**으로 보냈다. 토큰을 다시 넣고,
+    죽었나 살았나 재고, 재발급까지 알아봤는데 **토큰은 멀쩡했다**(HTTP 200).
+    판정을 두 벌로 적으면 어긋난 쪽이 조용히 이긴다 — 약점 198 그대로다.
+
+    이제 `tick._record_jobs()` 하나만 본다. 리그가 늘거나 소스가 바뀌어도
+    시계와 시험대가 **같이** 따라간다.
+    """
     try:
-        if lg is League.KBO:
-            from adapters.kbo_records import KboRecordAdapter
-            return KboRecordAdapter().fetch()
-        if lg is League.NPB:
-            from adapters.npb_records import NpbRecordAdapter
-            return NpbRecordAdapter().fetch()
+        job = T._record_jobs().get(lg.value)
+        return job() if job else None
     except Exception:                                          # noqa: BLE001
         return None
-    return None
 
 
 def fetch(lg: League):
@@ -150,7 +158,7 @@ def _why_records(lg) -> str:
         #   호출 제한인지 우리 코드 문제인지 **사람이 또 찾아 나서야 한다.**
         try:
             from adapters import fd_records as _FD              # noqa: PLC0415
-            _n = [x for x in _FD.take_notes() if "football-data" in x]
+            _n = list(_FD.take_notes())
             if _n:
                 return f"기록실 없음 — 소스가 말한 이유: {' · '.join(_n[:3])}"
         except Exception:                                       # noqa: BLE001
@@ -203,7 +211,25 @@ for lg in _leagues:
                 q = P.build_queue(games, now, "e2e", floor_hours=0, horizon_hours=30)
                 its = [i for i in q if i.content_type is ct]
                 if not its:
-                    say(lg_v, name, "실패", "큐에 한 건도 안 오름"); continue
+                    # ★ **없는 사고를 만들지 않는다** (2026-09-23).
+                    #   큐는 앞으로 30시간까지만 담는다. 다음 경기가 그보다
+                    #   멀면 **안 담기는 것이 정상**인데 `실패` 로 찍었다
+                    #   (실측: K리그 다음 경기가 나흘 뒤라 `실패` 가 떴다).
+                    #   그래서 **언제 열리는지를 보고 갈라 적는다.**
+                    _nxt = min((g.start_utc for g in games
+                                if not g.is_terminal and g.start_utc > now),
+                               default=None)
+                    if _nxt is None:
+                        say(lg_v, name, "확인못함", "앞으로 열릴 경기가 없음")
+                    elif (_nxt - now).total_seconds() > 30 * 3600:
+                        _d = (_nxt - now).total_seconds() / 3600
+                        say(lg_v, name, "확인못함",
+                            f"다음 경기가 {_d:.0f}시간 뒤라 아직 큐에 안 오름 "
+                            f"(큐는 30시간 앞까지만 담습니다)")
+                    else:
+                        say(lg_v, name, "실패", "곧 열릴 경기가 있는데 "
+                                                "큐에 한 건도 안 오름")
+                    continue
                 good, why = _render(its[0], games, rb)
                 say(lg_v, name, "통과" if good else "실패", why)
 
