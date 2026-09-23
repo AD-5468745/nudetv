@@ -3818,8 +3818,24 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 else:
                     _note_skip(item, "투표를 못 닫음")
                 continue
-            payload = (Payload.from_parts(photos, parts) if photos
-                       else Payload(text=parts[0]))
+            else:
+                # ⚠️ **`else` 가 빠져 있었다** (v1.78 → v1.84에서 고침).
+                # 위에서 투표 페이로드를 만들어 놓고 **바로 이 줄이 덮어썼다.**
+                # `photos`는 그때 `"__poll__"`(글자)이라 `list()`가 한 글자씩
+                # 쪼갠 사진 목록이 되고, 게이트가 `name, data, w, h`로 풀다
+                # 터진다: `ValueError: not enough values to unpack
+                # (expected 4, got 1)`.
+                #
+                # v1.78부터 있던 결함인데 **드러날 수가 없었다** — 투표가
+                # 유예(30분)를 못 넘겨 여기까지 온 적이 한 번도 없었다.
+                # 2026-09-22 v1.82로 유예를 넓히자마자 첫 투표가 도달했고,
+                # 그 틱부터 매번 터지다 실행이 통째로 실패했다(실측: 09-22
+                # 21:07~22:07 UTC, 발송 공백 약 5시간).
+                #
+                # **교훈**: 오래 죽어 있던 길을 되살릴 때는 그 길 **끝까지**
+                # 한 번 걸어 보고 켠다. 유예만 넓히고 끝낼 일이 아니었다.
+                payload = (Payload.from_parts(photos, parts) if photos
+                           else Payload(text=parts[0]))
 
             # ── 브랜드 버튼 (v1.15d — 대표님 지시) ──────────────────
             # *"경기시작 알림글에는 버튼을 하나 붙여서 발송하자. 버튼에 URL을 연결."*

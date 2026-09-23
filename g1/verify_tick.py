@@ -3786,6 +3786,67 @@ check("★★★ 투표는 킥오프에 닫는다 (경기 중 표가 들어오�
       C.LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.POLL_CLOSE]
       <= C.LOOKAHEAD_SECONDS_BY_CONTENT[ContentType.POLL])
 
+# ── ★★★ 투표 페이로드가 **덮어써지지 않는가** (v1.84 · 실제 사고) ──────
+#
+# 2026-09-23 새벽 시계가 통째로 실패했다. 원인은 `tick.py`에서 투표
+# 페이로드를 만든 **바로 다음 줄에 `else`가 없어** 그것을 덮어쓴 것이다.
+#   `payload = Payload.for_poll(...)`          ← 만들고
+#   `payload = Payload.from_parts(photos, ...)` ← 바로 덮어씀
+# `photos`가 그때 `"__poll__"`(글자)이라 한 글자씩 쪼갠 사진 목록이 되고,
+# 게이트가 `name, data, w, h`로 풀다 터졌다.
+#
+# v1.78부터 있던 결함인데 **드러날 수가 없었다** — 투표가 유예를 못 넘겨
+# 여기까지 온 적이 없었다. v1.82로 유예를 넓히자마자 첫 투표가 도달했고
+# 그 틱부터 매번 터졌다(발송 공백 약 5시간).
+#
+# ⚠️ **글자로 `else:` 를 찾으면 안 된다.** 처음엔 그렇게 짰다가
+# 아래 POLL_CLOSE 갈래 안의 다른 `else:` 에 속아 **옛 결함을 되돌려 놔도
+# 통과했다.** 짖지 않는 게이트는 게이트가 아니다. 구문 구조로 잰다:
+# `if photos == POLL_MARK` 문의 **else 안에** from_parts 대입이 있는가.
+import ast as _ast84
+_src84 = (pathlib.Path(__file__).resolve().parent / "tick.py"
+          ).read_text(encoding="utf-8")
+
+
+def _poll_else_ok(src: str) -> bool:
+    for node in _ast84.walk(_ast84.parse(src)):
+        if not isinstance(node, _ast84.If):
+            continue
+        t = node.test
+        if not (isinstance(t, _ast84.Compare)
+                and isinstance(t.comparators[0], _ast84.Name)
+                and t.comparators[0].id == "POLL_MARK"):
+            continue
+        # 이 if 의 **뒤에 이어지는 문장**이 아니라 orelse 안에 있어야 한다
+        return "from_parts" in _ast84.dump(_ast84.Module(body=node.orelse,
+                                                         type_ignores=[]))
+    return False
+
+
+check("★★★ 투표 페이로드를 만든 뒤 **덮어쓰지 않는다** (else 안에 있다)",
+      _poll_else_ok(_src84),
+      "from_parts 대입이 POLL_MARK 분기의 else 밖에 있다 — 투표를 덮어쓴다")
+# ★ 이 검사가 **정말 짖는지** 여기서 바로 확인한다 (게이트의 게이트)
+check("  ↳ (변이) else 를 없앤 소스에는 반드시 짖는다",
+      not _poll_else_ok(
+          "def f():\n"
+          "    if photos == POLL_MARK:\n"
+          "        payload = Payload.for_poll(a, b)\n"
+          "    payload = Payload.from_parts(photos, parts)\n"))
+
+# 만든 것이 정말 투표로 남는지 — 글자 검사만 믿지 않는다
+_pp84 = _Pay78(poll={"question": "누가 이길까요?", "options": ["KT", "SSG"]})
+_pp84.gate()
+check("  ↳ 투표 페이로드는 사진이 비어 있다 (게이트가 4개로 풀지 않는다)",
+      not _pp84.photos and _pp84.poll is not None)
+
+# 옛 결함을 **일부러 되돌려 놓고** — 잡히나?
+try:
+    _Pay78(photos=list("__poll__"), caption="x").gate()
+    check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", False, "안 터짐 — 시험이 무력하다")
+except (ValueError, C.GateError):
+    check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
