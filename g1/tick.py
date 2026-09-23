@@ -2819,6 +2819,43 @@ THREADED_CONTENT_TYPES = frozenset({
 WAIT_FOR_THREAD_TYPES = THREADED_CONTENT_TYPES
 
 
+def _anchor_keys(item, channel: str) -> list:
+    """이 경기 **앵커의 멱등키 후보**들 (v1.95 · 실제 사고).
+
+    ★★★ **주소를 손으로 다시 조립하면 안 된다.**
+    여기와 `_anchor_is_up` 이 앵커 주소를 `리그:날짜:게임id` 로 **직접 만들고**
+    있었다. 그런데 v1.77 부터 NPB 앵커는 **안정키**로 저장된다
+    (`contract.game_scope` — npb.jp 가 결과를 올리면 경기 번호가 바뀌므로).
+
+        앵커가 저장된 곳 : NPB:2026-09-23:g:2026-09-23:ORI:LOT
+        찾으러 간 곳     : NPB:2026-09-23:scores-2026-0923-m-b-25
+
+    영영 못 찾아 **토론방 자리를 461번 기다리다** 362분 만에 지각 폐기됐다
+    (2026-09-23 실행 로그 실측). KBO 는 번호가 안 바뀌어 우연히 맞았고,
+    **NPB 종료·흐름만 며칠째 조용히 죽었다.**
+
+    `game_scope()` 주석에 *"여기 한 곳만 둔다"* 고 적혀 있는데 두 벌을 적은
+    것이다 — 오늘만 여섯 번째다(약점 198).
+
+    **항목 자신의 scope 를 먼저 쓴다.** 경기별 콘텐츠의 scope 는 앵커와 같은
+    `game_scope()` 에서 나온다(`#골이름`·`#구간` 꼬리만 떼면 된다).
+    못 믿을 때를 대비해 옛 꼴도 뒤에 남겨 둔다 — 둘 다 없으면 없는 것이다.
+    """
+    out: list = []
+    # `scope` 가 없는 항목도 있다(시험 대역·옛 기록). 없으면 옛 꼴만 쓴다 —
+    # 여기서 터지면 바깥 `except` 가 "집이 없다"로 삼켜 **앵커가 멀쩡한
+    # 경기도 댓글을 못 단다.**
+    base = (getattr(item, "scope", "") or "").split("#", 1)[0]
+    if base:
+        out.append(idem_key(channel, ContentType.ANCHOR, base))
+    if item.game_id and item.league is not None:
+        old = f"{item.league.value}:{item.sports_day}:{item.game_id}"
+        k = idem_key(channel, ContentType.ANCHOR, old)
+        if k not in out:
+            out.append(k)
+    return out
+
+
 def _thread_for(item, ledger, disc, channel: str):
     """이 항목을 달아야 할 **토론방 글 번호**. 채널로 보내야 하면 None.
 
@@ -2853,8 +2890,9 @@ def _thread_for(item, ledger, disc, channel: str):
         _bundled.append(f"{item.content_type.value} {item.scope}")
         return None
     try:
-        scope = f"{item.league.value}:{item.sports_day}:{item.game_id}"
-        rec = ledger.get(idem_key(channel, ContentType.ANCHOR, scope))
+        rec = next((r for r in (ledger.get(k) for k in
+                                 _anchor_keys(item, channel))
+                    if r is not None and r.message_ids), None)
     except Exception:                                    # noqa: BLE001
         return None
     if rec is None or not rec.message_ids:
@@ -2881,8 +2919,9 @@ def _anchor_is_up(item, ledger, channel: str) -> bool:
     if not item.game_id or item.league is None:
         return False
     try:
-        scope = f"{item.league.value}:{item.sports_day}:{item.game_id}"
-        rec = ledger.get(idem_key(channel, ContentType.ANCHOR, scope))
+        rec = next((r for r in (ledger.get(k) for k in
+                                 _anchor_keys(item, channel))
+                    if r is not None and r.message_ids), None)
     except Exception:                                    # noqa: BLE001
         return False
     return bool(rec is not None and rec.message_ids)

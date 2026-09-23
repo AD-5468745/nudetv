@@ -3847,6 +3847,39 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★★ **앵커 주소를 손으로 다시 조립하지 않는가** (v1.95 · 실제 사고) ──
+#
+# `_thread_for` 와 `_anchor_is_up` 이 앵커 멱등키를 `리그:날짜:게임id` 로
+# **직접 만들고** 있었다. 그런데 v1.77 부터 NPB 앵커는 **안정키**로 저장된다
+# (`game_scope` — npb.jp 가 결과를 올리면 경기 번호가 바뀐다).
+#
+#     앵커가 저장된 곳 : NPB:2026-09-23:g:2026-09-23:ORI:LOT
+#     찾으러 간 곳     : NPB:2026-09-23:NPB:2026:scores-2026-0923-m-b-25
+#
+# 영영 못 찾아 토론방 자리를 **461번 기다리다** 362분 만에 지각 폐기됐다
+# (2026-09-23 실행 로그). KBO 는 번호가 안 바뀌어 우연히 맞았고
+# **NPB 종료·흐름만 며칠째 조용히 죽었다.**
+_it95 = C.QueueItem(
+    idem_key="x", content_type=ContentType.FINAL_FLASH,
+    scope="NPB:2026-09-23:g:2026-09-23:ORI:LOT",
+    scheduled_utc=NOW, league=C.League.NPB, sports_day="2026-09-23",
+    game_id="NPB:2026:scores-2026-0923-m-b-25", render_at_utc=NOW)
+_ks95 = T._anchor_keys(_it95, "-100t")
+_want95 = C.idem_key("-100t", ContentType.ANCHOR,
+                     "NPB:2026-09-23:g:2026-09-23:ORI:LOT")
+check("★★★ 앵커를 **항목 자신의 주소**로 찾는다 (번호가 바뀌어도 닿는다)",
+      _want95 in _ks95,
+      f"후보 {len(_ks95)}개에 안정키가 없다")
+check("  ↳ 옛 꼴도 함께 본다 (번호가 안 바뀌는 리그는 그대로 돈다)",
+      len(_ks95) == 2 and C.idem_key(
+          "-100t", ContentType.ANCHOR,
+          "NPB:2026-09-23:NPB:2026:scores-2026-0923-m-b-25") in _ks95,
+      str(len(_ks95)))
+# (변이) 항목 주소를 안 보면 — 반드시 못 찾아야 한다
+check("  ↳ (변이) 손으로 조립한 주소만으로는 안정키를 못 찾는다",
+      C.idem_key("-100t", ContentType.ANCHOR,
+                 f"NPB:2026-09-23:{_it95.game_id}") != _want95)
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
