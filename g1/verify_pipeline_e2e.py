@@ -206,9 +206,36 @@ for lg in _leagues:
                 if rb is None:
                     say(lg_v, name, "확인못함",
                         _why_records(lg)); continue
-                if not up:
-                    say(lg_v, name, "확인못함", "예정 경기가 없음"); continue
-                q = P.build_queue(games, now, "e2e", floor_hours=0, horizon_hours=30)
+                # ── ★★★ **경기를 기다리지 않는다** (2026-09-23) ──────────
+                #   `예정 경기가 없음` 으로 끝내면 비시즌·휴식기에는 분석을
+                #   **영영 못 잰다.** 실측: A매치 휴식기라 유럽 5개 리그가
+                #   한꺼번에 `확인못함` 이었다 — 그게 고장인지 아닌지 알 길이
+                #   없었다. 선발에 쓴 방법을 그대로 쓴다: **가장 최근 끝난
+                #   경기를 킥오프 3시간 전으로 되돌려** 재고, 그때도 안 되면
+                #   그것이 진짜 판정이다.
+                _games2, _now2, _rw = games, now, False
+                # 예정 경기가 **큐 지평(30시간)** 밖이면 없는 것과 같다 —
+                # 그때도 되감아 잰다(실측: K리그 다음 경기가 94시간 뒤였다).
+                _far = bool(up) and (up[0].start_utc - now).total_seconds() > 30 * 3600
+                if not up or _far:
+                    if not fin:
+                        say(lg_v, name, "확인못함",
+                            "예정도 끝난 경기도 없음"); continue
+                    _g2 = copy.deepcopy(fin[0])
+                    _g2.status = Status.SCHEDULED
+                    _g2.score = None
+                    _now2 = _g2.start_utc - timedelta(hours=3)
+                    # ★ **한 경기만 넘기면 안 된다** (2026-09-23).
+                    #   분석 카드는 `history` 로 최근 흐름·맞대결을 센다.
+                    #   되감은 경기 하나만 주면 그 재료가 없어 카드가 `None`이
+                    #   되고, 시험대는 그걸 **제품 결함으로 오해**한다
+                    #   (실측: K리그가 그렇게 `실패` 로 찍혔다 — 실제로는
+                    #   전체를 주면 1080x1064 로 멀쩡히 그려진다).
+                    _games2 = [_g2] + [x for x in games
+                                       if x.game_id != _g2.game_id]
+                    _rw = True
+                q = P.build_queue(_games2, _now2, "e2e",
+                                  floor_hours=0, horizon_hours=30)
                 its = [i for i in q if i.content_type is ct]
                 if not its:
                     # ★ **없는 사고를 만들지 않는다** (2026-09-23).
@@ -216,13 +243,13 @@ for lg in _leagues:
                     #   멀면 **안 담기는 것이 정상**인데 `실패` 로 찍었다
                     #   (실측: K리그 다음 경기가 나흘 뒤라 `실패` 가 떴다).
                     #   그래서 **언제 열리는지를 보고 갈라 적는다.**
-                    _nxt = min((g.start_utc for g in games
-                                if not g.is_terminal and g.start_utc > now),
+                    _nxt = min((g.start_utc for g in _games2
+                                if not g.is_terminal and g.start_utc > _now2),
                                default=None)
                     if _nxt is None:
                         say(lg_v, name, "확인못함", "앞으로 열릴 경기가 없음")
-                    elif (_nxt - now).total_seconds() > 30 * 3600:
-                        _d = (_nxt - now).total_seconds() / 3600
+                    elif (_nxt - _now2).total_seconds() > 30 * 3600:
+                        _d = (_nxt - _now2).total_seconds() / 3600
                         say(lg_v, name, "확인못함",
                             f"다음 경기가 {_d:.0f}시간 뒤라 아직 큐에 안 오름 "
                             f"(큐는 30시간 앞까지만 담습니다)")
@@ -230,8 +257,15 @@ for lg in _leagues:
                         say(lg_v, name, "실패", "곧 열릴 경기가 있는데 "
                                                 "큐에 한 건도 안 오름")
                     continue
-                good, why = _render(its[0], games, rb)
-                say(lg_v, name, "통과" if good else "실패", why)
+                _o2 = T._now
+                if _rw:
+                    T._now = lambda: _now2
+                try:
+                    good, why = _render(its[0], _games2, rb)
+                finally:
+                    T._now = _o2
+                say(lg_v, name, "통과" if good else "실패",
+                    why + (" (지난 경기로 되돌려 잼)" if _rw else ""))
 
             elif ct is ContentType.LINEUP:
                 # 예정 경기가 없으면 **가장 최근 끝난 경기를 킥오프 2시간 전으로
