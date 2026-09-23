@@ -1,8 +1,8 @@
 {
- "at": "2026-09-23T10:19:06.054986+00:00",
+ "at": "2026-09-23T10:21:46.219921+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-23T10:19:06.054986+00:00",
+   "at": "2026-09-23T10:21:46.219921+00:00",
    "count": 238,
    "stale_hours": 0.0
   },
@@ -14,25 +14,25 @@
   "KBL": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 9,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_M": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_W": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "KL1": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 60,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "NPB": {
-   "at": "2026-09-23T10:19:06.054986+00:00",
+   "at": "2026-09-23T10:21:46.219921+00:00",
    "count": 289,
    "stale_hours": 0.0,
    "finals_utc": [
@@ -44,42 +44,42 @@
   "EPL": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LALIGA": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 69,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "SERIEA": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "BUNDESLIGA": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 36,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LIGUE1": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 45,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UCL": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 72,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UEL": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 72,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "MLS": {
    "at": "2026-09-23T10:04:19.657455+00:00",
    "count": 16,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   }
  },
  "korean_players": {
