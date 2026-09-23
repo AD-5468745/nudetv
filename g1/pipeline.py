@@ -738,15 +738,31 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
         return out
     # 링크를 다 떼고도 넘친다 — 그날 경기가 비정상적으로 많다.
     # **줄을 잘라도 글은 내보낸다.** 안 내보내면 목록이 통째로 사라진다.
+    # ── ★ **잘랐으면 잘랐다고 말한다** (v1.96) ──────────────────────
+    #
+    # 전에는 꼬리말이 `전 리그 N경기` 로 **고정**이라, 종목 글에서도 `전 리그`
+    # 라고 적혔고 `#종목` 태그도 사라졌다. 더 나쁜 것은 **머리는 49경기인데
+    # 본문은 48줄**이어서, 손님이 한 경기가 없어진 줄도 모른다는 점이다
+    # (적대적 검토 실측: 한 종목 49경기에서 처음 깨졌다).
+    # **안 보이는 손실이 가장 나쁘다** — 몇 개가 잘렸는지 적는다.
+    _who = sport[0] if sport else "전 리그"
+    _tag = f"#{sport[0]}" if sport else ""
     keep, used = [], 0
-    tailline = f"<i>전 리그 {total}경기 · 아래 버튼에서 경기를 고르세요</i>"
-    room = max_chars - len(tailline) - 2
+    _room_tail = 120 + len(_tag)          # 꼬리말 자리를 넉넉히 비워 둔다
+    room = max_chars - _room_tail
     for ln in lines[:-1]:
         if used + len(ln) + 1 > room:
             break
         keep.append(ln)
         used += len(ln) + 1
-    return "\n".join(keep + ["", tailline]).strip()
+    shown = sum(1 for ln in keep if GAME_BULLET in ln)
+    cut = total - shown
+    tailline = (f"<i>{_who} {total}경기 · 아래 버튼에서 경기를 고르세요</i>"
+                if cut <= 0 else
+                f"<i>{_who} {total}경기 중 <b>{shown}경기</b>만 실었습니다 "
+                f"(글이 너무 길어 {cut}경기는 아래 버튼에서 보세요)</i>")
+    out2 = keep + ["", tailline] + ([_tag] if _tag else [])
+    return "\n".join(out2).strip()
 
 
 # v1.79 에서 `LINK_LABEL`(= "경기정보 보기")을 **지웠다.**
@@ -3480,9 +3496,19 @@ def poll_targets(day_games: list[Game], *, limit: int) -> list[Game]:
         prime = 0 if lo <= h < hi else 1        # 황금 시간이 먼저
         return (prime, order.get(g.league, 99), g.start_utc, g.game_id)
 
-    live = [g for g in day_games
-            if g.status is Status.SCHEDULED and not g.is_terminal]
-    return sorted(live, key=rank)[:max(0, limit)]
+    # ── ★★★ **상태로 거르지 않는다** (v1.96 · 실제 사고) ───────────
+    #
+    # 전에는 `status is SCHEDULED` 인 경기만 골랐다. 그래서 **킥오프가 지나는
+    # 순간 그 경기가 목록에서 빠지고, `POLL_CLOSE` 가 큐에 아예 안 생겼다** —
+    # 닫아야 할 바로 그때 닫을 항목이 사라진 것이다.
+    # 실측 2026-09-23: `state/polls.json` 6건 중 **4건이 열린 채로 남았다**
+    # (KBO 2 · MLB 2). v1.82 가 닫기 유예를 90분으로 넓혔지만 **닿을 대상이
+    # 없었다** — 유예를 넓혀도 큐에 안 오르면 소용이 없다.
+    #
+    # 그날 경기 전체로 순위를 매기면 **대상 집합이 하루 종일 고정**된다.
+    # 투표를 여는 쪽은 이미 `is_upcoming` 으로 다시 판정하므로(렌더),
+    # 시작한 경기에 투표가 열리는 일은 없다 — 판정은 한 곳에만 둔다.
+    return sorted(day_games, key=rank)[:max(0, limit)]
 
 
 def _night_groups(games: list[Game]) -> list[tuple[League, list[Game]]]:

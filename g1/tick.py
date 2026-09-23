@@ -559,10 +559,25 @@ def _iso(dt: datetime) -> str:
 # 틱은 매번 "대장 줄 수 / SENT 줄 수"를 표식에 남기고, 다음 틱에 그보다
 # 줄어들어 있으면 대장이 되감겼다는 뜻이다(대장은 append-only라 줄어들 수 없다).
 # 그때는 **발송을 아예 하지 않는다** — 중복 발송보다 미발송이 낫다.
-# 되감김 보류를 **이만큼 보고도 안 풀리면 스스로 푼다** (v1.85).
-# 가장 긴 유예가 6시간이라, 그 뒤에는 기록 없는 발송도 전부 지각으로
-# 버려진다 — 막을 중복이 남아 있지 않다.
-REGRESSION_HOLD_MAX_HOURS = 6.0
+# 되감김 보류를 **이만큼 보고도 안 풀리면 스스로 푼다** (v1.85 · v1.96에서 정정).
+#
+# ⚠️ v1.85 에 "가장 긴 유예가 6시간" 이라고 적었는데 **틀렸다.**
+#    실측하면 `correction` 이 **24시간**이다(나머지는 6시간).
+#    6시간에 풀면 그 사이 기록 안 된 정정이 **한 번 더 나갈 수 있다** —
+#    정정이 두 번 나가는 것은 손님이 사실을 두 번 뒤집어 보는 것이라
+#    원래 사고보다 나쁘다.
+#
+# **값은 계약에서 계산한다.** 손으로 적으면 유예가 바뀌는 날 또 어긋난다
+# (오늘만 여섯 번 당한 병이다). 가장 긴 유예 + 한 시간 여유.
+def _regression_hold_hours() -> float:
+    try:
+        from contract import ContentType as _CT, grace_for as _gf
+        return max(_gf(t, None) for t in _CT) / 3600.0 + 1.0
+    except Exception:                                    # noqa: BLE001
+        return 25.0
+
+
+REGRESSION_HOLD_MAX_HOURS = _regression_hold_hours()
 
 
 def _read_ledger_mark() -> dict:
