@@ -558,6 +558,12 @@ def _iso(dt: datetime) -> str:
 # 틱은 매번 "대장 줄 수 / SENT 줄 수"를 표식에 남기고, 다음 틱에 그보다
 # 줄어들어 있으면 대장이 되감겼다는 뜻이다(대장은 append-only라 줄어들 수 없다).
 # 그때는 **발송을 아예 하지 않는다** — 중복 발송보다 미발송이 낫다.
+# 되감김 보류를 **이만큼 보고도 안 풀리면 스스로 푼다** (v1.85).
+# 가장 긴 유예가 6시간이라, 그 뒤에는 기록 없는 발송도 전부 지각으로
+# 버려진다 — 막을 중복이 남아 있지 않다.
+REGRESSION_HOLD_MAX_HOURS = 6.0
+
+
 def _read_ledger_mark() -> dict:
     try:
         return json.loads(LEDGER_MARK.read_text(encoding="utf-8")) if LEDGER_MARK.exists() else {}
@@ -577,10 +583,20 @@ def _write_ledger_mark(led: Ledger, now: datetime) -> None:
     try:
         LEDGER_MARK.parent.mkdir(parents=True, exist_ok=True)
         tmp = LEDGER_MARK.with_suffix(".tmp")
-        tmp.write_text(json.dumps({
-            "rows": max(led.row_count(), int(prev.get("rows", 0))),
-            "sent": max(led.sent_count_total(), int(prev.get("sent", 0))),
-            "at": _iso(now)}), encoding="utf-8")
+        # **되감김을 처음 본 시각**을 함께 남긴다 (v1.85).
+        # 이 값이 없으면 보류가 영원히 안 풀린다 — 아래 `ledger_regression`
+        # 참고. 정상으로 돌아오면 지운다(다음 사고를 처음부터 다시 센다).
+        _behind = (led.row_count() < int(prev.get("rows", 0))
+                   or led.sent_count_total() < int(prev.get("sent", 0)))
+        _since = prev.get("behind_since") if _behind else None
+        if _behind and not _since:
+            _since = _iso(now)
+        _d = {"rows": max(led.row_count(), int(prev.get("rows", 0))),
+              "sent": max(led.sent_count_total(), int(prev.get("sent", 0))),
+              "at": _iso(now)}
+        if _since:
+            _d["behind_since"] = _since
+        tmp.write_text(json.dumps(_d), encoding="utf-8")
         tmp.replace(LEDGER_MARK)
     except OSError:
         pass                      # 표식 실패로 틱을 죽이지 않는다
@@ -593,10 +609,45 @@ def ledger_regression(led: Ledger) -> str:
         return ""                 # 표식이 없다(첫 실행·캐시 유실) — 판단 근거가 없다
     rows, sent = led.row_count(), led.sent_count_total()
     if rows < int(mark.get("rows", 0)) or sent < int(mark.get("sent", 0)):
+        # ── ★★★ **보류는 스스로 풀려야 한다** (v1.85 · 실제 사고) ──────
+        #
+        # 2026-09-23: 실행 하나가 대장 29줄을 쓰고 **못 올린 채** 죽었다.
+        # 표식은 캐시에 있고 **절대 내려가지 않게** 만들어 두었으므로,
+        # 그 뒤 모든 틱이 `2181→2152` 되감김을 보고 발송을 보류했다.
+        # 보류하면 아무것도 안 나가고 → 대장이 안 자라고 → 표식을 영영
+        # 못 넘는다. **고장이 수리의 통로를 막는 교착이다.**
+        # 실측 피해: **채널 12시간 정지** (KBO·NPB·MLB 하루치 통째로).
+        # 주석에는 "영영 안 돌아오면 사람이 이 파일을 지워야 한다"고
+        # 적혀 있었다 — 새벽에 그걸 할 사람은 없다.
+        #
+        # 보류의 목적은 **중복 발송을 막는 것**이다. 그런데 기록에 없는
+        # 그 발송들은 시간이 지나면 **어차피 지각으로 버려진다** — 가장
+        # 긴 유예가 6시간이다. 그 뒤로는 막을 중복이 남아 있지 않고,
+        # 보류는 순수한 손해다.
+        #
+        # 그래서 **되감김을 처음 본 지 `REGRESSION_HOLD_MAX` 가 지나면
+        # 시끄럽게 알리면서 푼다.** 조용히 풀지 않는다 — 사람이 알아야 한다.
+        _since = mark.get("behind_since")
+        _aged = ""
+        if _since:
+            try:
+                _h = (datetime.now(timezone.utc)
+                      - datetime.fromisoformat(_since)).total_seconds() / 3600
+            except (TypeError, ValueError):
+                _h = 0.0
+            if _h >= REGRESSION_HOLD_MAX_HOURS:
+                print(f"  ⚠️ [보류 해제] 대장 되감김을 {_h:.1f}시간째 보고 "
+                      f"있습니다 — 그 사이 기록 없는 발송은 유예를 넘겨 "
+                      f"이미 버려집니다. **중복 위험이 사라졌으므로 발송을 "
+                      f"다시 켭니다.** (줄 {mark.get('rows')}→{rows} · "
+                      f"발송 {mark.get('sent')}→{sent})")
+                return ""
+            _aged = f" · 되감김을 본 지 {_h:.1f}시간"
         return (f"발송 대장이 되감겼습니다 — 줄 {mark.get('rows')}→{rows} · "
-                f"발송 {mark.get('sent')}→{sent} (표식 {mark.get('at')}). "
+                f"발송 {mark.get('sent')}→{sent} (표식 {mark.get('at')}{_aged}). "
                 f"대장 커밋이 실패했을 가능성이 큽니다. "
-                f"중복 발송을 막기 위해 이번 틱은 발송하지 않습니다.")
+                f"중복 발송을 막기 위해 이번 틱은 발송하지 않습니다. "
+                f"{REGRESSION_HOLD_MAX_HOURS}시간이 지나면 저절로 풀립니다.")
     return ""
 
 
