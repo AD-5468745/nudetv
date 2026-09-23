@@ -194,6 +194,23 @@ def build_mapping(code: str, token: str, our_games: list) -> dict:
                     moved |= _learn(sa, oa)
         if not moved:
             break
+    # ── ★ **왜 못 맞췄는지 말한다** (v1.91) ──────────────────────────
+    #
+    # 전에는 결과만 돌려주고 끝이라, 바깥에서는 `아직 못 맞춘 팀 36개` 라는
+    # 줄만 보였다. 그걸로는 **무엇을 고쳐야 할지 알 수 없다** — 창이 짧은
+    # 것인지, 우리 일정이 없는 것인지, 시각이 분 단위로 어긋난 것인지.
+    #
+    # 짝짓기는 **킥오프 시각이 분까지 같을 때만** 성립한다. 두 소스가 같은
+    # 경기를 1분 다르게 적으면 그 날짜는 통째로 못 맞춘다 — 조용히.
+    # 그래서 **양쪽 슬롯 수와 겹치는 슬롯 수**를 적는다. 겹침이 0이면
+    # 시각이 안 맞는 것이고, 우리 슬롯이 0이면 그 창에 우리 경기가 없는 것이다.
+    _both = [at for at in ours if at in src]
+    if len(known) < len(rev) or not known or _both != list(ours):
+        _notes.append(
+            f"{code}: 짝짓기 재료 — 우리 {len(ours)}개 시각 · 소스 {len(src)}개 시각"
+            f" · 시각이 겹치는 것 {len(_both)}개 → 맞춘 팀 {len(known)}개"
+            + ("  (겹치는 시각이 없습니다 — 두 소스의 킥오프 시각이"
+               " 분 단위로 다를 수 있습니다)" if not _both else ""))
     return dict(known)
 
 
