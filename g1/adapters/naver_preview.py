@@ -57,7 +57,15 @@ PREVIEW_CACHE_SECONDS = 20 * 60   # 경기 전 자료라 자주 안 바뀐다
 PREVIEW_LEAGUES: dict = {
     League.KBO: ("kbaseball", "kbo"),
     League.MLB: ("wbaseball", "mlb"),
-    League.NPB: ("wbaseball", "npb"),
+    # ★ **NPB를 뺐다** (2026-09-23 실측 · v1.86).
+    # 번호는 멀쩡히 찾는다(`20260922RTNH0`). 그런데 그 번호로 미리보기를
+    # 부르면 **`previewData` 가 통째로 `None`** 으로 온다 — 예정 경기도,
+    # 끝난 경기도. 표본 12/12 · 6/6 전부 빈 값이었다(같은 자로 KBO는 12/12,
+    # MLB는 11/12가 찼다). **소스에 없는 것이다.**
+    #
+    # 남겨 두면 값이 두 배로 나쁘다: ① 사전정보가 매 틱 헛수고를 하고
+    # ② 아침표가 **없는 구멍**을 매일 찍어 사람이 사고로 오해한다.
+    # 소스가 주기 시작하면 이 줄만 되살리면 된다.
     # ★ **축구도 있다** (2026-09-18 정정).
     # 처음에 "축구엔 이 창구가 없다"고 적었는데, **유럽 경기로만 확인한**
     # 탓이었다. 국내 축구는 미리보기가 꽉 차 있다 — 순위·승무패·경기당
@@ -70,7 +78,20 @@ PREVIEW_LEAGUES: dict = {
 }
 
 # 종목이 다르면 들어 있는 칸이 다르다. **칸 이름을 리그마다 짐작하지 않는다.**
-BASEBALL_LEAGUES = frozenset({League.KBO, League.MLB, League.NPB})
+BASEBALL_LEAGUES = frozenset({League.KBO, League.MLB})
+
+# ── ★ **타순을 실제로 주는 리그** (2026-09-23 실측 · v1.86) ──────────
+#
+# 미리보기가 온다고 타순이 오는 것은 아니다. **다른 측정이다.**
+#   KBO  미리보기 6/6 · 타순 9/9 인 경기 **6/6**   ← 준다
+#   MLB  미리보기 1/6 · 타순 9/9 인 경기 **0/6**   ← 칸(`awayTeamLineUp`)은
+#                                                   있는데 **늘 비어 있다**
+#   NPB  미리보기 0/6                               ← 창구 자체가 없다
+#
+# 그래서 **야구 타순은 KBO만 의무**다. 이 표를 한 곳에 두어 수집기와
+# 아침표(의무 판정)가 **같은 것을 본다** — 두 벌로 적으면 어긋난 쪽이
+# 조용히 이긴다(약점 198, 리더보드에서 NPB로 이미 당했다).
+LINEUP_SOURCE_LEAGUES = frozenset({League.KBO})
 FOOTBALL_LEAGUES = frozenset({League.KL1})
 BASKETBALL_LEAGUES = frozenset({League.KBL})
 

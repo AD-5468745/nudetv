@@ -87,9 +87,19 @@ def duty(content: str, lg: League) -> bool:
         return False                      # 일부러 꺼 둔 것은 의무가 아니다
     if content in NOT_BUILT:
         return False                      # 아직 안 만든 것은 사고가 아니다
-    if content in ("anchor", "lineup", "kickoff", "final_flash",
+    if content in ("anchor", "kickoff", "final_flash",
                    "league_result", "period_flash", "morning"):
         return True                       # 전 리그 공통
+    if content == "lineup":
+        # ★ **야구와 축구는 명단을 받는 창구가 다르다** (v1.86).
+        #   축구는 경기 상세(`fill_lineups`)에서 온다 — 전 리그 온다.
+        #   야구는 미리보기의 타순인데 **KBO만 준다**(2026-09-23 실측:
+        #   KBO 6/6 · MLB 0/6 · NPB 창구 없음).
+        #   여기서 리그를 다시 적지 않고 수집기가 가진 표를 읽는다.
+        from adapters import naver_preview as _NP2       # noqa: PLC0415
+        if lg in _NP2.BASEBALL_LEAGUES or unit is ScoreUnit.RUNS:
+            return lg in _NP2.LINEUP_SOURCE_LEAGUES
+        return True
     if content == "pregame":
         # ★ **여기서 리그를 다시 적지 않는다** (v1.80에서 바로잡음).
         #   사전정보는 소스에 `/preview` 창구가 있는 리그에만 있다.

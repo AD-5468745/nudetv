@@ -1242,7 +1242,11 @@ def _enrich_baseball_lineup(league, games: list, now: datetime) -> int:
     """
     try:
         from adapters import naver_preview as _NP
-        if league not in getattr(_NP, "BASEBALL_LEAGUES", ()):
+        # ★ **타순을 실제로 주는 리그에서만 시도한다** (v1.86).
+        # 전에는 `BASEBALL_LEAGUES`(야구 셋)를 봤는데, 그중 타순을 주는
+        # 것은 **KBO 하나뿐**이다(실측: MLB 0/6 · NPB 창구 없음).
+        # 표를 수집기가 갖고 아침표도 같은 것을 본다 — `naver_preview`.
+        if league not in getattr(_NP, "LINEUP_SOURCE_LEAGUES", ()):
             return 0                      # 축구는 `_enrich_lineup` 이 맡는다
     except Exception:                                    # noqa: BLE001
         return 0

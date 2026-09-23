@@ -1245,13 +1245,21 @@ def body_starters(away_name: str, home_name: str,
         g = f"{d['games']}경기 " if d.get("games") is not None else ""
         return f"{g}{d['w']}승 {d['l']}패"
 
-    def _rate(d: dict) -> str:
-        bits = []
-        if d.get("era"):
-            bits.append(f"ERA {d['era']}")
-        if d.get("whip"):
-            bits.append(f"WHIP {d['whip']}")
-        return " · ".join(bits)
+    # ── ★★★ **ERA와 WHIP을 한 줄에 넣지 않는다** (v1.86) ─────────────
+    #
+    # 전에는 `ERA 2.80 · WHIP 1.02` 를 한 칸에 넣었다. 비교표의 값 칸은
+    # 가운데 라벨을 빼고 남는 폭이라 좁고, v1.69에서 글자를 키운 뒤로는
+    # **매번 두 줄로 접혔다.** 카드 품질 게이트가 접힘을 잡아 카드를
+    # 통째로 버리므로 — **사전정보가 그날 이후 한 장도 안 나갔다**
+    # (실측 2026-09-23: `접힘(2.0줄): ERA 2.80 · WHIP 1.02`).
+    #
+    # 공용 `.cmp` CSS를 넓히면 분석 카드까지 흔들린다. **그 줄만 나눈다** —
+    # 한 줄이 늘지만 둘 다 제 칸에 들어가고, 읽기도 오히려 낫다.
+    def _era(d: dict) -> str:
+        return f"{d['era']}" if d.get("era") else ""
+
+    def _whip(d: dict) -> str:
+        return f"{d['whip']}" if d.get("whip") else ""
 
     def _work(d: dict) -> str:
         bits = []
@@ -1277,8 +1285,8 @@ def body_starters(away_name: str, home_name: str,
             '<div class="x">VS</div><div>'
             f'<div class="n r"><b class="tn">{esc(home.get("name", ""))}</b></div>'
             f'<div class="p r">{esc(home_name)}</div></div></div>']
-    for label, fn in (("시즌", _wl), ("비율", _rate), ("소화", _work),
-                      ("이 상대", _vs)):
+    for label, fn in (("시즌", _wl), ("ERA", _era), ("WHIP", _whip),
+                      ("소화", _work), ("이 상대", _vs)):
         la, lh = fn(away), fn(home)
         if not (la or lh):
             continue

@@ -210,9 +210,37 @@ for lg in _leagues:
                             ad.fill_lineups([g])
                         except Exception:                      # noqa: BLE001
                             pass
+                # ── ★★★ **`확인못함` 으로 끝내지 않는다** (2026-09-23) ──────
+                #
+                # 예정 경기를 골랐는데 아직 명단이 안 나왔으면 여기서 포기했다.
+                # 그래서 **낮 시간에는 야구 선발이 늘 `확인못함`** 이었고,
+                # 대표님이 열흘 넘게 "경기를 기다려야 한다"는 말을 들었다.
+                # *"이렇게 작업 미완성 시킨 채로 계속 갈 수 없어."*
+                #
+                # 그런데 소스는 **끝난 경기의 미리보기를 계속 준다**(실측
+                # 2026-09-23: KBO 12/12 · MLB 11/12 · K리그 12/12 · NPB 0/12).
+                # 그러니 기다릴 이유가 없다 — **가장 최근 끝난 경기를 킥오프
+                # 2시간 전으로 되돌려 다시 잰다.** 그래도 재료가 없으면
+                # 그때야 `확인못함` 이고, 그건 **소스에 없다는 뜻**이다.
+                if not (g.meta and g.meta.lineup) and not _rewound and fin:
+                    g = copy.deepcopy(fin[0])
+                    g.status = Status.SCHEDULED
+                    when = g.start_utc - timedelta(hours=2)
+                    _rewound = True
+                    if unit is C.ScoreUnit.RUNS:
+                        T._enrich_baseball_lineup(lg, [g], when)
+                    else:
+                        try:
+                            from adapters.naver_football import NaverFootballAdapter
+                            _ad2 = NaverFootballAdapter(lg)
+                            if hasattr(_ad2, "fill_lineups"):
+                                _ad2.fill_lineups([g])
+                        except Exception:                      # noqa: BLE001
+                            pass
                 if not (g.meta and g.meta.lineup):
                     say(lg_v, name, "확인못함",
-                        "아직 명단 발표 전 (경기 임박해야 나옴)"); continue
+                        "예정에도 지난 경기에도 명단이 없음 "
+                        "(소스가 이 리그 명단을 안 주는지 보세요)"); continue
                 card = R.lineup_card(g, lg, now=when)
                 if not card:
                     say(lg_v, name, "실패", "카드가 None"); continue
