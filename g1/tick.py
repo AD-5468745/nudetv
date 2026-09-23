@@ -2515,6 +2515,42 @@ def _index_post_id(v) -> int:
     return int(tail) if tail.isdigit() else 0
 
 
+def _index_sport_tail(item) -> str:
+    """오늘의 경기 항목의 종목 꼬리. 종목 글이 아니면 빈 문자열 (v1.93).
+
+    scope 는 `날짜#시각#종목` 또는 `날짜#시각#목차` 또는 옛 꼴 `날짜#시각`.
+    """
+    if item.content_type is not ContentType.DAILY_INDEX:
+        return ""
+    t = item.scope.rsplit("#", 1)[-1] if "#" in item.scope else ""
+    if t in ("", "목차") or t.isdigit() or t == (item.sports_day or ""):
+        return "목차" if t == "목차" else ""
+    return t
+
+
+def _index_pool_for(item, pool: list) -> list:
+    """그 글에 **실을 수 있는 경기만** 돌려준다 (v1.93 · 실제 사고).
+
+    ★ 발송기는 `BUNDLE_LINK_CONTENT` 에 든 글에 **그날 전 경기**의 바로가기
+      줄과 버튼을 붙인다. v1.92 에서 오늘의 경기를 종목별로 쪼갰는데 이곳을
+      안 고쳐서, **축구 글 아래에 야구 링크와 버튼이 붙어 나갔다**
+      (2026-09-24 00:07 실발행 · 적대적 검토가 잡음).
+      `#축구 · 축구 1경기` 라고 써 놓고 야구 6줄을 다는 것은 손님이 사실과
+      다르게 아는 것이다 — 심각도 높음.
+
+    · 종목 글  → 그 종목 경기만
+    · 목차     → **아무것도 안 붙인다.** 목차의 버튼은 종목 글로 가는
+                 것이고, 거기에 경기 버튼을 섞으면 두 뜻이 겹친다.
+    · 옛 꼴    → 전부 (지금까지와 같다)
+    """
+    tail = _index_sport_tail(item)
+    if not tail:
+        return pool
+    if tail == "목차":
+        return []
+    return [g for g in pool if sport_of(g.league)[0] == tail]
+
+
 def _index_links(day: str, *, username: str | None = None) -> dict:
     """`{game_id: 그 앵커로 가는 주소}`.
 
@@ -2609,7 +2645,7 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
                                       _pool, day,
                                       name_of=lambda lg, t: _C5t._nm(lg, t)),
                                   buttons=_btn)
-            elif _tail and _tail != day:
+            elif _tail and not _tail.isdigit() and _tail != day:
                 # 종목 글 — **번호를 적어 둔다.** 목차 버튼과 앵커 갱신이
                 # 둘 다 이 번호를 쓴다.
                 rec.setdefault("sports", {})[_tail] = int(message_ids[0])
@@ -3255,9 +3291,19 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                 return None
             _txt = P.daily_index_toc_text(_pool, item.sports_day,
                                           name_of=_nmf)
-            return [], [_txt] if _txt else None
+            # ⚠️ `return [], [_txt] if _txt else None` 이라고 쓰면 파이썬은
+            #    `([], ([_txt] if _txt else None))` 으로 읽는다 — 빈 글일 때
+            #    `None` 이 아니라 `([], None)` 이 나가고, 부르는 쪽이
+            #    `parts[0]` 에서 터진다(적대적 검토가 잡음).
+            if not _txt:
+                return None
+            return [], [_txt]
 
-        if _tail and _tail not in ("", item.sports_day):
+        # ⚠️ 옛 꼴 scope 는 `날짜#시각`(예: `2026-09-24#0005`)이라 꼬리가
+        #    **숫자**다. 그걸 종목으로 착각하면 짝이 없어 `None` 을 내고,
+        #    커밋에 적어 둔 되돌리기 절차가 **조용히 안 먹는다**
+        #    (적대적 검토가 잡음: "옛 꼴 처리는 닿을 수 없는 죽은 코드").
+        if _tail and not _tail.isdigit() and _tail != item.sports_day:
             # 종목 글 한 통
             for _lb, _ic, _n, _t in P.daily_index_by_sport(
                     _pool, item.sports_day, links=_lk, name_of=_nmf):
@@ -4017,6 +4063,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                     from contract import (TELEGRAM_CAPTION_MAX as _CAPMAX,
                                           TELEGRAM_TEXT_MAX as _TXTMAX)
                     _gpool = (pool if item.league is None else games) or pool
+                    _gpool = _index_pool_for(item, _gpool)   # v1.93
+                    if not _gpool and item.content_type is ContentType.DAILY_INDEX:
+                        raise StopIteration                  # 목차엔 안 붙인다
                     _base = payload.caption if photos else payload.text
                     _room = ((_CAPMAX if photos else _TXTMAX)
                              - len(_base or "") - 2)
@@ -4033,7 +4082,7 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                                               caption=(_base or "") + _ln)
                         else:
                             payload = replace(payload, text=(_base or "") + _ln)
-                except Exception:                        # noqa: BLE001
+                except (StopIteration, Exception):       # noqa: BLE001
                     pass                                 # 링크 때문에 글을 잃지 않는다
 
             # ── **오늘의 경기에는 경기 버튼을 붙인다** (v1.50) ─────
@@ -4047,13 +4096,16 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             if item.content_type is ContentType.DAILY_INDEX:
                 try:
                     import cards_v5 as _C5b
+                    _bpool = _index_pool_for(item, all_games or games)
+                    if not _bpool:
+                        raise StopIteration              # 목차 — 종목 버튼만 단다
                     _btns = P.daily_index_buttons(
-                        all_games or games, item.sports_day,
+                        _bpool, item.sports_day,
                         links=_index_links(item.sports_day),
                         name_of=lambda lg, t: _C5b._nm(lg, t), now=_now())
                     if _btns:
                         payload.buttons = _btns
-                except Exception:                        # noqa: BLE001
+                except (StopIteration, Exception):       # noqa: BLE001
                     pass                                 # 버튼 때문에 글을 잃지 않는다
 
             # ── **토론방으로 보낼 것인가** (v1.39) ─────────────────
