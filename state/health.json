@@ -1,10 +1,10 @@
 {
- "at": "2026-09-23T20:25:53.350431+00:00",
+ "at": "2026-09-23T20:29:35.179275+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-23T20:25:53.350431+00:00",
    "count": 238,
-   "stale_hours": 0.0,
+   "stale_hours": 0.1,
    "finals_utc": [
     "13:07",
     "13:07",
@@ -12,7 +12,7 @@
    ]
   },
   "MLB": {
-   "at": "2026-09-23T20:25:53.350431+00:00",
+   "at": "2026-09-23T20:29:35.179275+00:00",
    "count": 91,
    "stale_hours": 0.0,
    "finals_utc": [
@@ -43,7 +43,7 @@
   "NPB": {
    "at": "2026-09-23T20:25:53.350431+00:00",
    "count": 289,
-   "stale_hours": 0.0,
+   "stale_hours": 0.1,
    "finals_utc": [
     "08:25",
     "08:37",
@@ -91,7 +91,7 @@
   "MLS": {
    "at": "2026-09-23T20:25:53.350431+00:00",
    "count": 16,
-   "stale_hours": 0.0
+   "stale_hours": 0.1
   }
  },
  "korean_players": {
@@ -105,7 +105,7 @@
  },
  "alert_lines": 0,
  "lost_lines": 4,
- "status_lines": 23,
+ "status_lines": 19,
  "lost_kinds": [
   "unqueued_final_flash",
   "unqueued_kickoff",
