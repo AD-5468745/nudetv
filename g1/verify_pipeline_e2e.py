@@ -131,10 +131,35 @@ _args = [a.upper() for a in sys.argv[1:]]
 _leagues = [l for l in League if C.league_enabled(l)
             and (not _args or l.value in _args)]
 
+def _why_records(lg) -> str:
+    """기록실이 왜 비었는지 **리그에 맞게** 말한다 (2026-09-23).
+
+    전에는 무엇이든 `유럽은 토큰이 있어야 함` 이라고 적었다. 그런데 이 줄은
+    MLB·K리그에도 그대로 찍혔다 — **유럽이 아닌데 유럽 얘기를 하니** 보는
+    사람이 원인을 잘못 짚는다. 틀린 안내는 사고보다 나쁘다(심각도 높음).
+    """
+    import os
+    if lg in getattr(P, "FOOTBALL_DATA_LEAGUES", ()) or lg.value in (
+            "EPL", "LALIGA", "SERIEA", "BUNDESLIGA", "LIGUE1", "UCL", "UEL"):
+        if not os.environ.get("FOOTBALL_DATA_TOKEN"):
+            return ("기록실 없음 — **FOOTBALL_DATA_TOKEN 이 비어 있습니다** "
+                    "(깃허브 Secrets에 넣어야 유럽 순위·분석이 나갑니다)")
+        return "기록실 없음 — 토큰은 있는데 순위표를 못 받았습니다"
+    return (f"기록실 없음 — {lg.value} 순위표를 못 받았습니다 "
+            f"(이 리그 기록 수집을 보세요 · 토큰과 무관)")
+
+
 for lg in _leagues:
     lg_v = lg.value
     try:
-        games = fetch(lg) or []
+        # ★★★ **시계가 쓰는 스냅샷을 먼저 본다** (2026-09-23).
+        #   `fetch()` 는 소스 원본만 준다 — 명단·득점·구간 같은 **보강 재료는
+        #   수집 단계(`collect`)에서 얹힌다.** 그걸 안 보고 원본만 재다가
+        #   "명단이 없다"며 리그 전체를 `확인못함` 으로 찍었다(실측: EPL
+        #   스냅샷에는 명단이 26건 들어 있었다).
+        #   스냅샷이 비어 있을 때만 원본을 받는다 — 그때는 보강 없는 판정이라
+        #   `확인못함` 이 나와도 그게 맞다.
+        games = (T.all_games().get(lg.value) or []) or (fetch(lg) or [])
     except Exception as e:                                     # noqa: BLE001
         say(lg_v, "수집", "확인못함", f"{e.__class__.__name__}: {str(e)[:40]}")
         continue
@@ -160,7 +185,7 @@ for lg in _leagues:
             if ct is ContentType.ANALYSIS:
                 if rb is None:
                     say(lg_v, name, "확인못함",
-                        "기록실을 못 받음 (유럽은 토큰이 있어야 함)"); continue
+                        _why_records(lg)); continue
                 if not up:
                     say(lg_v, name, "확인못함", "예정 경기가 없음"); continue
                 q = P.build_queue(games, now, "e2e", floor_hours=0, horizon_hours=30)
@@ -223,8 +248,24 @@ for lg in _leagues:
                 # 2시간 전으로 되돌려 다시 잰다.** 그래도 재료가 없으면
                 # 그때야 `확인못함` 이고, 그건 **소스에 없다는 뜻**이다.
                 if not (g.meta and g.meta.lineup) and not _rewound and fin:
-                    g = copy.deepcopy(fin[0])
+                    # ★ **이미 명단이 들어 있는 경기를 먼저 고른다** (2026-09-23).
+                    #   수집기가 매 틱 축구 명단을 채워 스냅샷에 넣어 둔다
+                    #   (`[라인업] EPL 명단 8건`). 그런데 여기서 무조건
+                    #   `fin[0]`(가장 최근)만 집었더니, 그 한 경기에 명단이
+                    #   없으면 **리그 전체가 `확인못함`** 이 됐다 —
+                    #   바로 옆 경기에는 들어 있는데도.
+                    # ★★ **그 리그 경기 전체에서 찾는다** (2026-09-23).
+                    #   `fin`은 `끝났고 + 점수가 있는` 것만이라, 수집기가
+                    #   명단을 채워 둔 경기가 그 안에 없을 수 있다.
+                    #   실측: EPL 스냅샷 50경기 중 **명단 26건**인데
+                    #   `fin`에서만 찾다가 리그 전체를 `확인못함`으로 찍었다.
+                    #   재려는 것은 "명단이 있으면 카드가 나오는가"이므로
+                    #   **명단이 있는 경기면 무엇이든 된다.**
+                    _src = next((x for x in games if x.meta and x.meta.lineup),
+                                None) or fin[0]
+                    g = copy.deepcopy(_src)
                     g.status = Status.SCHEDULED
+                    g.score = None          # 시작 전으로 되돌린다
                     when = g.start_utc - timedelta(hours=2)
                     _rewound = True
                     if unit is C.ScoreUnit.RUNS:
