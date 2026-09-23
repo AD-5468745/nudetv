@@ -144,7 +144,19 @@ def _why_records(lg) -> str:
         if not os.environ.get("FOOTBALL_DATA_TOKEN"):
             return ("기록실 없음 — **FOOTBALL_DATA_TOKEN 이 비어 있습니다** "
                     "(깃허브 Secrets에 넣어야 유럽 순위·분석이 나갑니다)")
-        return "기록실 없음 — 토큰은 있는데 순위표를 못 받았습니다"
+        # ★ **어댑터가 남긴 진단을 그대로 보여 준다** (2026-09-23).
+        #   `fd_records._get` 는 실패할 때마다 `상태 403` 같은 줄을 남긴다.
+        #   그걸 안 꺼내 쓰고 "못 받았습니다"로 뭉뚱그리면, 토큰이 죽은 것인지
+        #   호출 제한인지 우리 코드 문제인지 **사람이 또 찾아 나서야 한다.**
+        try:
+            from adapters import fd_records as _FD              # noqa: PLC0415
+            _n = [x for x in _FD.take_notes() if "football-data" in x]
+            if _n:
+                return f"기록실 없음 — 소스가 말한 이유: {' · '.join(_n[:3])}"
+        except Exception:                                       # noqa: BLE001
+            pass
+        return ("기록실 없음 — 토큰은 있는데 순위표를 못 받았습니다 "
+                "(어댑터가 이유를 안 남겼습니다)")
     return (f"기록실 없음 — {lg.value} 순위표를 못 받았습니다 "
             f"(이 리그 기록 수집을 보세요 · 토큰과 무관)")
 
