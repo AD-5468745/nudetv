@@ -4734,9 +4734,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         for n in _bundled:
             if n not in _bs:
                 _bs.append(n)
-        lines.append(
-            f"★★ 묶음 카드 {len(_bs)}건이 댓글로 가려 했습니다 — 그 종류는 "
-            f"경기마다 한 장으로 쪼개야 합니다: " + " · ".join(_bs[:3]))
+        _msg = (f"★★ 묶음 카드 {len(_bs)}건이 댓글로 가려 했습니다 — 그 종류는 "
+                f"경기마다 한 장으로 쪼개야 합니다: " + " · ".join(_bs[:3]))
+        lines.append(_msg)
+        # **로그에도 찍는다** (v2.07) — 이 줄 하나가 NPB 사고를 곧장 가리켰다.
+        # `lines` 는 텔레그램·health.json 으로만 가서, 로그를 보는 사람은
+        # 989번 기다림의 이유를 볼 수 없었다.
+        print(f"  📦 {_msg}")
+        for _n in _bs[:10]:
+            print(f"       · {_n}")
         _bundled.clear()
     # ── 명단이 있었는데 못 나간 경기 (v1.65) ──────────────────────
     #
