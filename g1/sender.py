@@ -431,6 +431,30 @@ class Transport:
         return out["result"]
 
 
+# ── 투표를 "더 닫을 수 없는" 상태 (v2.01) ────────────────────────────
+#
+# `stopPoll` 이 거절하는 이유는 두 갈래인데 뜻이 정반대다.
+#   · **이미 닫혔다 / 글이 없다** → 할 일이 끝난 것이다. 다시 시도하면 안 된다.
+#   · 그 밖(통신 오류·레이트리밋)     → 일시적이다. 다음 틱에 다시 해야 한다.
+# 둘을 똑같이 `None` 으로 뭉개면, 끝난 일을 유예가 다할 때까지 되풀이하고
+# 장부에는 "지각 폐기" 라는 **사실과 반대되는 줄**이 남는다.
+POLL_GONE: dict = {"gone": True}
+
+_POLL_GONE_HINTS = (
+    "poll has already been closed",
+    "poll has already",
+    "message to stop poll not found",
+    "message can't be stopped",
+    "message to edit not found",
+    "message is not modified",
+)
+
+
+def _poll_is_gone(desc: str) -> bool:
+    d = (desc or "").lower()
+    return any(h in d for h in _POLL_GONE_HINTS)
+
+
 def _multipart(fields: dict, files: dict[str, tuple[str, bytes]]) -> tuple[bytes, str]:
     b = uuid.uuid4().hex
     out = bytearray()
@@ -996,6 +1020,32 @@ class Sender:
                              last_error=reason))
         return True
 
+    def mark_done(self, item: QueueItem, message_ids: list[int],
+                  reason: str) -> bool:
+        """**발송이 아니라 조작**으로 끝난 항목을 종결한다 (투표 닫기 등).
+
+        `mark_settled` 를 쓰면 안 된다 — 그쪽은 "안 보내고 버렸다"를 적는
+        자리라 `sent_at_utc` 를 비운다. 그러면 장부의 '마지막 발송' 칸이
+        영원히 비어, **제때 한 일이 한 번도 안 한 것처럼 보인다** (v2.01).
+        """
+        with self.led.lock:
+            prev = self.led.get(item.idem_key)
+            if prev and prev.state in SETTLED_STATES:
+                return False
+            if prev and prev.state is SendState.NEEDS_HUMAN:
+                return False
+            base = prev or SendRecord(idem_key=item.idem_key,
+                                      state=SendState.SENT,
+                                      chat_id=channel_ref(self.chat_id),
+                                      content_type=item.content_type)
+            self.led.put(replace(base, state=SendState.SENT,
+                                 message_ids=list(message_ids),
+                                 sent_at_utc=self.now(),
+                                 sent_count=len(message_ids),
+                                 claimed_by=None, lease_expires_utc=None,
+                                 last_error=reason))
+            return True
+
     # ── 발송 ────────────────────────────────────────────────
 
     def _release(self, rec: "SendRecord", reason: str = "",
@@ -1231,11 +1281,20 @@ class Sender:
 
         못 닫아도 **예외를 밖으로 내지 않는다.** 투표 하나 때문에 그 틱의
         다른 발송을 죽일 이유가 없다 — 정산 줄만 빠진다.
+
+        ── ★ **"못 닫음"과 "이미 닫혔음"은 다른 사실이다** (v2.01) ──────
+        전에는 둘 다 `None` 이었다. 그래서 부르는 쪽이 구별을 못 하고
+        **이미 닫힌 투표를 유예가 다할 때까지 2분마다 다시 닫으려 했다**
+        (유예가 6시간이 된 v1.97 뒤로는 한 투표당 180번). 그러고는
+        장부에 `지각 폐기` 로 적혔다 — 실제로는 제때 닫혔는데도.
+        이미 닫혔거나 글이 사라졌으면 `POLL_GONE` 을 돌려준다.
         """
         try:
             res = self.tr.call("stopPoll", {
                 "chat_id": chat_id or self.chat_id,
                 "message_id": int(message_id)})
+        except TelegramError as e:
+            return POLL_GONE if _poll_is_gone(str(e)) else None
         except Exception:                                    # noqa: BLE001
             return None
         if not isinstance(res, dict):

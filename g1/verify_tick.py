@@ -1167,8 +1167,20 @@ print("\n14. 뜸한 시계 — 100분마다 깨어나도 발행이 살아남는�
 from contract import (assert_send_windows, lookahead_for,                # noqa: E402
                       send_window_seconds, QUEUED_CONTENT_TYPES)
 
-check("시계 간격 상수가 실측값을 담는다 (설정값이 아니라)",
-      T.TICK_INTERVAL_SECONDS >= 60 * 60, f"{T.TICK_INTERVAL_SECONDS}초")
+# ── ★★★ **설정한 분이 그대로 초가 되는가** (v2.03 · 실제 사고) ──────────
+# 옛 코드 `max(60, 분) * 60` 은 하한 60을 **분**에 걸어, 2를 넣어도 60분이
+# 됐다. 그 값으로 발송 창 게이트가 돌아 **558틱 내내 거짓 경보**를 냈다.
+# 이 시험은 상수 하나가 아니라 **변환 자체**를 잰다 — 그래야 다시 안 뚫린다.
+check("★★★ 설정한 분이 그대로 초가 된다 (2분 → 120초)",
+      T.tick_interval_seconds("2") == 120, f"{T.tick_interval_seconds('2')}초")
+check("  ↳ 하한은 60**초**다 — 분이 아니다 (0분을 넣어도 1분이지 60분이 아니다)",
+      T.tick_interval_seconds("0") == 60, f"{T.tick_interval_seconds('0')}초")
+check("  ↳ (변이) 옛 계산이면 2분이 60분이 된다 — 그게 사고였다",
+      max(60, 2) * 60 == 3600 and T.tick_interval_seconds("2") != 3600)
+check("  ↳ 안 정하면 옛 기본값(100분)을 지킨다", 
+      T.tick_interval_seconds(None) == 6000, f"{T.tick_interval_seconds(None)}초")
+check("  ↳ 숫자가 아니면 기본값으로 떨어진다 (틱을 죽이지 않는다)",
+      T.tick_interval_seconds("두시간") == 6000)
 # **게이트는 실측 간격으로 돈다** — 여기서도 실측 범위로 본다.
 # 설정 상수(TICK_INTERVAL_SECONDS)는 옛 크론 시절 값(1시간)이라, 연속 운전이
 # 도는 지금의 현실이 아니다. 실측 중앙 5.4분 · 최대 12.2분(2026-09-05, 24시간).
@@ -3846,6 +3858,149 @@ try:
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", False, "안 터짐 — 시험이 무력하다")
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
+
+# ── ★★★ **한 경기짜리 카드를 '묶음'으로 오판하지 않는가** (v2.04 · 실제 사고) ──
+#
+# `_thread_for` 가 `item.game_id in item.scope` 로 "이게 한 경기짜리인가"를
+# 쟀다. NPB 는 경기가 끝나면 번호가 바뀌어 **범위는 안정키**로 적히므로
+# 번호가 범위 안에 없다 → **묶음으로 오판 → 토론방 자리를 무한히 기다림.**
+# 실측 2026-09-23~25 실행 로그: NPB 989회 대기 · 22건 지각 폐기 ·
+# 종료속보/박스스코어/분석/킥오프/프리뷰가 **33시간 0건**.
+_g204 = C.Game(
+    league=C.League.NPB, season="2026", source_key="20260924-NIP-RAK",
+    home=C.TeamRef(C.League.NPB, "RAK"), away=C.TeamRef(C.League.NPB, "NIP"),
+    start_utc=datetime(2026, 9, 24, 9, 0, tzinfo=timezone.utc),
+    home_tz="Asia/Tokyo", status=C.Status.FINAL)
+# **주소를 손으로 적지 않는다** — 계약이 만드는 그대로 쓴다(그게 이 사고의 뿌리다)
+_stable204 = C.game_scope(_g204)
+_drift204 = _g204.game_id
+_it204 = C.QueueItem(
+    idem_key="x", content_type=ContentType.FINAL_FLASH, scope=_stable204,
+    scheduled_utc=NOW, league=C.League.NPB, sports_day="2026-09-24",
+    game_id=_drift204, render_at_utc=NOW)
+check("★★★ 번호가 바뀐 NPB 경기도 **한 경기짜리**로 알아본다 (묶음 오판 금지)",
+      T._is_single_game(_it204, _g204),
+      f"범위 {_stable204} · 번호 {_drift204} — 묶음으로 오판하면 영영 기다린다")
+check("  ↳ (변이) 옛 판정(번호가 범위 안에 있나)은 이 경기를 놓친다",
+      _drift204 not in _stable204,
+      "옛 판정이 우연히 맞으면 이 시험은 아무것도 못 잡는다")
+check("  ↳ 진짜 묶음(시각 버킷)은 여전히 묶음이다",
+      not T._is_single_game(C.QueueItem(
+          idem_key="x", content_type=ContentType.KICKOFF,
+          scope="KBO:2026-09-19@17:00", scheduled_utc=NOW,
+          league=C.League.KBO, sports_day="2026-09-19",
+          game_id="KBO:2026:20260919HHLG0", render_at_utc=NOW), None),
+      "묶음을 한 경기로 보면 나머지 경기 댓글이 영영 빈다 (v1.59 사고)")
+check("  ↳ 경기를 못 넘겨받아도 번호가 안 바뀌는 리그는 그대로 통과한다",
+      T._is_single_game(C.QueueItem(
+          idem_key="x", content_type=ContentType.FINAL_FLASH,
+          scope="KBO:2026-09-24:KBO:2026:20260924LTLG0", scheduled_utc=NOW,
+          league=C.League.KBO, sports_day="2026-09-24",
+          game_id="KBO:2026:20260924LTLG0", render_at_utc=NOW), None))
+
+
+# ── ★★★ **구간 속보가 저장·되읽기를 건너서도 살아남는가** (v2.02 · 실제 사고) ──
+#
+# 구간 속보는 2026-09-19 에 만든 뒤 09-25 까지 **한 장도 안 나갔다.**
+# 원인은 그리는 자리가 **되읽은 스냅샷**을 쓰는데 `period` 는 저장되지 않는
+# 칸이라(`META_NOT_PERSISTED`) 다시 판정하면 언제나 `None` 이었던 것이다.
+#
+# **검증 22벌이 전부 통과인 채로 닷새를 살았다.** 기존 시험은 메모리 객체에
+# `period=6` 을 손으로 박고 카드 함수를 직접 불렀다 — **깨지는 자리가 저장과
+# 되읽기 사이인데 그 사이를 아무도 안 건넜다.** 그래서 이 시험은 반드시
+# **왕복**(도장 → 저장 → 되읽기 → 큐 → 렌더)으로 잰다.
+import tempfile as _tmp02
+import pathlib as _pl02
+from dataclasses import replace as _rp02
+
+_root02, _old02 = None, T.ROOT
+try:
+    _root02 = _pl02.Path(_tmp02.mkdtemp())
+    T.ROOT = _root02
+    _now02 = NOW
+    _g02 = C.Game(
+        league=C.League.KBO, season="2026", source_key="v202-test",
+        home=C.TeamRef(C.League.KBO, "KT"), away=C.TeamRef(C.League.KBO, "HH"),
+        start_utc=_now02 - timedelta(hours=1), home_tz="Asia/Seoul",
+        status=C.Status.LIVE, score=C.Score(home=7, away=4, unit=C.ScoreUnit.RUNS),
+        meta=C.GameMeta())
+    _g02.meta.period, _g02.meta.period_state = 6, ""
+    _n02 = T._stamp_periods([_g02], _now02)
+    T._save_games("KBO", [_g02])
+    _back02 = T._load_games("KBO")
+    _b02 = _back02[0]
+    check("★★★ 구간 도장이 **저장·되읽기를 건너서도** 그때의 말을 지킨다",
+          _n02 == 1 and C.period_stamp_label(
+              (_b02.meta.period_seen_at or {}).get("p6")) == "5회 종료",
+          f"도장 {_n02}개 · 되읽은 값 {(_b02.meta.period_seen_at or {})!r}")
+    check("  ↳ 되읽은 경기에는 period 가 없다 (없어지는 것이 정상이다)",
+          _b02.meta.period is None, _b02.meta.period)
+    _q02 = [i for i in P.build_queue(_back02, _now02, "@t")
+            if i.content_type is ContentType.PERIOD_FLASH]
+    check("  ↳ 되읽은 경기로 큐에 올라온다", len(_q02) == 1, len(_q02))
+    _made02 = T.render_for(_q02[0], _back02) if _q02 else None
+    check("★★★ 되읽은 경기로 **카드가 나온다** (여기가 만든 이래 0건이던 자리)",
+          _made02 is not None,
+          "렌더가 None — 옛 증상 그대로다 (저장 안 되는 period 로 다시 판정한다)")
+    # 옛 모양 도장(말이 없는 문자열)이면 **지어내지 않고 안 만든다**
+    _b02.meta.period_seen_at = {"p6": _now02.isoformat()}
+    check("  ↳ (변이) 옛 도장에는 말이 없다 → 지어내지 않고 만들지 않는다",
+          T.render_for(_q02[0], [_b02]) is None if _q02 else False)
+    # 경기가 끝났으면 그 자리는 종료 속보다 — 둘 다 나가면 안 된다
+    _fin02 = _rp02(_b02, status=C.Status.FINAL)
+    _fin02.meta.period_seen_at = dict(
+        (_back02[0].meta.period_seen_at or {}))
+    check("  ↳ 경기가 끝났으면 구간 속보를 안 만든다 (종료 속보와 겹친다)",
+          T.render_for(_q02[0], [_fin02]) is None if _q02 else False)
+finally:
+    T.ROOT = _old02
+
+
+# ── ★★★ **투표를 닫고 장부에 적는가** (v2.01 · 실제 사고) ──────────────
+#
+# `POLL_CLOSE` 분기는 셋 다 `continue` 로 빠져나가며 **대장에 아무것도
+# 안 남겼다.** 그래서 잘 닫힌 투표를 다음 틱이 또 집고, 두 번째부터는
+# 텔레그램이 "이미 닫혔다"고 거절해 유예가 다할 때까지 되풀이하다
+# **`지각 폐기`** 로 기록됐다. 실측 2026-09-25: 투표마감 발송 0건 · 폐기
+# 10건인데 `polls.json` 에는 득표수가 10건 다 있었다 — 일은 됐고
+# **장부만 사실과 반대**였다(심각도 높음).
+def _poll_close_settles(src: str) -> bool:
+    """POLL_CLOSE 분기 안에서 종결을 적는 호출이 있는가 (글자 아니라 AST)."""
+    for node in _ast84.walk(_ast84.parse(src)):
+        if not isinstance(node, _ast84.If):
+            continue
+        t = node.test
+        if not (isinstance(t, _ast84.Compare)
+                and isinstance(t.comparators[0], _ast84.Name)
+                and t.comparators[0].id == "POLL_CLOSE_MARK"):
+            continue
+        names = {n.func.attr for n in _ast84.walk(
+                     _ast84.Module(body=node.body, type_ignores=[]))
+                 if isinstance(n, _ast84.Call)
+                 and isinstance(n.func, _ast84.Attribute)}
+        # 닫은 것(mark_done)과 닫을 게 없는 것(mark_settled) **둘 다** 적어야 한다
+        return {"mark_done", "mark_settled"} <= names
+    return False
+
+
+check("★★★ 투표를 닫으면 **장부에 종결로 적는다** (안 적으면 지각 폐기로 둔갑한다)",
+      _poll_close_settles(_src84),
+      "POLL_CLOSE 분기에 mark_done/mark_settled 가 없다 — 닫아 놓고 또 닫는다")
+check("  ↳ (변이) 옛 모양(종결을 안 적는 코드)에는 반드시 짖는다",
+      not _poll_close_settles(
+          "def f():\n"
+          "    if photos == POLL_CLOSE_MARK:\n"
+          "        _res = snd.close_poll(_pid)\n"
+          "        if _res:\n"
+          "            _poll_save_result(item, _res)\n"
+          "        continue\n"))
+# 이미 닫힌 투표를 **일시 오류와 구별**하는가 — 못 하면 되풀이가 돌아온다
+import sender as _S201
+check("  ↳ '이미 닫힘'은 일시 오류와 다른 값으로 돌아온다",
+      _S201._poll_is_gone("Bad Request: poll has already been closed")
+      and _S201._poll_is_gone("Bad Request: message to stop poll not found")
+      and not _S201._poll_is_gone("Too Many Requests: retry after 5"),
+      "이미 닫힘 판별이 통신 오류까지 같이 삼키면 진짜 재시도가 사라진다")
 
 # ── ★★★ **앵커 주소를 손으로 다시 조립하지 않는가** (v1.95 · 실제 사고) ──
 #

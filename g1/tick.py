@@ -52,7 +52,8 @@ from contract import (sport_of,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
-                      period_alert_key,
+                      SETTLED_STATES, game_scope,
+                      period_alert_key, period_stamp, period_stamp_label,
                       CorrectionSkip,
                       defer_for_precision,
                       BUTTON_CONTENT_TYPES, brand_button,
@@ -170,11 +171,29 @@ DAILY_INDEX_ENABLED = True
 DAILY_INDEX_STATE = ROOT / "daily_index.json"
 
 # **시계가 실제로 몇 분마다 도는가.** 설정한 값이 아니라 실측값을 적는다.
-# 깃허브에 5분(*/5)을 걸어두었지만 실측 간격은 약 100분이었다(17시간에 10회).
 # 이 값으로 아래 게이트가 "발송 창이 시계 간격보다 넓은가"를 매 실행 확인한다.
 # 창이 좁으면 오류 없이 조용히 아무것도 안 나가므로, 사람이 눈치채기 전에 막는다.
-TICK_INTERVAL_SECONDS = max(60, int(
-    os.environ.get("TICK_INTERVAL_MINUTES", "100"))) * 60
+#
+# ── ★ **하한을 분에 걸어 30배로 부풀었다** (v2.03 · 실제 사고) ──────────
+# 전에는 `max(60, 분) * 60` 이었다. 하한 60은 **초**를 뜻한 것인데 괄호가
+# 한 칸 밖에 있어 **분**에 걸렸다 — 그래서 `2` 를 넣든 `59` 를 넣든 언제나
+# **60분**이 됐다. 워크플로는 2분으로 돌고 실측도 6분인데, 게이트는 60분으로
+# 재며 **558틱 내내** 이렇게 말했다:
+#     ⚠️ [발송 창] 시계가 60분마다 도는데 발송 창이 좁습니다 — 조용히 사라집니다
+#     anchor · goal_flash · kickoff · period_flash · pregame
+# 다섯 종 다 멀쩡히 나가고 있었다. **거짓 경보였고, 진짜 사고가 여기 묻힌다.**
+# (발송을 막지는 않았다 — `assert_send_windows` 는 경고만 남긴다.)
+def tick_interval_seconds(raw: "str | None") -> int:
+    """설정한 **분**을 초로 바꾼다. 하한은 60**초**다(분이 아니다)."""
+    try:
+        minutes = int(str(raw if raw not in (None, "") else "100").strip())
+    except ValueError:
+        minutes = 100
+    return max(60, minutes * 60)
+
+
+TICK_INTERVAL_SECONDS = tick_interval_seconds(
+    os.environ.get("TICK_INTERVAL_MINUTES"))
 
 # 리그 하나가 이보다 오래 걸리면 틱 전체가 밀린다. 넘으면 알림에 올린다.
 SLOW_FETCH_SECONDS = 60
@@ -1606,7 +1625,9 @@ def _stamp_periods(games: list, now: datetime) -> int:
         seen = dict(m.period_seen_at or {})
         if key in seen:
             continue
-        seen[key] = _iso(now)
+        # **말을 같이 찍는다** (v2.02) — 그리는 자리는 되읽은 스냅샷을 쓰는데
+        # 거기엔 `period` 가 없다. 여기서 안 적으면 그쪽이 영영 못 만든다.
+        seen[key] = period_stamp(_iso(now), label)
         m.period_seen_at = seen
         n += 1
     return n
@@ -2884,7 +2905,24 @@ def _anchor_keys(item, channel: str) -> list:
     return out
 
 
-def _thread_for(item, ledger, disc, channel: str):
+def _is_single_game(item, game=None) -> bool:
+    """이 항목이 **그 경기 하나만 담은 카드**인가 (= 댓글로 갈 자격이 있나).
+
+    판정은 `contract.game_scope()` 한 곳이 한다. 경기를 못 넘겨받았을 때만
+    옛 판정(번호가 범위 안에 있나)으로 떨어진다 — 그 길은 번호가 안 바뀌는
+    리그(KBO·MLB 등)에서만 맞다.
+    """
+    base = str(item.scope or "").split("#", 1)[0]
+    if game is not None:
+        try:
+            if base == game_scope(game):
+                return True
+        except Exception:                                # noqa: BLE001
+            pass
+    return str(item.game_id) in str(item.scope or "")
+
+
+def _thread_for(item, ledger, disc, channel: str, game=None):
     """이 항목을 달아야 할 **토론방 글 번호**. 채널로 보내야 하면 None.
 
     고리는 셋이다 —
@@ -2914,7 +2952,21 @@ def _thread_for(item, ledger, disc, channel: str):
     # `그 경기 하나만 담은 카드`에만 있다. 범위 문자열에 그 경기 번호가
     # 들어 있지 않으면 묶음이다 — 종류를 새로 만들 때 같은 실수를 해도
     # 여기서 잡히고, 조용히 지나가지 않는다.
-    if str(item.game_id) not in str(item.scope or ""):
+    # ── ★★★ **번호로 재면 NPB가 통째로 걸린다** (v2.04 · 같은 병 여덟 번째) ──
+    #
+    # 전에는 `item.game_id in item.scope` 로 쟀다. 그런데 NPB는 경기가 끝나면
+    # npb.jp 가 경기 번호를 바꾸므로 **범위는 안정키**로 적힌다:
+    #     범위    NPB:2026-09-24:g:2026-09-24:RAK:NIP      ← game_scope()
+    #     번호    NPB:2026:20260924-NIP-RAK                ← 소스 원본
+    # 번호가 범위 안에 없으니 **한 경기짜리 카드를 '묶음'으로 오판**하고
+    # 여기서 `None` 을 돌려줬다. 그러면 바로 아래 분기가 토론방 자리를
+    # 무한히 기다리게 한다 — 실측 2026-09-23~25 실행 로그: NPB 989회 대기,
+    # 종료속보·박스스코어 22건이 6시간 뒤 지각 폐기, **33시간 0건**.
+    #
+    # 판정을 **계약 한 곳**(`game_scope`)으로 되돌린다. 경기를 못 넘겨받은
+    # 경우에만 옛 판정으로 떨어진다(그 길은 KBO·MLB처럼 번호가 안 바뀌는
+    # 리그에서만 맞다).
+    if not _is_single_game(item, game):
         _bundled.append(f"{item.content_type.value} {item.scope}")
         return None
     try:
@@ -3618,16 +3670,28 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         if _lg is None or _one is None or _one.meta is None:
             return None
         _pk = item.scope.split("#", 1)[1] if "#" in item.scope else ""
-        _label = ""
         _m = _one.meta
-        _k2, _lb2 = period_alert_key(
-            _lg, _m.period, _m.period_state or "",
-            bool(getattr(_one, "is_terminal", False)))
-        if _k2 == _pk and _lb2:
-            _label = _lb2
-        else:
-            # 구간이 이미 지나갔다 — 그때의 말은 스냅샷에 없다. 지어내지 않고
-            # 만들지 않는다. 그 구간은 종료 속보 흐름표가 싣는다.
+        # ── ★ **여기가 만든 이래 0건이던 자리다** (v2.02) ────────────────
+        # 전에는 `period_alert_key(_lg, _m.period, ...)` 로 **다시 판정**했다.
+        # 그런데 이 함수는 **되읽은 스냅샷**으로 그리고 `period` 는 저장되지
+        # 않는 칸이라(`META_NOT_PERSISTED`) 언제나 `None` → `(None, "")` →
+        # 언제나 `return None`. 2026-09-19 만든 뒤 09-25 까지 **0건**.
+        # 이제 **도장에 적힌 그때의 말**을 쓴다(관측된 사실이라 안 묵는다).
+        _label = period_stamp_label((_m.period_seen_at or {}).get(_pk))
+        if not _label:
+            # 옛 도장(말이 없는 것)은 지금 값으로 한 번 더 판정해 본다.
+            _k2, _lb2 = period_alert_key(
+                _lg, _m.period, _m.period_state or "",
+                bool(getattr(_one, "is_terminal", False)))
+            _label = _lb2 if (_k2 == _pk and _lb2) else ""
+        if not _label:
+            # 그때의 말을 모른다 — 지어내지 않고 만들지 않는다.
+            # 그 구간은 종료 속보 흐름표가 싣는다.
+            return None
+        if bool(getattr(_one, "is_terminal", False)):
+            # **경기가 끝났으면 그 자리는 종료 속보다** — 둘 다 나가면 같은
+            # 사실이 두 번 나간다(`period_alert_key` 의 `is_terminal` 규칙을
+            # 도장을 쓰게 되면서 여기로 옮겨 적은 것이다).
             return None
         return _try_v5("period", lambda R: R.period_card(
             _one, _lg, label=_label, now=_now()))
@@ -4073,16 +4137,45 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             elif photos == POLL_CLOSE_MARK:
                 # **닫기는 발송이 아니다.** 열려 있던 투표를 멈추고 득표수를
                 # 받아 적는다. 못 닫아도 그 틱의 다른 발송을 죽이지 않는다.
+                # ── ★ **닫아 놓고 장부에 안 적었다** (v2.01) ──────────
+                #
+                # 여기는 셋 다 `continue` 로 빠져나가면서 **대장에 아무것도
+                # 안 남겼다.** 그래서 잘 닫힌 투표도 다음 틱이 또 집었고,
+                # 두 번째부터는 텔레그램이 "이미 닫혔다"고 거절해 유예가
+                # 다할 때까지 되풀이하다 **`지각 폐기` 로 기록**됐다.
+                # 실측 2026-09-25: 투표마감 만든 이래 발송 0건 · 폐기 10건인데
+                # `polls.json` 에는 **득표수가 10건 다 들어 있었다** — 즉
+                # 일은 제때 됐고 장부만 반대로 적혀 있었다(심각도 높음).
+                from sender import POLL_GONE as _PGONE
                 _pid = _poll_message_id(item)
                 if not _pid:
-                    _note_skip(item, "닫을 투표를 못 찾음")
+                    # 투표가 애초에 안 나갔으면 닫을 것이 없다. 그건 지각이
+                    # 아니라 **처음부터 할 일이 없는 것**이라 그렇게 적는다.
+                    _prec = snd.led.get(idem_key(snd.chat_id,
+                                                 ContentType.POLL, item.scope))
+                    if (_prec is not None and _prec.state in SETTLED_STATES
+                            and _prec.state is not SendState.SENT):
+                        snd.mark_settled(item, SendState.SKIPPED_FINAL,
+                                         "닫을 투표가 없다 — 투표가 나간 적 없음")
+                        print(f"    🗳 닫을 투표 없음 {item.scope} "
+                              f"(투표 자체가 안 나갔다 · 대장에 종결로 기록)")
+                    else:
+                        # 아직 글번호가 안 돌아온 것일 수 있다 — 다음 틱에 다시.
+                        _note_skip(item, "닫을 투표를 못 찾음")
                     continue
                 _res = snd.close_poll(_pid)
-                if _res:
+                if _res is _PGONE:
+                    snd.mark_done(item, [int(_pid)],
+                                  "이미 닫혀 있던 투표 — 더 할 일 없음")
+                    print(f"    🗳 이미 닫혀 있음 {item.scope} (대장에 종결로 기록)")
+                elif _res:
                     _poll_save_result(item, _res)
+                    snd.mark_done(item, [int(_pid)],
+                                  f"투표 닫음 — {_res['total']}표")
                     print(f"    🗳 투표 닫음 {item.scope} — "
                           f"{_res['total']}표 {_res['counts']}")
                 else:
+                    # 일시 오류만 여기로 온다 — 다음 틱에 다시 시도한다.
                     _note_skip(item, "투표를 못 닫음")
                 continue
             else:
@@ -4180,7 +4273,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             # 대표님 설계: 채널에는 앵커 한 장, 세부는 전부 그 글의 댓글.
             # 앵커의 채널 글 번호 → 토론방 글 번호 지도가 있어야 댓글을 단다.
             # **없으면 지금까지처럼 채널로 간다** — 자리가 바뀔 뿐, 잃지 않는다.
-            _thread = _thread_for(item, led, disc, channel)
+            _one_for_thread = next(
+                (g for g in games if g.game_id == item.game_id), None)
+            _thread = _thread_for(item, led, disc, channel, _one_for_thread)
             if _thread is not None:
                 payload.chat_id_override = DISCUSSION_CHAT_ID
                 payload.reply_to_message_id = _thread

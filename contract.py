@@ -892,6 +892,39 @@ def period_alert_key(league: "League", period, state: str,
     return (None, "")
 
 
+# ── 구간 도장 — 「언제 봤나」에 「그때의 말」을 같이 적는다 (v2.02) ────
+#
+# **왜 모양을 바꿨나.** 도장은 원래 `{키: 본시각}` 이었다. 그런데 구간 속보를
+# 만드는 자리는 **메모리가 아니라 되읽은 스냅샷**으로 그리고, `period` ·
+# `period_state` 는 **저장되지 않는 칸**이다(`META_NOT_PERSISTED` —
+# "저장하면 지난 값이 살아난다"). 그래서 그리는 자리가 `period_alert_key()`
+# 로 **다시 판정**하면 언제나 `period=None` → `(None, "")` 이 되어
+# **만든 이래 한 장도 안 나갔다**(2026-09-19 ~ 09-25 실측 0건).
+#
+# 고치는 방향은 둘이었다. ① `period` 를 저장한다 — 소스가 값을 그만 주면
+# **지난 회차가 되살아나** 틀린 회를 알린다(이 저장소의 제1 규율 위반).
+# ② **도장에 그때의 말을 같이 적는다** — 관측된 사실이라 묵어도 틀리지 않는다.
+# `goal_seen_at` · `first_final_at` 과 같은 꼴이라 ②를 쓴다.
+#
+# 옛 모양(문자열)도 그대로 읽는다 — 이미 저장된 상태가 있기 때문이다.
+def period_stamp(at_iso: str, label: str) -> dict:
+    """구간 도장 한 칸을 만든다."""
+    return {"at": str(at_iso), "label": str(label or "")}
+
+
+def period_stamp_at(raw) -> "Optional[str]":
+    """도장에서 **본 시각**(ISO 문자열)을 꺼낸다. 못 읽으면 None."""
+    if isinstance(raw, dict):
+        v = raw.get("at")
+        return str(v) if v else None
+    return str(raw) if isinstance(raw, str) and raw else None
+
+
+def period_stamp_label(raw) -> str:
+    """도장에서 **그때의 말**을 꺼낸다. 옛 모양에는 말이 없다(빈 문자열)."""
+    return str((raw or {}).get("label") or "") if isinstance(raw, dict) else ""
+
+
 def goal_clock(minute: int, added: int = 0,
                league: "League | None" = None) -> tuple[str, str]:
     """골 하나의 **공식 표기**. `(반, 숫자)`를 돌려준다.

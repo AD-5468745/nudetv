@@ -343,6 +343,7 @@ ANALYSIS_LEAGUES = frozenset({
 # 어긋나 순위표가 영원히 안 나갔다 — 두 값은 반드시 같은 곳에서 나와야 한다.
 from contract import STANDINGS_AFTER_RESULT_SECONDS      # noqa: E402,F401
 from contract import game_scope                          # noqa: E402
+from contract import period_stamp_at                     # noqa: E402
 from contract import (POLL_LEAD_SECONDS, POLL_MAX_PER_DAY)   # noqa: E402
 
 POLL_ENABLED = True
@@ -1286,8 +1287,12 @@ def build_queue(games: list[Game], now: datetime, channel: str,
             # 계약 한 곳(`period_alert_key`)이 정한다: 경기당 2~3건.
             for _pk, _praw in sorted((getattr(g.meta, "period_seen_at", None)
                                       or {}).items() if g.meta else ()):
+                # 도장은 v2.02부터 `{at, label}` 이다 — 옛 문자열도 읽는다.
+                _piso = period_stamp_at(_praw)
+                if not _piso:
+                    continue
                 try:
-                    _pat = datetime.fromisoformat(_praw)
+                    _pat = datetime.fromisoformat(_piso)
                 except (TypeError, ValueError):
                     continue          # 깨진 값 하나가 그 경기를 죽이지 않는다
                 if _pat > hi or not keep_in_queue(_pat, now,
