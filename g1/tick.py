@@ -4898,7 +4898,27 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 여기 **없는 것**: 이미 격리된 항목(quarantined). 전에는 그것이 매 틱
     # failed로 세어져 워크플로가 영원히 빨간불이었고, 진짜 새 사고가 묻혔다.
     # soft(레이트리밋 등)도 없다 — 다음 틱에 풀리고, 안 풀리면 cov가 잡는다.
-    return 1 if (errors or failed or hold or not cov.ok) else 0
+    #
+    # ── ★ **왜 빨간불인지 마지막 줄에 적는다** (v2.07) ────────────────
+    # 전에는 그냥 `1` 을 돌려줬다. 그러면 워크플로가
+    # `Process completed with exit code 1` → "위 로그를 확인하세요" 를 찍는데,
+    # **그 「위 로그」에 이유가 한 줄도 없다.** 실측 2026-09-23~25: 실행 9개
+    # 중 4개가 그렇게 끝났고 사람이 봐도 알 수 없었다(진짜 이유는 커버리지
+    # 경보 한 건이었다 — 유럽 휴식기의 거짓 경보, v2.00에서 고쳤다).
+    _why_red = []
+    if errors:
+        _why_red.append(f"소스·수집 오류 {len(errors)}건")
+    if failed:
+        _why_red.append(f"이번 틱 발송 실패 {failed}건")
+    if hold:
+        _why_red.append("발송 보류(대장 손상·되감김)")
+    if not cov.ok:
+        _why_red.append("커버리지 경보 — "
+                        + " · ".join(str(f) for f in cov.hard[:2]))
+    if _why_red:
+        print("  ❌ 이 실행을 **실패**로 끝냅니다 — " + " / ".join(_why_red))
+        return 1
+    return 0
 
 
 def _crash_alert() -> None:
