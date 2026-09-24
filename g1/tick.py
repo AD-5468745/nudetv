@@ -165,7 +165,7 @@ LOOKAHEAD_SECONDS = max(6, int(os.environ.get("TICK_LOOKAHEAD_MINUTES", "60"))) 
 # 세부 카드는 지금까지처럼 채널로 나간다. 번호는 비밀값이므로 코드에 안 적는다.
 DISCUSSION_CHAT_ID = os.environ.get("DISCUSSION_CHAT_ID", "").strip()
 
-# 오늘의 경기 — 자정 직후 한 통, 채널 맨 위에 고정. 끄면 지금까지와 같다.
+# 오늘의 경기 — 목차 한 통 + 종목별 한 통씩, 채널 맨 위에 목차를 고정. 끄면 지금까지와 같다.
 DAILY_INDEX_ENABLED = True
 # 고정된 글의 번호와 경기별 바로가기를 적어 두는 자리.
 DAILY_INDEX_STATE = ROOT / "daily_index.json"
@@ -511,13 +511,21 @@ def _next_tick_estimate(now: datetime) -> tuple[int, int]:
     한 번도 관측되지 않은 길이로 늘면, 미룬 발행이 유예를 넘겨 사라진다.
 
     그런데 **연속 운전 중에는 추측할 필요가 없다.** 워크플로가 같은 프로세스의
-    for 루프로 5분마다 부르므로, 남은 횟수(`TICK_LOOPS_LEFT`)가 0보다 크면
-    다음 틱은 5분 뒤에 **반드시** 온다. 이건 통계가 아니라 사실이다.
+    for 루프로 정해진 간격마다 부르므로, 남은 횟수(`TICK_LOOPS_LEFT`)가
+    0보다 크면 다음 틱은 반드시 온다. 이건 통계가 아니라 사실이다.
 
     그래서 순서를 이렇게 둔다:
       · 남은 루프가 있다  → 결정론적 값(루프 간격). 미루기가 안전하게 작동한다.
       · 마지막 회차이거나 단발 실행 → **미루지 않는다**(0을 돌려준다).
         다음이 언제 올지 모르는데 미루는 것은 발행을 거는 도박이다.
+
+    ── ★ **잠자는 시간은 간격이 아니다** (v2.05) ────────────────────
+    `TICK_LOOP_INTERVAL_SECONDS` 는 **sleep 길이**다. 실제 간격은 거기에
+    그 회차의 **일한 시간**이 얹힌다 — 실측 2026-09-23~25: 설정 2분,
+    실측 6분. 그런데 사람에게 보이는 글월도 게이트도 2분이라고 말했다
+    (558틱 전부 `다음 틱 예상 2분`). 미루기가 "4분 안에 다음 틱이 온다"를
+    전제로 미루는데 실제로는 6분이 걸리니, 그만큼 창을 더 쓴 셈이다.
+    **최악은 실측을 넘지 않게 잡는다** — 재 본 것이 있으면 그것을 쓴다.
     """
     left_raw = os.environ.get("TICK_LOOPS_LEFT", "").strip()
     if left_raw.isdigit() and int(left_raw) > 0:
@@ -525,9 +533,10 @@ def _next_tick_estimate(now: datetime) -> tuple[int, int]:
             iv = max(60, int(os.environ.get("TICK_LOOP_INTERVAL_SECONDS", "300")))
         except ValueError:
             iv = 300
-        # 최악도 같은 값이다 — 루프는 sleep 뒤 곧바로 다음 회차를 돈다.
-        # 처리 시간이 얹힐 수 있으므로 최악에만 여유를 준다.
-        return iv, int(iv * 2)
+        measured = _measured_interval_seconds(now)
+        # 다음 틱 예상: 실측이 있으면 그것이 사실에 가깝다(sleep + 일한 시간).
+        nxt = max(iv, measured) if measured else iv
+        return int(nxt), int(max(iv * 2, nxt))
     return 0, 0
 
 
@@ -2773,7 +2782,7 @@ def _anchor_message_ids(ledger) -> set:
 
 
 def _fill_thread_buttons(transport, disc, channel: str, ledger) -> None:
-    """전달 번호를 알게 된 **앵커에만** 토론방 버튼을 채운다.
+    """전달 번호를 알게 된 글의 버튼을 채운다 (**앵커에는 버튼을 안 단다** — v1.56).
 
     보낼 때는 못 단다 — 토론방 글 번호는 채널에 올라간 **뒤에** 텔레그램이
     만들기 때문이다. 그래서 알게 된 다음 틱에 버튼만 갈아 끼운다.
@@ -3236,7 +3245,11 @@ def _poll_message_id(item):
 
 
 def _poll_save_result(item, res: dict) -> None:
-    """닫으며 받은 득표수를 적는다. 종료 속보가 정산 줄로 쓴다."""
+    """닫으며 받은 득표수를 적는다.
+
+    ⚠️ **아직 아무 데도 안 내보낸다.** 정산 카드(`POLL_SETTLEMENT`)는
+    `NOT_BUILT_YET` 이라, 지금은 `polls.json` 에 쌓이기만 한다.
+    """
     d = _poll_store()
     row = d.get(str(item.scope)) or {}
     row["result"] = res
@@ -3315,6 +3328,9 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                 return None
             if not _R5.USE_V5[kind]:
                 return None                   # 일부러 꺼 둔 것 — 조용히 넘어간다
+            # **무엇을 만들고 있는지 이름을 걸어 둔다** (v2.06) — 카드 검사에
+            # 걸려 안 나갈 때 로그·알림에 종류와 경기가 같이 실린다.
+            _R5.set_current(f"{kind} {item.scope}")
             made = build(_R5)
             if not made:
                 return None
@@ -3393,7 +3409,7 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
     # 하루 두 번 열릴 때(더블헤더) 엉뚱한 경기를 그린다 — 어댑터에서 이미
     # 한 번 당한 병이다(약점 127).
     elif item.content_type is ContentType.DAILY_INDEX:
-        # ── **오늘의 경기 (v1.39)** — 전 리그 편성 한 통 ──
+        # ── **오늘의 경기 (v1.39 · v1.92에서 종목별로 쪼갬)** — 목차 + 종목별 글 ──
         import cards_v5 as _C5i
         _pool = all_games or games
         _nmf = lambda lg, t: _C5i._nm(lg, t)          # noqa: E731

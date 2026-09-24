@@ -3859,6 +3859,26 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★ **카드가 안 나갔을 때 무엇이 안 나갔는지 적는가** (v2.06 · 실제 사고) ──
+#
+# 33시간 실행 로그에 카드 검사 거부가 **504회** 있었는데, 어느 종류·어느
+# 경기인지가 한 글자도 없었다. 같은 카드가 111번씩 거부되는데 사람이
+# 로그만 보고는 무엇이 빠졌는지 짚을 수 없다 — 그게 조용한 실패다.
+import render_v5 as _R206
+_R206.take_fallbacks()                      # 앞선 시험이 남긴 것을 비운다
+_R206.set_current("final_flash NPB:2026-09-25:g:2026-09-25:YOG:HIR")
+_R206.note_fallback("접힘(2.3줄): 홈런")
+_R206.set_current("")
+_R206.note_fallback("이름이 없는 경우")
+_fb206 = _R206.take_fallbacks()
+check("★★ 카드가 안 나가면 **종류와 경기 이름**이 기록에 실린다",
+      len(_fb206) == 2 and "final_flash" in _fb206[0]
+      and "YOG:HIR" in _fb206[0],
+      f"{_fb206}")
+check("  ↳ (변이) 이름이 안 걸렸으면 사유만 남는다 (없는 이름을 지어내지 않는다)",
+      _fb206[1] == "이름이 없는 경우", _fb206[1] if len(_fb206) > 1 else "—")
+
+
 # ── ★★★ **한 경기짜리 카드를 '묶음'으로 오판하지 않는가** (v2.04 · 실제 사고) ──
 #
 # `_thread_for` 가 `item.game_id in item.scope` 로 "이게 한 경기짜리인가"를

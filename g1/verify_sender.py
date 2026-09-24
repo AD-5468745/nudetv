@@ -960,8 +960,24 @@ _SEND_SEC = 1.0 / _C.PACER_MSG_PER_SECOND
 _tick_worst_sec = _burst_worst * (_RENDER_SEC + _SEND_SEC)
 _tick_worst_sec = max(_tick_worst_sec,
                       _burst_worst / _C.PACER_MSG_PER_MINUTE * 60)   # 분당 상한
-check(f"★ 가장 몰리는 틱을 처리하는 데 {_tick_worst_sec / 60:.1f}분 — 틱 간격(5분)보다 짧다",
-      _tick_worst_sec < 5 * 60, f"{_tick_worst_sec:.0f}초")
+# ── ★ **기준이 「틱 간격」이 아니다** (v2.05) ──────────────────────────
+# 전에는 `_tick_worst_sec < 5*60` 이었다. 5분은 옛 크론 시절 값이고 지금은
+# 연속 운전(sleep 2분 + 일한 시간)이라 **그 숫자가 뜻하는 것이 없다.**
+# 게다가 실측 최악 3.0분은 2분보다 길어서, 글월대로라면 이미 걸렸어야 했다 —
+# **아무것도 안 잡는 게이트**였고 읽는 사람은 간격을 5분으로 알았다.
+#
+# 진짜 위험은 "한 틱이 오래 걸려 **가장 좁은 유예**를 먹어 치우는 것"이다.
+# 그러니 그 유예를 기준으로 잰다 — 계약에서 받아 쓴다(손으로 안 적는다).
+_tight_grace = min(
+    _C.grace_for(ct) for ct in _C.QUEUED_CONTENT_TYPES
+    if ct not in _C.DISABLED_CONTENT_TYPES and ct not in _C.NOT_BUILT_YET)
+check(f"★ 가장 몰리는 틱을 처리하는 데 {_tick_worst_sec / 60:.1f}분 — "
+      f"가장 좁은 유예({_tight_grace / 60:.0f}분)를 먹지 않는다",
+      _tick_worst_sec < _tight_grace,
+      f"{_tick_worst_sec:.0f}초 · 유예 {_tight_grace}초")
+check("  ↳ (변이) 기준이 실제 유예에서 나온다 (손으로 적은 5분이 아니다)",
+      _tight_grace != 5 * 60,
+      "기준이 우연히 5분이면 이 시험은 옛 것과 구별되지 않는다")
 
 # ── 전 리그에 적용되는가 (대표님: "모든 스포츠리그 각 경기마다") ──
 #

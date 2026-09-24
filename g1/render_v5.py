@@ -2089,10 +2089,32 @@ SEND_JPEG_QUALITY = 88
 # 남긴다. 여기 쌓아 두면 틱이 매번 거둬 운영 알림에 싣는다.
 _FALLBACKS: list = []
 
+# ── ★ **무엇이 안 나갔는지 이름을 적는다** (v2.06 · 실제 사고) ────────────
+#
+# 카드 검사에 걸려 안 나간 것이 33시간에 **504회**였는데, 로그에는
+# `카드 결함 — 이번 회차에 내보내지 않습니다: 접힘(2.3줄): 홈런` 처럼
+# **무엇이 · 어느 경기가 빠졌는지가 한 글자도 없었다.** 같은 카드가 111번씩
+# 거부되는데 사람이 로그만 보고는 무엇이 빠졌는지 짚을 수 없다.
+# 틱이 카드를 만들기 직전에 여기 이름을 걸어 두고, 실패 기록에 같이 싣는다.
+_CURRENT: list = [""]
+
+
+def set_current(label: str) -> None:
+    """지금 만들고 있는 카드의 이름(`종류 범위`). 틱이 건다."""
+    _CURRENT[0] = str(label or "")
+
+
+def current() -> str:
+    return _CURRENT[0]
+
+
+def _tag(why: str) -> str:
+    return f"{_CURRENT[0]} — {why}" if _CURRENT[0] else why
+
 
 def note_fallback(why: str) -> None:
     """카드를 못 만들어 이번 틱을 거른 것을 기록한다. 로그만으로는 아무도 안 본다."""
-    _FALLBACKS.append(why)
+    _FALLBACKS.append(_tag(why))
 
 
 def take_fallbacks() -> list:
@@ -2211,12 +2233,15 @@ def _render_once(card_html: str, out: pathlib.Path):
             el.screenshot(path=str(out))
             b.close()
     except Exception as e:                                   # noqa: BLE001
-        print(f"  ⚠️ [v5] 렌더 실패: {e.__class__.__name__}")
+        print(f"  ⚠️ [v5] 렌더 실패"
+              f"{(' [' + current() + ']') if current() else ''}: "
+              f"{e.__class__.__name__}")
         note_fallback(f"카드를 그리지 못해 이번 회차에 안 나갔습니다: {e.__class__.__name__}")
         return None
     if problems:
         _why = " | ".join(problems[:3])
-        print("  ⚠️ [v5] 카드 결함 — 이번 회차에 내보내지 않습니다: " + _why)
+        print(f"  ⚠️ [v5] 카드 결함 — 이번 회차에 내보내지 않습니다"
+              f"{(' [' + current() + ']') if current() else ''}: {_why}")
         note_fallback(f"카드 검사에 걸려 이번 회차에 안 나갔습니다: {_why}")
         return None
     im = Image.open(out).convert("RGB")

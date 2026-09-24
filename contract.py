@@ -1384,7 +1384,7 @@ GRACE_SECONDS: dict[ContentType, int] = {
     # 6시간으로 넓힌다. 늦게 닫아도 **잃는 것이 없다** — 집계는 기록만 하고
     # 아직 아무 데도 안 내보낸다(`POLL_SETTLEMENT` 은 `NOT_BUILT_YET`).
     # 반대로 못 닫으면 그 투표는 **영원히 열린 채** 남는다.
-    ContentType.POLL_CLOSE: 6 * 3600,         # v1.9: 1800 → 480 (열린 투표를 오래 두면 안 된다)
+    ContentType.POLL_CLOSE: 6 * 3600,         # 1800 → 480(v1.9) → 90분(v1.82) → 6시간(v1.97)
     ContentType.INPLAY_BOARD: 600,
     # **킥오프는 예약이 T-10분이고 유예가 9분이라 창이 정확히 [T-10, T-1]이다.**
     # 대표님 규격: "경기 시작 5~10분 전은 괜찮고 경기 시작 이후는 절대 안 된다."
@@ -1580,7 +1580,7 @@ PACER_PRIORITY: dict[ContentType, int] = {
     ContentType.PREGAME: 1,
     # 결과 속보 뒤에 붙는다 — 속보가 먼저 나가야 사람이 결과를 먼저 안다.
     ContentType.BOXSCORE: 5,
-    # 오늘의 경기는 자정 직후 한 통이고, 몇 분 늦어도 뜻이 안 변한다.
+    # 오늘의 경기는 목차 + 종목별 글이고(하루 두 번), 몇 분 늦어도 뜻이 안 변한다.
     ContentType.DAILY_INDEX: 4,
     ContentType.POLL: 3,
     ContentType.ANALYSIS: 3,
@@ -1663,7 +1663,7 @@ def morning_label(now_utc: datetime, first_start_utc: "datetime | None" = None
     시점은 헤드라인이 말한다. 배지는 이 카드가 무엇인지만 말하면 된다.
 
     **2026-09-07: 기준이 시계에서 첫 경기로 바뀌었다.**
-    예고는 이제 07:30이 아니라 **첫 경기 30분 전**에 잡힌다(대표님 확정).
+    예고는 이제 07:30이 아니라 **첫 경기 3시간 30분 전**에 잡힌다(문패보다 30분 앞).
     그러면 "아침이냐"는 뜻이 없다 — MLB는 새벽, 유럽은 심야다.
     뜻이 있는 것은 **첫 경기가 아직 안 시작했느냐**다. 시계가 밀려 첫 경기
     뒤에 나가는 날에는 '예고'라고 우기지 않는다 — 그건 예고가 아니라 안내다.
@@ -1929,8 +1929,12 @@ LOOKAHEAD_SECONDS_BY_CONTENT: dict[ContentType, int] = {
 # 아직 **만들지 않은** 종류. 계약에 이름만 있고 큐에 들어가지 않는다.
 # 만드는 날 여기서 빼면, 바로 아래 게이트가 "앞창을 정하라"고 막아 준다.
 NOT_BUILT_YET: frozenset = frozenset({
-    # v1.78 — `POLL`·`POLL_CLOSE` 를 여기서 뺐다(만들었다). 정산은 제 카드를
-    # 만들지 않고 **종료 속보에 한 줄로** 붙이므로 여전히 안 만든 것이다.
+    # v1.78 — `POLL`·`POLL_CLOSE` 를 여기서 뺐다(만들었다).
+    # ⚠️ **정산은 아직 아무 데도 안 나간다** (2026-09-25 실측 정정).
+    # 전에 여기 "종료 속보에 한 줄로 붙는다"고 적혀 있었는데 **사실이 아니다** —
+    # `render_v5` 어디에도 득표를 읽는 코드가 없다. 투표를 닫으며 받은 득표수는
+    # `state/polls.json` 에 **쌓이기만 한다**(실측 10건). 내보내려면 종료 속보
+    # 카드에 그 줄을 넣고 여기서 빼야 한다.
     ContentType.POLL_SETTLEMENT,
     ContentType.INPLAY_BOARD, ContentType.KOREAN_DAILY,
     ContentType.WEEKLY_PREVIEW, ContentType.WEEKLY_COLUMN,
@@ -2964,7 +2968,7 @@ CORRECTION_MIN_INTERVAL_SECONDS = 900
 
 # 하루에 낼 수 있는 정정 총량(채널 기준).
 # 정정은 UNPLANNED_CONTENT라 일반 하루 상한(daily_max)에서 **면제**된다.
-# 면제만 해두고 상한을 안 두면 정정에는 아무 뚜껑이 없다 — 폭주 차단기(10분 60건)는
+# 면제만 해두고 상한을 안 두면 정정에는 아무 뚜껑이 없다 — 폭주 차단기(10분 90건)는
 # 열 건짜리 폭주를 못 잡는다. 정정 전용 상한을 따로 둔다.
 CORRECTION_DAILY_MAX = 6
 
