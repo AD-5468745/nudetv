@@ -1099,7 +1099,11 @@ def build_queue(games: list[Game], now: datetime, channel: str,
             if _at > hi or not keep_in_queue(_at, now, ContentType.KICKOFF,
                                              league):
                 continue
-            _scope_k = f"{league.value}:{g.sports_day}:{g.game_id}"
+            # ★★★ **주소는 `game_scope()` 하나가 만든다** (v1.98).
+            #   손으로 조립하면 안정키를 쓰는 리그(NPB)에서 앵커와
+            #   **짝이 어긋나** 토론방 자리를 영영 못 찾는다 —
+            #   2026-09-24 실측: 분석이 47번 기다리다 죽었다.
+            _scope_k = game_scope(g)
             items.append(QueueItem(
                 idem_key=idem_key(channel, ContentType.KICKOFF, _scope_k,
                                   start_rev=(g.start_rev or 0)),
@@ -1271,7 +1275,8 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 if _pat > hi or not keep_in_queue(_pat, now,
                                                   ContentType.PERIOD_FLASH):
                     continue
-                _psc = f"{league.value}:{g.sports_day}:{g.game_id}#{_pk}"
+                # 주소는 `game_scope()` 하나가 만든다 (v1.98) — 꼬리만 붙인다.
+                _psc = f"{game_scope(g)}#{_pk}"
                 items.append(QueueItem(
                     idem_key=idem_key(channel, ContentType.PERIOD_FLASH, _psc),
                     content_type=ContentType.PERIOD_FLASH, scope=_psc,
@@ -1483,7 +1488,9 @@ def build_queue(games: list[Game], now: datetime, channel: str,
                 if not keep_in_queue(an_at, now, ContentType.ANALYSIS,
                                      league):
                     continue
-                scope = f"{league.value}:{_g.sports_day}:{_g.game_id}"
+                # 주소는 `game_scope()` 하나가 만든다 (v1.98).
+                # 여기가 **분석과 사전 둘 다** 쓰는 자리다.
+                scope = game_scope(_g)
                 items.append(QueueItem(
                     idem_key=idem_key(channel, ContentType.ANALYSIS, scope),
                     content_type=ContentType.ANALYSIS, scope=scope,

@@ -3880,6 +3880,43 @@ check("  ↳ (변이) 손으로 조립한 주소만으로는 안정키를 못 �
       C.idem_key("-100t", ContentType.ANCHOR,
                  f"NPB:2026-09-23:{_it95.game_id}") != _want95)
 
+# ── ★★★ **경기별 주소를 손으로 조립하지 않는가** (v1.98 · 일곱 번째 사고) ──
+#
+# 같은 병에 오늘까지 **일곱 번** 걸렸다. 마지막 두 번이 이것이다:
+#   v1.95  `_thread_for` 가 앵커 주소를 손으로 조립 → NPB 종료 닷새 정지
+#   v1.98  **큐가 종류마다 주소를 따로 조립** → 분석이 47번 기다리다 죽음
+#          (`analysis NPB:2026-09-24:NPB:2026:20260924-NIP-RAK` 인데
+#           앵커는 `...:g:2026-09-24:RAK:NIP` 로 저장돼 있었다)
+#
+# `game_scope()` 주석에 *"여기 한 곳만 둔다"* 고 적혀 있다. 그런데 사람은
+# 계속 손으로 적는다 — **그러니 사람이 아니라 시험이 막아야 한다.**
+#
+# 소스에서 `리그:날짜:경기id` 꼴을 직접 만드는 자리를 찾는다.
+# 주석은 먼저 걷어낸다(글자로 훑는 검사기의 기본).
+import re as _re98
+_src98 = (pathlib.Path(__file__).resolve().parent / "pipeline.py"
+          ).read_text(encoding="utf-8")
+_code98 = "\n".join(l for l in _src98.splitlines()
+                    if not l.lstrip().startswith("#"))
+_bad98 = _re98.findall(
+    r'f"\{[a-z_.]*league\.value\}:\{[a-z_.]*sports_day\}:\{[a-z_.]*game_id\}',
+    _code98)
+check("★★★ 경기별 주소를 손으로 조립하지 않는다 (`game_scope()` 하나만 쓴다)",
+      not _bad98,
+      f"{len(_bad98)}곳이 직접 만든다 — 안정키 리그에서 앵커와 어긋난다")
+# (변이) 손으로 조립한 소스에는 반드시 짖어야 한다
+_fake98 = 'x = f"{league.value}:{g.sports_day}:{g.game_id}"'
+check("  ↳ (변이) 손으로 조립한 코드에는 짖는다",
+      bool(_re98.findall(
+          r'f"\{[a-z_.]*league\.value\}:\{[a-z_.]*sports_day\}:\{[a-z_.]*game_id\}',
+          _fake98)))
+# (변이) 주석 안의 같은 글자에는 안 짖는다
+check("  ↳ (변이) 주석 속 같은 글자에는 안 짖는다",
+      not _re98.findall(
+          r'f"\{[a-z_.]*league\.value\}:\{[a-z_.]*sports_day\}:\{[a-z_.]*game_id\}',
+          "\n".join(l for l in ['# f"{league.value}:{g.sports_day}:{g.game_id}"']
+                    if not l.lstrip().startswith("#"))))
+
 print(f"\n결과: {ok} PASS / {fail} FAIL")
 shutil.rmtree(TMP, ignore_errors=True)
 sys.exit(1 if fail else 0)
