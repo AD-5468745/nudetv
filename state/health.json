@@ -1,5 +1,5 @@
 {
- "at": "2026-09-24T13:21:35.456503+00:00",
+ "at": "2026-09-24T13:24:28.187478+00:00",
  "leagues": {
   "KBO": {
    "at": "2026-09-24T13:17:38.724132+00:00",
@@ -115,7 +115,7 @@
  },
  "alert_lines": 0,
  "lost_lines": 4,
- "status_lines": 29,
+ "status_lines": 31,
  "lost_kinds": [
   "unqueued_kickoff",
   "unqueued_lineup",
