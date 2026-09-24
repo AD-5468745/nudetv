@@ -1,15 +1,15 @@
 {
- "at": "2026-09-24T07:56:33.899327+00:00",
+ "at": "2026-09-24T08:00:00.406394+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-24T07:56:33.899327+00:00",
+   "at": "2026-09-24T08:00:00.406394+00:00",
    "count": 238,
    "stale_hours": 0.0
   },
   "MLB": {
-   "at": "2026-09-24T07:49:02.795124+00:00",
+   "at": "2026-09-24T08:00:00.406394+00:00",
    "count": 91,
-   "stale_hours": 0.1,
+   "stale_hours": 0.0,
    "finals_utc": [
     "00:58",
     "01:16",
@@ -29,67 +29,67 @@
   "KBL": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 10,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_M": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "VLEAGUE_W": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 135,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "KL1": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 60,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "NPB": {
-   "at": "2026-09-24T07:49:02.795124+00:00",
+   "at": "2026-09-24T08:00:00.406394+00:00",
    "count": 289,
-   "stale_hours": 0.1
+   "stale_hours": 0.0
   },
   "EPL": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LALIGA": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 69,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "SERIEA": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 50,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "BUNDESLIGA": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 36,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "LIGUE1": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 45,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UCL": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 72,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "UEL": {
    "at": "2026-09-24T07:42:26.344120+00:00",
    "count": 72,
-   "stale_hours": 0.2
+   "stale_hours": 0.3
   },
   "MLS": {
-   "at": "2026-09-24T07:49:02.795124+00:00",
+   "at": "2026-09-24T08:00:00.406394+00:00",
    "count": 16,
-   "stale_hours": 0.1,
+   "stale_hours": 0.0,
    "finals_utc": [
     "03:42"
    ]
@@ -105,9 +105,10 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 2,
+ "lost_lines": 3,
  "status_lines": 27,
  "lost_kinds": [
+  "empty_render",
   "unqueued_kickoff",
   "unsent_day:analysis"
  ],
