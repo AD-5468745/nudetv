@@ -4478,6 +4478,16 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         for _k, _sc, _door in why_not:
             _blocked[(_k, _door)] += 1
             _ex.setdefault((_k, _door), _sc)
+        # ── ★ **로그만 보는 사람도 문을 볼 수 있어야 한다** (v2.07) ──────
+        # 이 진단은 v1.58에 "어느 항목이 어느 문에서 걸렸는지 시계가 스스로
+        # 말하게" 만든 것인데, `lines` 는 **텔레그램 알림과 health.json 으로만**
+        # 간다. 실행 로그에는 33시간 동안 `걸렸습니다` 가 **0회**였다.
+        # 그래서 NPB 가 989번 기다리다 죽는 동안 로그를 봐도 이유를 못 봤다.
+        # 알림에는 상위 4개만, **로그에는 전부** 찍는다 — 로그는 길어도 된다.
+        for (_k, _door), _n in _blocked.most_common():
+            _line = (f"[{_k}] {_n}건이 '{_door}' 에서 걸렸습니다 — "
+                     f"예) {_ex[(_k, _door)][:44]}")
+            print(f"  🚪 {_line}")
         for (_k, _door), _n in _blocked.most_common(4):
             lines.append(f"[{_k}] {_n}건이 '{_door}' 에서 걸렸습니다 — "
                          f"예) {_ex[(_k, _door)][:44]}")
