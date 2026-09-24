@@ -1,8 +1,8 @@
 {
- "at": "2026-09-24T09:41:16.337914+00:00",
+ "at": "2026-09-24T09:44:04.136024+00:00",
  "leagues": {
   "KBO": {
-   "at": "2026-09-24T09:41:16.337914+00:00",
+   "at": "2026-09-24T09:44:04.136024+00:00",
    "count": 238,
    "stale_hours": 0.0
   },
@@ -47,7 +47,7 @@
    "stale_hours": 0.4
   },
   "NPB": {
-   "at": "2026-09-24T09:41:16.337914+00:00",
+   "at": "2026-09-24T09:44:04.136024+00:00",
    "count": 289,
    "stale_hours": 0.0
   },
@@ -105,10 +105,9 @@
   "정우영": "2026-09-18"
  },
  "alert_lines": 0,
- "lost_lines": 5,
- "status_lines": 20,
+ "lost_lines": 4,
+ "status_lines": 22,
  "lost_kinds": [
-  "empty_render",
   "unqueued_kickoff",
   "unqueued_lineup",
   "unsent_day:analysis",
