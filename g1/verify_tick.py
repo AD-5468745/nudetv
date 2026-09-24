@@ -103,11 +103,17 @@ check("되읽은 것도 계약 통과", all(g.validate() is None for g in back))
 # ── 2. 깨진 상태 파일 ─────────────────────────────────────────
 print("\n2. 깨진 상태 — 어느 쪽으로 넘어지는가")
 (TMP / "games" / "T3.json").write_text("{ 이건 JSON이 아니다", encoding="utf-8")
-try:
-    T._load_games("T3")
-    check("깨진 스냅샷은 예외로 드러난다", False, "조용히 넘어갔다")
-except json.JSONDecodeError:
-    check("깨진 스냅샷은 예외로 드러난다 (조용히 0건이 되지 않는다)", True)
+# ★ **계약이 v2.08에서 바뀌었다.** 전에는 예외를 그대로 올려 "조용히 0건이
+# 되지 않게" 했는데, 그러면 `all_games()` 가 통째로 터져 **전 리그가 그 틱에
+# 아무것도 못 냈다**(실측 2026-09-25). 이제는 **그 리그만** 0건이 되고,
+# 대신 `SNAPSHOT_READ_PROBLEMS` 에 남아 알림·로그로 올라간다 — 조용하지 않다.
+T.SNAPSHOT_READ_PROBLEMS.clear()
+_t3 = T._load_games("T3")
+check("깨진 스냅샷이 **전 리그를 죽이지 않는다** (그 리그만 0건)", _t3 == [], f"{_t3!r}")
+check("  ↳ 그래도 조용하지 않다 (문제를 남긴다)",
+      any("못 읽었습니다" in x for x in T.SNAPSHOT_READ_PROBLEMS),
+      f"{T.SNAPSHOT_READ_PROBLEMS}")
+T.SNAPSHOT_READ_PROBLEMS.clear()
 
 T.FETCH_LOG.write_text("깨진 파일", encoding="utf-8")
 check("깨진 수집 로그는 '수집한 적 없음'과 같게 다룬다 (다음 틱에 다시 수집)",
@@ -3858,6 +3864,55 @@ try:
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", False, "안 터짐 — 시험이 무력하다")
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
+
+# ── ★★★ **스냅샷 하나가 깨져도 나머지 리그가 사는가** (v2.08 · 안 되는 길) ──
+#
+# 「안 되는 길을 걸어 봤나」 축 ①(끊는다). 저장은 원자적이지만 스키마가
+# 바뀌거나 합치기 자국이 섞이면 파일이 안 읽힌다. 전에는 그때
+# `all_games()` 가 통째로 터져 **전 리그가 그 틱에 아무것도 못 냈다.**
+import tempfile as _tmp08
+import pathlib as _pl08
+import json as _js08
+
+_old08, _oldsnap08 = T.ROOT, T.SNAP_DIR
+try:
+    _r08 = _pl08.Path(_tmp08.mkdtemp())
+    (_r08 / "games").mkdir(parents=True, exist_ok=True)
+    T.ROOT, T.SNAP_DIR = _r08, _r08 / "games"
+    T.SNAPSHOT_READ_PROBLEMS.clear()
+    # 멀쩡한 한 벌을 쓴다
+    _g08 = C.Game(
+        league=C.League.KBO, season="2026", source_key="v208",
+        home=C.TeamRef(C.League.KBO, "KT"), away=C.TeamRef(C.League.KBO, "HH"),
+        start_utc=NOW, home_tz="Asia/Seoul", status=C.Status.SCHEDULED)
+    T._save_games("KBO", [_g08])
+    check("멀쩡한 스냅샷은 그대로 읽힌다", len(T._load_games("KBO")) == 1)
+    # ① 파일을 깨뜨린다
+    (_r08 / "games" / "KBO.json").write_text("{ 이건 JSON 이 아니다 ",
+                                             encoding="utf-8")
+    _got08 = T._load_games("KBO")
+    check("★★★ 스냅샷이 깨져도 **터지지 않는다** (그 리그만 0건)",
+          _got08 == [], f"{_got08!r}")
+    check("  ↳ 조용히 넘어가지 않는다 — 문제를 남긴다",
+          any("못 읽었습니다" in x for x in T.SNAPSHOT_READ_PROBLEMS),
+          f"{T.SNAPSHOT_READ_PROBLEMS}")
+    # ② 경기 한 줄만 깨뜨린다 — 그 줄만 빠지고 나머지는 산다
+    T.SNAPSHOT_READ_PROBLEMS.clear()
+    T._save_games("KBO", [_g08, _g08])
+    _rows08 = _js08.loads((_r08 / "games" / "KBO.json").read_text(encoding="utf-8"))
+    _rows08[0]["start_utc"] = "어제쯤"
+    (_r08 / "games" / "KBO.json").write_text(
+        _js08.dumps(_rows08, ensure_ascii=False), encoding="utf-8")
+    _got2 = T._load_games("KBO")
+    check("★★ 경기 한 줄이 깨져도 **그 줄만** 빠진다",
+          len(_got2) == 1, f"{len(_got2)}경기 — 둘 다 죽거나 둘 다 살면 안 된다")
+    check("  ↳ 그것도 조용히 넘어가지 않는다",
+          any("한 줄을 못 읽었습니다" in x for x in T.SNAPSHOT_READ_PROBLEMS),
+          f"{T.SNAPSHOT_READ_PROBLEMS}")
+finally:
+    T.ROOT, T.SNAP_DIR = _old08, _oldsnap08
+    T.SNAPSHOT_READ_PROBLEMS.clear()
+
 
 # ── ★★ **카드가 안 나갔을 때 무엇이 안 나갔는지 적는가** (v2.06 · 실제 사고) ──
 #

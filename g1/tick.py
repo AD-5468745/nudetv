@@ -1772,19 +1772,69 @@ def _load_raw(name: str) -> list:
         return []
 
 
+# **읽다가 깨진 것을 남겨 둔다** — 조용히 0건이 되면 안 된다 (v2.08).
+SNAPSHOT_READ_PROBLEMS: list = []
+
+
 def _load_games(name: str) -> list:
-    """스냅샷을 Game으로 되돌린다. 카드 렌더는 이것만 있으면 된다."""
+    """스냅샷을 Game으로 되돌린다. 카드 렌더는 이것만 있으면 된다.
+
+    ── ★★ **한 파일이 깨지면 전 리그가 죽었다** (v2.08 · 안 되는 길 점검) ──
+    전에는 `json.loads` 와 행 해석이 **맨몸**이라, 스냅샷 하나가 읽히지 않으면
+    `all_games()` 가 통째로 터지고 **그 틱에 아무것도 안 나갔다.**
+    실측 2026-09-25: `state/games/KBO.json` 을 깨뜨리자 MLB·NPB·유럽까지
+    전부 죽었다(`JSONDecodeError` 가 `all_games` 밖으로 나간다).
+
+    저장은 원자적이라(tmp → replace) 중간에 죽어도 반쪽 파일은 안 생긴다.
+    그래도 스키마가 바뀌거나(옛 스냅샷에 새 필수 칸이 없다) 합치기 자국이
+    섞이면 같은 일이 난다. 이 저장소의 규율은 이미 한 단 아래에 적혀 있다 —
+    *"경기 하나가 대회 전체를 죽이지 않게 한다"*. 그걸 **파일 단위에도** 적용한다.
+    · 파일을 못 읽으면 → **그 리그만** 0건, 나머지는 산다
+    · 경기 한 줄을 못 읽으면 → **그 경기만** 빠진다
+    · 어느 쪽이든 **조용히 넘어가지 않는다** — 목록에 남겨 알림에 싣는다
+    """
     from contract import (DecidedBy, Game, GameMeta, Goal, Score, ScoreUnit,
                           Status, TeamRef)
     p = _snap_path(name)
     if not p.exists():
         return []
+    try:
+        rows = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(rows, list):
+            raise ValueError(f"목록이 아니라 {type(rows).__name__}")
+    except Exception as e:                                   # noqa: BLE001
+        SNAPSHOT_READ_PROBLEMS.append(
+            f"{name}: 스냅샷을 못 읽었습니다 — {type(e).__name__}: "
+            f"{str(e)[:80]} (그 리그만 0건, 다음 수집에 다시 씁니다)")
+        print(f"  ⚠️ [스냅샷] {name} 을 못 읽었습니다 — "
+              f"{type(e).__name__} · 그 리그만 건너뜁니다")
+        return []
     out = []
-    for d in json.loads(p.read_text(encoding="utf-8")):
+    _bad = 0
+    for d in rows:
+        try:
+            out.append(_one_game(d, DecidedBy, Game, GameMeta, Goal, Score,
+                                 ScoreUnit, Status, TeamRef))
+        except Exception as e:                               # noqa: BLE001
+            _bad += 1
+            if _bad == 1:
+                SNAPSHOT_READ_PROBLEMS.append(
+                    f"{name}: 경기 한 줄을 못 읽었습니다 — "
+                    f"{type(e).__name__}: {str(e)[:70]}")
+    if _bad:
+        print(f"  ⚠️ [스냅샷] {name} 에서 {_bad}경기를 못 읽어 건너뜁니다 "
+              f"({len(out)}경기는 살아 있습니다)")
+    return out
+
+
+def _one_game(d, DecidedBy, Game, GameMeta, Goal, Score, ScoreUnit,
+              Status, TeamRef):
+    """스냅샷 한 줄 → Game. **이 함수만 터진다** — 부르는 쪽이 감싼다."""
+    if True:
         lg = League(d["league"])
         sc = (Score(d["score"][0], d["score"][1], ScoreUnit(d["score"][2]))
               if d.get("score") else None)
-        out.append(Game(
+        return (Game(
             league=lg, season=d["season"], source_key=d["source_key"],
             home=TeamRef(lg, d["home"]), away=TeamRef(lg, d["away"]),
             start_utc=datetime.fromisoformat(d["start_utc"]),
@@ -4729,6 +4779,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     # 이게 뜨면 **그 종류는 아직 경기별로 안 쪼개진 것**이다. 한 경기만
     # 받고 나머지는 빈 채로 남는다 — 사람이 채널을 눈으로 훑어야만 아는
     # 종류의 사고라, 숫자로 만들어 올린다.
+    # ── 스냅샷을 못 읽은 것 (v2.08) ──────────────────────────────
+    # 한 파일이 깨져도 나머지는 살게 했다. 그러면 **조용해진다** — 그래서
+    # 반드시 올린다. 이 줄이 없으면 한 리그가 며칠 0건이어도 아무도 모른다.
+    if SNAPSHOT_READ_PROBLEMS:
+        _sp = []
+        for _n in SNAPSHOT_READ_PROBLEMS:
+            if _n not in _sp:
+                _sp.append(_n)
+        lines.append("★★ 스냅샷을 못 읽었습니다 — " + " / ".join(_sp[:3]))
+        for _n in _sp:
+            print(f"  🧩 {_n}")
+        SNAPSHOT_READ_PROBLEMS.clear()
     if _bundled:
         _bs: list = []
         for n in _bundled:
