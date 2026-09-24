@@ -2672,7 +2672,20 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
 
         if item.content_type is ContentType.ANCHOR and item.game_id:
             # **주소가 아니라 글 번호를 적는다** (v1.57 · `_index_links` 참조).
-            rec["links"][item.game_id] = int(message_ids[0])
+            #
+            # ★★★ **번호가 아니라 안정키로 적는다** (v1.99).
+            #   NPB 는 경기가 끝나면 npb.jp 가 결과 페이지를 올리면서
+            #   `source_key` 를 바꾼다 — 그러면 앵커를 보낼 때 적어 둔
+            #   `20260924-HIR-YOG` 와 나중에 읽을 때의
+            #   `scores-2026-0924-c-g-23` 이 **안 맞아 링크가 사라진다.**
+            #   (2026-09-24 실측: 오늘의 경기에서 NPB 두 경기의 바로가기가
+            #    경기가 끝나자마자 없어졌다.)
+            #   앵커 항목의 `scope` 가 곧 `game_scope()` 다 — 그걸 쓴다.
+            #   옛 기록(번호로 적힌 것)도 읽을 수 있게 둘 다 남긴다.
+            _lk_key = (item.scope or item.game_id)
+            rec["links"][_lk_key] = int(message_ids[0])
+            if item.game_id and item.game_id != _lk_key:
+                rec["links"][item.game_id] = int(message_ids[0])
             _index_save(state)
             _user = _DS.public_username(transport, channel)
             # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.

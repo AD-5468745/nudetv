@@ -597,6 +597,24 @@ def _by_time(games: list) -> list:
     return out
 
 
+def link_of(lk: dict, g) -> str:
+    """그 경기의 바로가기 주소. 없으면 빈 문자열 (v1.99).
+
+    ★★★ **번호로만 찾으면 NPB 에서 사라진다.**
+    npb.jp 가 결과를 올리면 `source_key` 가 바뀌어, 앵커를 보낼 때 적어 둔
+    번호와 지금 경기의 번호가 달라진다(2026-09-24 실측: 경기가 끝나자마자
+    오늘의 경기에서 NPB 두 경기의 바로가기가 없어졌다).
+    **안정키를 먼저 보고, 없으면 번호로 본다** — 옛 기록도 그대로 읽힌다.
+    """
+    if not lk:
+        return ""
+    try:
+        v = lk.get(game_scope(g))
+    except Exception:                                    # noqa: BLE001
+        v = None
+    return v or lk.get(getattr(g, "game_id", "")) or ""
+
+
 def daily_index_by_sport(games: list, day: str, *, links: dict | None = None,
                          name_of=None,
                          max_chars: int = TELEGRAM_TEXT_MAX) -> list:
@@ -723,7 +741,7 @@ def _compose_index(todays: list, day: str, lk: dict, nm,
             for g in _grp:
                 lines.append(game_line(
                     f"{nm(lg, g.away)} vs {nm(lg, g.home)}",
-                    lk.get(g.game_id) or ""))
+                    link_of(lk, g)))
         lines.append("")
     # 꼬리말이 **한 번** 말한다 — 줄마다 `경기정보 보기`를 붙이는 대신.
     if sport:
@@ -787,7 +805,7 @@ def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
     nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
     lk = links or {}
     rows = [g for g in games
-            if g.sports_day == day and lk.get(g.game_id)
+            if g.sports_day == day and link_of(lk, g)
             and not (drop_finished and g.is_terminal)]
     rows.sort(key=lambda g: g.start_utc)
     while rows:
@@ -799,7 +817,7 @@ def game_link_lines(games: list, day: str, *, links: dict, name_of=None,
             for g in _grp:
                 out.append(game_line(
                     f"{nm(g.league, g.away)} vs {nm(g.league, g.home)}",
-                    lk[g.game_id]))
+                    link_of(lk, g)))
         txt = "\n".join(out)
         if not budget or len(txt) <= budget:
             return txt
@@ -864,14 +882,14 @@ def _game_buttons(games: list, day: str, *, links: dict, name_of=None,
     nm = name_of or (lambda lg, t: getattr(t, "team_code", str(t)))
     lk = links or {}
     rows: list = []
-    todays = [g for g in games if g.sports_day == day and lk.get(g.game_id)]
+    todays = [g for g in games if g.sports_day == day and link_of(lk, g)]
     for g in sorted(todays, key=lambda x: x.start_utc):
         if drop_finished and g.is_terminal:
             continue
         k = g.start_utc.astimezone(KST)
         label = (f"{LEAGUE_EMOJI.get(g.league, '•')} {k:%H:%M}  "
                  f"{nm(g.league, g.away)} vs {nm(g.league, g.home)}")
-        rows.append([{"text": label[:64], "url": lk[g.game_id]}])
+        rows.append([{"text": label[:64], "url": link_of(lk, g)}])
         if len(rows) >= limit:
             break
     return rows
