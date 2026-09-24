@@ -1824,6 +1824,41 @@ def _load_games(name: str) -> list:
     if _bad:
         print(f"  ⚠️ [스냅샷] {name} 에서 {_bad}경기를 못 읽어 건너뜁니다 "
               f"({len(out)}경기는 살아 있습니다)")
+
+    # **저장된 라인업 안의 한국 선수를 되살린다** (v1.17c).
+    # `player_lines`는 스냅샷에 담지 않는 칸이라(야구 기록 경로의 몫) 축구는
+    # `lineup["korean"]`에 실어 저장했다. 여기서 되돌리지 않으면 카드가
+    # "이재성 선발"을 말할 재료를 잃는다 — fix49와 같은 자리다.
+    #
+    # ⚠️ **행과 경기를 번호로 짝지으면 안 된다** (v2.08). 못 읽은 줄을
+    # 건너뛰게 되면서 `zip(out, rows)` 의 자리가 밀린다 — 엉뚱한 경기에
+    # 남의 한국 선수가 붙는다. `source_key` 로 맞춘다.
+    _by_key = {}
+    for _d in rows:
+        try:
+            _by_key[str(_d.get("source_key"))] = _d
+        except Exception:                                    # noqa: BLE001
+            continue
+    for _g in out:
+        _d = _by_key.get(str(_g.source_key))
+        _kr = ((_d or {}).get("lineup") or {}).get("korean") or []
+        if not _kr:
+            continue
+        from contract import PlayerLine
+        _g.meta.player_lines = [
+            PlayerLine(player_id=str(k.get("id") or ""), name_ko=k["name"],
+                       team=TeamRef(_g.league, k.get("team") or ""),
+                       played=True, dnp_reason=k.get("dnp"),
+                       soccer=k.get("soccer"))
+            for k in _kr if k.get("name")]
+
+    # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
+    # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나
+    # 예전 버전이 남긴 스냅샷은 게이트를 통과하지 않은 채 카드가 된다.
+    # 실제로 2026-09-01 사고를 스냅샷 경로로 재현하면 카드가 그대로 만들어졌다.
+    out, notes = demote_impossible_finals(out)
+    for n in notes:
+        print(f"  [스냅샷 보정] {n}")
     return out
 
 
@@ -1878,30 +1913,6 @@ def _one_game(d, DecidedBy, Game, GameMeta, Goal, Score, ScoreUnit,
                           goal_seen_at=dict(d.get("goal_seen_at") or {}),
                           # 없으면 False — 옛 스냅샷도 그냥 읽힌다.
                           has_video=bool(d.get("has_video")))))
-    # **저장된 라인업 안의 한국 선수를 되살린다** (v1.17c).
-    # `player_lines`는 스냅샷에 담지 않는 칸이라(야구 기록 경로의 몫) 축구는
-    # `lineup["korean"]`에 실어 저장했다. 여기서 되돌리지 않으면 카드가
-    # "이재성 선발"을 말할 재료를 잃는다 — fix49와 같은 자리다.
-    for _g, _d in zip(out, json.loads(p.read_text(encoding="utf-8"))):
-        _kr = (_d.get("lineup") or {}).get("korean") or []
-        if not _kr:
-            continue
-        from contract import PlayerLine
-        _g.meta.player_lines = [
-            PlayerLine(player_id=str(k.get("id") or ""), name_ko=k["name"],
-                       team=TeamRef(_g.league, k.get("team") or ""),
-                       played=True, dnp_reason=k.get("dnp"),
-                       soccer=k.get("soccer"))
-            for k in _kr if k.get("name")]
-
-    # **게이트는 데이터가 들어오는 문이 아니라 카드가 나가는 문에 단다.**
-    # 수집에만 게이트를 걸어두면, 30분 제동으로 수집을 건너뛴 틱이나
-    # 예전 버전이 남긴 스냅샷은 게이트를 통과하지 않은 채 카드가 된다.
-    # 실제로 2026-09-01 사고를 스냅샷 경로로 재현하면 카드가 그대로 만들어졌다.
-    out, notes = demote_impossible_finals(out)
-    for n in notes:
-        print(f"  [스냅샷 보정] {n}")
-    return out
 
 
 # ── 수집 ──────────────────────────────────────────────────────
