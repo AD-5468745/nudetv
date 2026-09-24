@@ -260,6 +260,24 @@ check("★ 정기 휴식일(월요일)은 라운드 공백보다 먼저 판정�
       and _miss(_f4), str(_miss(_f4)))
 
 
+# ── 9-5. ★ 유럽 축구는 **전부** 휴식기를 창 안에 담아야 한다 (v2.00) ──────
+#
+# 커버리지의 완화 조건은 "미래 편성이 있으면 소스가 살아 있다"이다.
+# 그러니 수집 창이 휴식기보다 짧으면 **그 완화가 꺼지고 헛경보가 난다.**
+# 실측 2026-09-25: 5대리그가 9-21 → 10-10, 18일을 통째로 쉬었다.
+# 겨울 휴식기는 더 길다. 새 유럽 리그를 붙일 때 창을 안 주면 여기서 짖는다.
+from adapters import naver_football as _NF
+_BREAK_MIN_DAYS = 35            # 측정 18일 + 겨울 휴식기 여유
+_EU = [lg for lg in _NF.CATEGORY if lg not in _NF.KOREAN_PLAYER_ONLY]
+_narrow = [lg.value for lg in _EU
+           if _NF.AHEAD_DAYS.get(lg, _NF.AHEAD_DAYS_DEFAULT) < _BREAK_MIN_DAYS]
+check(f"★ 유럽 축구 {len(_EU)}개 리그가 전부 휴식기({_BREAK_MIN_DAYS}일)를 보는 창을 가진다",
+      not _narrow, f"창이 좁은 리그: {_narrow} — 휴식기마다 빨간불이 켜진다")
+check("  ↳ (변이) 한 리그의 창을 기본값으로 되돌리면 이 시험이 짖는다",
+      any(_NF.AHEAD_DAYS_DEFAULT < _BREAK_MIN_DAYS for _ in [0]),
+      "기본값이 이미 넓으면 이 시험은 아무것도 못 잡는다")
+
+
 if __name__ == "__main__":
     print(f"커버리지 검증 — 통과 {PASS} · 실패 {len(FAIL)}")
     for line in FAIL:
