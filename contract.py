@@ -1203,6 +1203,14 @@ class Game:
             raise GateError(f"{self.game_id}: 팀 리그가 경기 리그와 다르다")
         if self.home.team_code == self.away.team_code:
             raise GateError(f"{self.game_id}: 홈과 원정이 같은 팀이다 (파싱 오류)")
+        # **빈 팀 코드는 빈 이름이 된다** (v2.09 · 안 되는 길 ② 점검).
+        # 실측: `TeamRef(리그, "")` 가 게이트를 그냥 지나가고, 카드 이름은
+        # `''` 가 되어 " vs KT" 처럼 **한쪽이 빈 카드**가 나간다.
+        # 소스가 팀 칸을 비워 보내면 그건 파싱 실패지 경기가 아니다.
+        for _side, _who in ((self.home, "home"), (self.away, "away")):
+            if not str(_side.team_code or "").strip():
+                raise GateError(f"{self.game_id}: {_who} 팀 코드가 비었다 "
+                                f"(파싱 오류 — 빈 이름으로 카드가 나간다)")
 
         # 시각
         if self.start_utc.tzinfo is None:

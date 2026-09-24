@@ -3865,6 +3865,36 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★ **빈 팀 코드가 빈 이름 카드로 나가지 않는가** (v2.09 · 안 되는 길 ②) ──
+#
+# 「틀리게 준다」 축. 소스가 팀 칸을 비워 보내면 `TeamRef(리그, "")` 가
+# 게이트를 그냥 지나가고 카드 이름이 `''` 가 되어 **" vs KT" 처럼 한쪽이
+# 빈 카드**가 나갔다(실측 2026-09-25: `cards_v5._nm(..., "")` → `''`).
+# 팀 칸이 비면 그건 경기가 아니라 파싱 실패다.
+def _mk09(code):
+    return C.Game(league=C.League.KBO, season="2026", source_key="v209",
+                  home=C.TeamRef(C.League.KBO, "KT"),
+                  away=C.TeamRef(C.League.KBO, code),
+                  start_utc=NOW, home_tz="Asia/Seoul",
+                  status=C.Status.SCHEDULED)
+
+
+def _blocked09(code):
+    try:
+        _mk09(code).validate()
+        return False
+    except C.GateError:
+        return True
+
+
+check("★★ 팀 코드가 비면 막는다 (빈 이름으로 카드가 나가지 않는다)",
+      _blocked09("") and _blocked09("   "), "빈 코드가 게이트를 지나간다")
+check("  ↳ (변이) 멀쩡한 코드에는 안 짖는다", not _blocked09("LG"))
+check("  ↳ 빈 이름이 실제로 빈 문자열이 된다 (그래서 막아야 한다)",
+      __import__("cards_v5")._nm(C.League.KBO,
+                                 C.TeamRef(C.League.KBO, "")) == "")
+
+
 # ── ★★★ **스냅샷 하나가 깨져도 나머지 리그가 사는가** (v2.08 · 안 되는 길) ──
 #
 # 「안 되는 길을 걸어 봤나」 축 ①(끊는다). 저장은 원자적이지만 스키마가
