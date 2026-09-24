@@ -979,6 +979,52 @@ check("  ↳ (변이) 기준이 실제 유예에서 나온다 (손으로 적은 
       _tight_grace != 5 * 60,
       "기준이 우연히 5분이면 이 시험은 옛 것과 구별되지 않는다")
 
+# ── ★★★ **투표 닫기가 세 갈래를 구별하는가** (v2.01 · 실제 사고) ──────────
+#
+# 옛 코드는 "닫았다 / 이미 닫혔다 / 통신 오류"를 전부 `None` 으로 뭉갰고,
+# 장부에도 아무것도 안 적었다. 그래서 **제때 닫힌 투표가 `지각 폐기` 로**
+# 기록됐다(실측: 발송 0건 · 폐기 10건인데 득표수는 10건 다 있었다).
+class _PollFake(Fake):
+    """stopPoll 한 번만 시나리오대로 답한다."""
+
+    def __init__(self, mode):
+        super().__init__()
+        self.mode = mode
+
+    def call(self, method, payload, files=None):
+        if method != "stopPoll":
+            return super().call(method, payload, files)
+        self.calls.append((method, payload, []))
+        if self.mode == "gone":
+            raise TelegramError(400, "Bad Request: poll has already been closed")
+        if self.mode == "flaky":
+            raise TelegramError(429, "Too Many Requests", retry_after=7)
+        return {"options": [{"text": "KT", "voter_count": 3},
+                            {"text": "SSG", "voter_count": 5}]}
+
+
+import sender as _S201
+
+# 전송기를 새로 세우지 않고 close_poll 만 직접 잰다 — 그 함수가 판정의 전부다.
+class _Shell:
+    def __init__(self, tr):
+        self.tr = tr
+        self.chat_id = "-100t"
+    close_poll = _S201.Sender.close_poll
+
+_r_ok = _Shell(_PollFake("ok")).close_poll(1)
+_r_gone = _Shell(_PollFake("gone")).close_poll(1)
+_r_flaky = _Shell(_PollFake("flaky")).close_poll(1)
+check("★★★ 닫히면 득표수를 돌려준다",
+      isinstance(_r_ok, dict) and _r_ok.get("total") == 8, str(_r_ok))
+check("★★★ **이미 닫힌 것**은 일시 오류와 다른 값으로 돌아온다",
+      _r_gone is _S201.POLL_GONE,
+      f"{_r_gone!r} — 구별 못 하면 유예가 다할 때까지 되풀이한다")
+check("★★★ 일시 오류는 None — 다음 틱에 다시 시도한다",
+      _r_flaky is None, f"{_r_flaky!r}")
+check("  ↳ (변이) 셋이 서로 다른 값이다",
+      len({id(_r_ok), id(_r_gone), id(_r_flaky)}) == 3)
+
 # ── 전 리그에 적용되는가 (대표님: "모든 스포츠리그 각 경기마다") ──
 #
 # 경기별 발송에 **리그 예외를 두지 않는다.** 리그별 분기를 만들면 그 순간
