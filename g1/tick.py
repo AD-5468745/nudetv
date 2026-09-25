@@ -2095,6 +2095,18 @@ def _write_health(now: datetime, flog: dict, adapter_notes: list,
         # 이 파일은 공개 저장소에 커밋된다.
         "coverage_findings": [str(x) for x in getattr(cov, "lines", list)()][:20]
         if not bool(getattr(cov, "ok", True)) else [],
+        # ── ★ **진단을 개수가 아니라 글로 남긴다** (v2.10) ────────────────
+        #
+        # 이 파일은 지금까지 `status_lines: 21` 처럼 **개수만** 적었다.
+        # 그래서 "무엇이 어느 문에 걸렸나"는 실행 로그에만 있었는데,
+        # 시계가 한 실행을 **최대 5시간** 돌리므로 그 로그는 그동안
+        # 아예 열리지 않는다(실측 2026-09-25: 3시간 넘게 `BlobNotFound`).
+        # **고친 사람이 자기 수정을 확인할 수 없으면 그 수정은 '했다'로 끝난다.**
+        #
+        # 이제 그 줄들을 그대로 싣는다 — 2분마다 커밋되니 로그를 안 기다린다.
+        # 팀·점수·채널은 여기 오지 않는다. 종류·리그·범위뿐이다.
+        "status_detail": [str(x) for x in (lines or [])][:24],
+        "lost_detail": [str(x) for x in (lost or [])][:24],
     }
     ROOT.mkdir(parents=True, exist_ok=True)
     HEALTH_LOG.write_text(json.dumps(out, ensure_ascii=False, indent=1),
