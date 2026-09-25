@@ -3865,6 +3865,54 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★★ **KBO 도 번호를 바꿨다 — 전 리그 안정키** (v2.15 · 실제 사고) ──
+#
+# 2026-09-25 17:00 KBO 3경기 중 한 경기(한화)만 콘텐츠가 다 붙고 나머지
+# 둘은 앵커·분석에서 멈췄다. 대표님이 채널에서 먼저 보셨다.
+# 시계가 직접 말한 이유:
+#     앵커가 저장된 곳 : KBO:2026-09-25:KBO:2026:20260925LTOB0
+#     찾으러 간 곳     : KBO:2026-09-25:KBO:2026:20260925LTOB0C1700
+# 소스가 경기 도중 번호에 `C1700` 을 붙였다. **NPB와 똑같은 병**인데
+# 우리는 그것을 NPB 만의 일로 적어 뒀다 — 예외를 세는 쪽이 늘 뚫린다.
+_line215 = C.STABLE_SCOPE_OTHERS_FROM_UTC
+
+
+def _scope215(lg, start, code_a, code_h):
+    return C.game_scope(C.Game(
+        league=lg, season="2026", source_key="raw-id",
+        home=C.TeamRef(lg, code_h), away=C.TeamRef(lg, code_a),
+        start_utc=start, home_tz="Asia/Seoul", status=C.Status.SCHEDULED))
+
+
+check("★★★ 선을 넘은 경기는 **전 리그가** 안정키를 쓴다",
+      all(":g:" in _scope215(_lg, _line215 + timedelta(hours=2), "AA", "BB")
+          for _lg in (C.League.KBO, C.League.MLB, C.League.KL1,
+                      C.League.KBL, C.League.EPL)),
+      "한 리그라도 빠지면 그 리그가 같은 병에 걸린다")
+check("  ↳ (변이) 선 이전 경기는 **옛 칸 그대로** 둔다 (오늘 것이 안 깨진다)",
+      ":g:" not in _scope215(C.League.KBO, _line215 - timedelta(hours=2),
+                             "AA", "BB"),
+      "선을 당기면 이미 앵커가 나간 경기가 처음부터 다시 나간다")
+check("  ↳ NPB 는 옛 선(09-22)을 그대로 지킨다",
+      ":g:" in _scope215(C.League.NPB,
+                         C.STABLE_SCOPE_FROM_UTC + timedelta(hours=2),
+                         "AA", "BB"))
+check("  ↳ 앵커를 **안정키로도** 찾아본다 (칸이 갈리는 날 대비)",
+      any(":g:" in k for k in T._anchor_keys(
+          C.QueueItem(idem_key="x", content_type=ContentType.FINAL_FLASH,
+                      scope="KBO:2026-09-26:KBO:2026:20260926HHNC0",
+                      scheduled_utc=NOW, league=C.League.KBO,
+                      sports_day="2026-09-26",
+                      game_id="KBO:2026:20260926HHNC0", render_at_utc=NOW),
+          "-100t",
+          C.Game(league=C.League.KBO, season="2026", source_key="20260926HHNC0",
+                 home=C.TeamRef(C.League.KBO, "NC"),
+                 away=C.TeamRef(C.League.KBO, "HH"),
+                 start_utc=_line215 + timedelta(hours=26),
+                 home_tz="Asia/Seoul", status=C.Status.SCHEDULED))),
+      "안정키 후보가 없으면 칸이 갈리는 날 그 경기가 통째로 조용해진다")
+
+
 # ── ★★ **똑같은 줄이 진짜 신호를 밀어내지 않는가** (v2.14 · 실제 사고) ──
 #
 # 실측 2026-09-25 `health.json`: 상태 줄 10칸 중 **5칸이 같은 문장**이라

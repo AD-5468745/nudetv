@@ -2518,7 +2518,10 @@ def game_scope(game) -> str:
     gid = game.game_id
     if game.league in SOURCE_KEY_DRIFTS:
         start = getattr(game, "start_utc", None)
-        if start is not None and start > STABLE_SCOPE_FROM_UTC:
+        # 리그마다 선이 다르다 — NPB 는 09-22 부터, 나머지는 내일 0시부터.
+        line = (STABLE_SCOPE_FROM_UTC if game.league is League.NPB
+                else STABLE_SCOPE_OTHERS_FROM_UTC)
+        if start is not None and start > line:
             gid = stable_game_key(game) or gid
     return f"{game.league.value}:{game.sports_day}:{gid}"
 
@@ -4496,12 +4499,34 @@ def poll_options(away_name: str, home_name: str) -> list[str]:
 #
 # ⚠️ **이름을 안 바꾸는 리그는 건드리지 않는다.** 멱등키를 바꾸면 이미
 #   보낸 것이 다시 나갈 수 있다 — 필요한 곳에만 댄다.
-SOURCE_KEY_DRIFTS: frozenset = frozenset({League.NPB})
+#
+# ── ★★★ **KBO 도 번호를 바꿨다 — "NPB만"이 틀린 전제였다** (v2.15) ──────
+#
+# 2026-09-25 17:00 KBO 3경기. 한 경기(한화)만 콘텐츠가 다 붙고 나머지 둘은
+# 앵커·분석에서 멈췄다. 대표님이 채널에서 먼저 보셨다.
+# 시계가 직접 말한 이유(v2.07·v2.10 진단):
+#     댓글 자리를 못 찾음 — final_flash KBO:2026-09-25:KBO:2026:20260925LTOB0C1700
+#                            — 그 경기 앵커가 없어 댓글로 못 답니다
+#     앵커가 저장된 곳 : KBO:2026-09-25:KBO:2026:20260925LTOB0
+#     찾으러 간 곳     : KBO:2026-09-25:KBO:2026:20260925LTOB0C1700
+# 소스가 경기 도중 번호에 `C1700` 을 붙였다(시간 변경 표시로 보인다).
+# **NPB와 똑같은 병이고, 우리는 그것을 NPB 만의 일로 적어 뒀다.**
+#
+# 소스가 번호를 안 바꾼다는 보장은 **어느 리그에도 없다.** 그래서 목록을
+# 늘리지 않고 **전 리그**로 돌린다 — 예외를 세는 쪽이 늘 뚫린다.
+SOURCE_KEY_DRIFTS: frozenset = frozenset(League)
 
 # **언제부터 새 칸을 쓰나.** 이 시각보다 **나중에 시작하는 경기**부터다.
 # 이미 무언가 보낸 경기의 칸을 바꾸면 그 경기가 처음부터 다시 나간다 —
 # 앵커는 시작 3시간 전에 나가므로, 이 선을 그 앞에 두면 겹칠 일이 없다.
+#
+# ⚠️ **오늘 경기는 건드리지 않는다.** 2026-09-25 17:00 KBO·18:00 NPB 는
+# 이미 앵커가 옛 칸으로 나갔다. 선을 지금으로 당기면 **멀쩡히 돌던 한화
+# 경기까지** 앵커를 못 찾게 된다. 그래서 선은 **내일 0시(KST)** 다.
 STABLE_SCOPE_FROM_UTC = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+
+# NPB 밖의 리그에 새 칸을 적용하는 선 — 내일 0시 KST(= 오늘 15:00 UTC).
+STABLE_SCOPE_OTHERS_FROM_UTC = datetime(2026, 9, 25, 15, 0, tzinfo=timezone.utc)
 
 
 def stable_game_key(game) -> Optional[str]:

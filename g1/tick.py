@@ -52,7 +52,7 @@ from contract import (sport_of,
                       day_schedule_scope, is_late, lookahead_for,
                       narrow_window_types, stale_unresolved,
                       content_digest, correction_key_from, idem_key,
-                      SETTLED_STATES, game_scope,
+                      SETTLED_STATES, game_scope, stable_game_key,
                       period_alert_key, period_stamp, period_stamp_label,
                       CorrectionSkip,
                       defer_for_precision,
@@ -2967,7 +2967,7 @@ THREADED_CONTENT_TYPES = frozenset({
 WAIT_FOR_THREAD_TYPES = THREADED_CONTENT_TYPES
 
 
-def _anchor_keys(item, channel: str) -> list:
+def _anchor_keys(item, channel: str, game=None) -> list:
     """이 경기 **앵커의 멱등키 후보**들 (v1.95 · 실제 사고).
 
     ★★★ **주소를 손으로 다시 조립하면 안 된다.**
@@ -3001,6 +3001,19 @@ def _anchor_keys(item, channel: str) -> list:
         k = idem_key(channel, ContentType.ANCHOR, old)
         if k not in out:
             out.append(k)
+    # ── ★ **안정키로도 찾아본다** (v2.15) ─────────────────────────────
+    # 앵커가 안정키로 저장되고 항목은 옛 번호를 들고 있는 날(선을 넘는 날)이
+    # 반드시 온다. 그때 못 찾으면 그 경기가 통째로 조용해진다.
+    if game is not None and item.league is not None:
+        try:
+            _sk = stable_game_key(game)
+        except Exception:                                    # noqa: BLE001
+            _sk = None
+        if _sk:
+            k2 = idem_key(channel, ContentType.ANCHOR,
+                          f"{item.league.value}:{item.sports_day}:{_sk}")
+            if k2 not in out:
+                out.append(k2)
     return out
 
 
@@ -3070,7 +3083,7 @@ def _thread_for(item, ledger, disc, channel: str, game=None):
         return None
     try:
         rec = next((r for r in (ledger.get(k) for k in
-                                 _anchor_keys(item, channel))
+                                 _anchor_keys(item, channel, game))
                     if r is not None and r.message_ids), None)
     except Exception:                                    # noqa: BLE001
         return None
@@ -3085,7 +3098,7 @@ _homeless: list = []
 _bundled: list = []
 
 
-def _anchor_is_up(item, ledger, channel: str) -> bool:
+def _anchor_is_up(item, ledger, channel: str, game=None) -> bool:
     """이 경기의 **앵커가 채널에 나갔는가** (v1.40).
 
     기다림의 전제는 *집이 곧 생긴다*는 것이다. 앵커가 아예 안 나간 경기는
@@ -3099,7 +3112,7 @@ def _anchor_is_up(item, ledger, channel: str) -> bool:
         return False
     try:
         rec = next((r for r in (ledger.get(k) for k in
-                                 _anchor_keys(item, channel))
+                                 _anchor_keys(item, channel, game))
                     if r is not None and r.message_ids), None)
     except Exception:                                    # noqa: BLE001
         return False
@@ -4402,7 +4415,8 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 # ⚠️ **앵커가 없는 경기는 집이 생길 일이 없다.** 그런 항목은
                 # 유예가 끝나면 사라지므로, 사라지기 전에 사람에게 알린다
                 # (`_homeless`). 조용히 잃는 것이 가장 나쁘다.
-                if not _anchor_is_up(item, led, channel):
+                if not _anchor_is_up(item, led, channel,
+                                     _one_for_thread):
                     _homeless.append(
                         f"{item.content_type.value} {item.scope}"
                         " — 그 경기 앵커가 없어 댓글로 못 답니다")
