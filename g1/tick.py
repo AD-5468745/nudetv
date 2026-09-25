@@ -2006,6 +2006,23 @@ def _lost_kinds(lost: list) -> list[str]:
     return sorted(set(out))
 
 
+def _fold_lines(rows) -> list:
+    """똑같은 줄을 **개수로 접는다** — 순서는 지키고 정보는 안 버린다.
+
+    같은 문장이 여러 번 담기는 것은 흔하다(경기마다 같은 사유). 그것이
+    목록 앞자리를 차지하면 **뒤에 있던 진짜 신호가 안 보인다.**
+    """
+    seen: dict = {}
+    order: list = []
+    for r in (rows or []):
+        k = str(r)
+        if k not in seen:
+            seen[k] = 0
+            order.append(k)
+        seen[k] += 1
+    return [k if seen[k] == 1 else f"{k} ({seen[k]}건)" for k in order]
+
+
 def _write_health(now: datetime, flog: dict, adapter_notes: list,
                   stale_notes: list, cov,
                   lost: list | None = None,
@@ -4959,6 +4976,15 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     #
     # 사라진 것은 제목부터 다르고, 유예도 짧다(1시간) — 계속 사라지고 있으면
     # 계속 말해야 한다. 상태 보고는 6시간 유예 그대로다.
+    # ── ★ **똑같은 줄 다섯 개가 진짜 신호를 밀어낸다** (v2.14) ──────────
+    #
+    # 실측 2026-09-25 `health.json`: 상태 줄 10칸 중 **5칸이 같은 문장**이었다
+    # (`정정 카드 없음 — final_flash는 정정본을 만들 수 없습니다`). 그 뒤에
+    # 있던 진짜 줄들이 밀려 안 보였다. 알림에는 글자가 같으면 접히는 장치가
+    # 있지만(`alerts.json`), **접히기 전 목록이 이미 꽉 찬다.**
+    # 정보를 버리지 않고 **개수로 접는다** — 「… (5건)」.
+    lost = _fold_lines(lost)
+    lines = _fold_lines(lines)
     if lost:
         try:
             snd.alert("🔴 콘텐츠가 나가지 못했습니다", lost,
