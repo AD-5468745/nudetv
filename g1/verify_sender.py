@@ -979,6 +979,59 @@ check("  ↳ (변이) 기준이 실제 유예에서 나온다 (손으로 적은 
       _tight_grace != 5 * 60,
       "기준이 우연히 5분이면 이 시험은 옛 것과 구별되지 않는다")
 
+# ── ★★★ **나간 것이 '안 나간 것'으로 되돌아가지 않는가** (v2.13 · 실제 사고) ──
+#
+# 대장은 추가 전용이고 `.gitattributes` 가 `merge=union` 이라, 두 실행의
+# 줄이 섞여 이런 순서가 만들어질 수 있다:
+#     ① claimed(실행 A)  ② sent(글번호 19)  ③ claimed(실행 B)
+# 전에는 **마지막 줄이 무조건** 이겨서 ③이 ②를 덮었다 →
+# 상태 claimed · 글번호 [] · 보낸수 0, 그런데 **오류도 경고도 없다**.
+# 다음 틱은 "아무것도 안 나갔다"로 읽고 **다시 보낸다** —
+# 구독자가 같은 카드를 두 번 받는다. 되돌릴 수 없는 사고다.
+import json as _js213
+import tempfile as _tp213
+import pathlib as _pl213
+import sender as _S213
+
+
+def _ledger213(states):
+    _p = _pl213.Path(_tp213.mkdtemp()) / "l.jsonl"
+    _rows = []
+    for st, extra in states:
+        _d = dict(idem_key="K", state=st, chat_id="chX", content_type="kickoff",
+                  message_ids=[], file_ids=[], sent_at_utc=None,
+                  claimed_by=None, lease_expires_utc=None, retry_count=0,
+                  retry_429_count=0, last_error=None, sent_count=0,
+                  thread_root=None, content_digest=None)
+        _d.update(extra)
+        _rows.append(_js213.dumps(_d, ensure_ascii=False))
+    _p.write_text("\n".join(_rows) + "\n", encoding="utf-8")
+    return _S213.Ledger(_p)
+
+
+_led213 = _ledger213([
+    ("claimed", {"claimed_by": "gha-A"}),
+    ("sent", {"message_ids": [19], "sent_count": 1,
+              "sent_at_utc": "2026-09-25T00:00:00+00:00"}),
+    ("claimed", {"claimed_by": "gha-B"}),
+])
+_r213 = _led213.get("K")
+check("★★★ `sent` 뒤에 온 `claimed` 가 **나간 사실을 덮지 못한다**",
+      _r213.state is _C.SendState.SENT and _r213.message_ids == [19],
+      f"상태 {_r213.state.value} · 글번호 {_r213.message_ids} "
+      f"— 덮이면 같은 카드를 두 번 보낸다")
+check("  ↳ 조용히 넘기지 않는다 (겹침을 셈해 알린다)",
+      _led213.stale_lines == 1, f"{_led213.stale_lines}")
+check("  ↳ 정상 진행(claimed → sent)은 그대로 이긴다",
+      _ledger213([("claimed", {}),
+                  ("sent", {"message_ids": [7], "sent_count": 1})
+                  ]).get("K").state is _C.SendState.SENT)
+check("  ↳ 종결 뒤 종결(격리)은 막지 않는다 — 앞으로 가는 것이다",
+      _ledger213([("sent", {"message_ids": [7]}),
+                  ("needs_human", {})]).get("K").state
+      is _C.SendState.NEEDS_HUMAN)
+
+
 # ── ★★★ **투표 닫기가 세 갈래를 구별하는가** (v2.01 · 실제 사고) ──────────
 #
 # 옛 코드는 "닫았다 / 이미 닫혔다 / 통신 오류"를 전부 `None` 으로 뭉갰고,

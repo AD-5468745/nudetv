@@ -207,13 +207,36 @@ class Ledger:
         # **다만 조용히 넘기지 않는다** — 건너뛴 줄은 '이미 보냄'을 잃은 것이므로
         # 중복 발송 위험이다. 반드시 사람에게 올린다.
         self.broken_lines = 0
+        # ── ★★★ **뒤 줄이 무조건 이기면 나간 것이 '안 나간 것'이 된다** (v2.13) ──
+        #
+        # 전에는 `self._rows[key] = decode(line)` — **상태를 안 보고** 마지막
+        # 줄이 이겼다. 대장은 추가 전용이고 `.gitattributes` 가 `merge=union`
+        # 이라, 두 실행의 줄이 **섞여서** 이런 순서가 만들어질 수 있다:
+        #     ① claimed(실행 A)  ② sent(글번호 19)  ③ claimed(실행 B)
+        # 그러면 ③이 ②를 덮어 **상태=claimed · 글번호=[] · 보낸수=0** 이 되고,
+        # 오류도 경고도 안 난다(깨진 줄 0). 다음 틱은 「클레임만 하고 죽었다,
+        # 아무것도 안 나갔다」로 읽어 **큐로 되돌리고 다시 보낸다.**
+        # 구독자는 같은 카드를 두 번 받는다 — 되돌릴 수 없는 사고다.
+        # (2026-09-25 적대적 점검에서 재현. git union merge 로도 재현됨.)
+        #
+        # 규칙: **상태는 앞으로만 간다.** 이미 종결(sent·건너뜀·격리 등)인
+        # 항목을 **종결이 아닌 줄**이 덮지 못하게 한다. 조용히 넘기지 않고
+        # 센다 — 이런 줄이 생겼다는 것 자체가 실행이 겹쳤다는 뜻이다.
+        self.stale_lines = 0
+        _guard = set(SETTLED_STATES) | {SendState.NEEDS_HUMAN}
         if self.path.exists():
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
                     continue
                 try:
                     d = json.loads(line)
-                    self._rows[d["idem_key"]] = self._decode(d)
+                    rec = self._decode(d)
+                    prev = self._rows.get(rec.idem_key)
+                    if (prev is not None and prev.state in _guard
+                            and rec.state not in _guard):
+                        self.stale_lines += 1
+                        continue          # 되돌아가는 줄은 안 받는다
+                    self._rows[rec.idem_key] = rec
                 except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                     self.broken_lines += 1
 

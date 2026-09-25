@@ -4522,6 +4522,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
     if getattr(led, "broken_lines", 0) and not hold:
         lines.append(f"⚠️ 발송 대장 {led.broken_lines}줄을 읽지 못했습니다 — "
                      f"중복 발송 위험. 사람이 확인해야 합니다.")
+    # **되돌아가는 줄이 있었다는 것은 실행이 겹쳤다는 뜻이다** (v2.13).
+    # 막았으니 중복 발송은 안 나지만, 겹침 자체는 알아야 한다.
+    if getattr(led, "stale_lines", 0):
+        lines.append(f"발송 대장에 **되돌아가는 줄** {led.stale_lines}개를 "
+                     f"막았습니다 — 실행이 겹쳤다는 뜻입니다(중복 발송은 "
+                     f"막혔습니다). 같은 시각 실행이 둘인지 보세요.")
+        print(f"  🔁 대장 되돌아가는 줄 {led.stale_lines}개를 막았습니다")
     _needs = led.needs_human() if hasattr(led, "needs_human") else []
     if _needs:
         # **격리 건수는 보고하되 '이번 틱의 사고'로 세지 않는다.**
