@@ -3865,6 +3865,50 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★★ **날짜 단위 대조가 주소 모양이 바뀌어도 맞는가** (v2.11 · 실제 사고) ──
+#
+# `_day_scope_seen` 이 `scope.split("#")[0]` 으로 잘랐다. 분석 주소가
+# `KBO:2026-09-09#0` 이던 시절엔 맞았는데, **2026-09-17 에 분석이 경기별이
+# 되면서** `KBO:2026-09-17:KBO:2026:20260917LTLG0` 이 됐다. `#` 가 없으니
+# 통째로 남아 날짜 대조가 영영 안 맞고, **「경기 분석이 그날 통째로 안
+# 나갔습니다」가 여드레 동안 매일 거짓으로 울었다.**
+# 실측 2026-09-25: KBO 2026-09-24 분석 3건이 장부에 다 `sent` 인데
+# 같은 시각 알림은 "그날 3경기인데 한 장도 안 나갔습니다".
+# **빨간불이 거짓이면 사람이 진짜 신호를 안 믿게 된다** — 심각도 높음.
+_shapes211 = {
+    "KBO:2026-09-09": "KBO:2026-09-09",                       # 리더보드·정리판
+    "KBO:2026-09-09#0": "KBO:2026-09-09",                     # 옛 분석
+    "KBO:2026-09-09#09-09 18:30": "KBO:2026-09-09",           # 예고(시각 꼬리)
+    "KBO:2026-09-17:KBO:2026:20260917LTLG0": "KBO:2026-09-17",  # 지금 분석
+    "NPB:2026-09-24:g:2026-09-24:HIR:YOG": "NPB:2026-09-24",  # NPB 안정키
+    "MLS:2026-09-24:MLS:2026-27:naver-mls-Lw": "MLS:2026-09-24",
+}
+_bad211 = {k: C.day_scope_of(k) for k, v in _shapes211.items()
+           if C.day_scope_of(k) != v}
+check("★★★ 날짜 단위 대조가 **주소 모양 다섯 가지 전부**에서 맞는다",
+      not _bad211, f"틀린 것: {_bad211}")
+check("  ↳ (변이) 옛 방식(`#`로 자르기)은 지금 분석 주소를 못 맞춘다",
+      "KBO:2026-09-17:KBO:2026:20260917LTLG0".split("#", 1)[0]
+      != "KBO:2026-09-17",
+      "옛 방식이 우연히 맞으면 이 시험은 아무것도 못 잡는다")
+check("  ↳ 날짜 꼴이 아니면 건드리지 않는다 (모르는 모양을 지어내지 않는다)",
+      C.day_scope_of("이상한것") == "이상한것")
+# 실제 판정까지 — 그날 한 장 나갔으면 「통째로 안 나갔다」가 뜨면 안 된다
+_g211 = C.Game(league=C.League.KBO, season="2026", source_key="v211",
+               home=C.TeamRef(C.League.KBO, "KT"),
+               away=C.TeamRef(C.League.KBO, "HH"),
+               start_utc=NOW - timedelta(hours=12), home_tz="Asia/Seoul",
+               status=C.Status.FINAL,
+               score=C.Score(home=3, away=1, unit=C.ScoreUnit.RUNS))
+_key211 = C.idem_key("-100t", ContentType.ANALYSIS, C.game_scope(_g211))
+_miss211 = C.unqueued_per_day(ContentType.ANALYSIS, [_g211], [_key211], NOW)
+check("★★★ 그날 한 장이라도 나갔으면 **「통째로 안 나갔다」가 안 뜬다**",
+      not _miss211, f"{_miss211}")
+_miss212 = C.unqueued_per_day(ContentType.ANALYSIS, [_g211], [], NOW)
+check("  ↳ (변이) 진짜 0건이면 여전히 뜬다 (감시를 무디게 한 것이 아니다)",
+      len(_miss212) == 1, f"{_miss212}")
+
+
 # ── ★★ **빈 팀 코드가 빈 이름 카드로 나가지 않는가** (v2.09 · 안 되는 길 ②) ──
 #
 # 「틀리게 준다」 축. 소스가 팀 칸을 비워 보내면 `TeamRef(리그, "")` 가

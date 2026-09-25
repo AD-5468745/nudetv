@@ -2407,19 +2407,45 @@ assert all(
     "그건 예외가 아니라 모르는 누락입니다")
 
 
-def _day_scope_seen(content_type: "ContentType", idem_keys) -> set:
-    """대장에서 그 콘텐츠의 `{리그}:{날짜}` 접두사만 뽑는다.
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-    scope 모양이 콘텐츠마다 다르다 — 예고 `KBO:2026-09-09#09-09 18:30` ·
-    분석 `KBO:2026-09-09#0` · 리더보드 `KBO:2026-09-09`. 공통은 앞의
-    `{리그}:{날짜}`뿐이라 거기까지만 자른다.
+
+def day_scope_of(scope: str) -> str:
+    """어떤 scope에서든 앞의 `{리그}:{날짜}` 만 꺼낸다.
+
+    ── ★★★ **`#` 로 자르던 것이 8일 동안 거짓 경보를 냈다** (v2.11) ──────
+    전에는 `scope.split("#")[0]` 이었다. 그때 분석 주소는 `KBO:2026-09-09#0`
+    이라 그것으로 맞았는데, **2026-09-17 에 분석이 경기별이 되면서**
+    주소가 `KBO:2026-09-17:KBO:2026:20260917LTLG0` 으로 바뀌었다.
+    `#` 가 없으니 통째로 남고, 날짜 단위 대조가 영영 안 맞아
+    **「경기 분석이 그날 통째로 안 나갔습니다」가 매일 거짓으로 울었다**
+    (실측 2026-09-25: KBO 2026-09-24 분석이 장부에 3건 다 `sent` 인데
+     같은 시각 알림은 "한 장도 안 나갔습니다").
+
+    빨간불이 거짓이면 **사람이 진짜 신호를 안 믿게 된다** — 심각도 높음.
+    이제 모양에 기대지 않고 **앞 두 칸(리그·날짜)** 을 꺼낸다:
+
+        KBO:2026-09-09                        → KBO:2026-09-09
+        KBO:2026-09-09#0                      → KBO:2026-09-09
+        KBO:2026-09-09#09-09 18:30            → KBO:2026-09-09
+        KBO:2026-09-17:KBO:2026:20260917LTLG0 → KBO:2026-09-17
+        NPB:2026-09-24:g:2026-09-24:HIR:YOG   → NPB:2026-09-24
     """
+    head = str(scope or "").split("#", 1)[0]
+    parts = head.split(":")
+    if len(parts) >= 2 and _DAY_RE.match(parts[1]):
+        return f"{parts[0]}:{parts[1]}"
+    return head          # 날짜 꼴이 아니면 건드리지 않는다 (옛 동작)
+
+
+def _day_scope_seen(content_type: "ContentType", idem_keys) -> set:
+    """대장에서 그 콘텐츠의 `{리그}:{날짜}` 접두사만 뽑는다."""
     out = set()
     for k in idem_keys:
         p = str(k).split(IDEM_SEP)
         if len(p) < 3 or p[1] != content_type.value:
             continue
-        out.add(p[2].split("#", 1)[0])
+        out.add(day_scope_of(p[2]))
     return out
 
 
