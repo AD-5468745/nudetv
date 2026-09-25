@@ -1802,12 +1802,24 @@ def boxscore_card(game, league: League, *, record: dict | None = None,
     # 여덟 줄을 다 그리면 카드가 높이 한계에 닿고, 그러면 이 장이 통째로
     # 사라진다(분석 카드에서 이미 겪었다).
     _etc = _NP.etc_records(record)
+    # ── ★★ **한 줄에 안 들어가는 값은 줄이고 캡션이 받는다** (v2.18) ──────
+    # 홈런 줄이 `강백호33호(…) 허인서20호(…) 문현빈8호(…)` 49자로 와서
+    # **2.1줄**이 됐고, 접힘 게이트가 카드를 통째로 거절해 그날 KBO 기록실이
+    # 한 장도 안 나갔다(실측 2026-09-26). 카드가 버리는 것이 아니라
+    # **옮기는 것**이다 — 못 실은 것은 아래 캡션에 그대로 들어간다.
+    _etc_full: list = []
     if _etc:
+        _rows_etc = []
+        for how, what in _etc[:4]:
+            _shown, _hidden = C5.fit_bar_value(what)
+            _rows_etc.append((how, _shown))
+            if _hidden:
+                _etc_full.append(f"{how} — {what}")
         body += ('<div class="anh">기록<span>이 경기</span></div>'
                  + "".join(
                      f'<div class="bar"><span class="k">{C5.esc(how)}</span>'
                      f'<span class="v">{C5.esc(what)}</span></div>'
-                     for how, what in _etc[:4]))
+                     for how, what in _rows_etc))
 
     if not body:
         return None
@@ -1824,6 +1836,8 @@ def boxscore_card(game, league: League, *, record: dict | None = None,
     # 캡션 — **카드에 못 실은 것만.** 카드가 말한 넷은 빼고 나머지 기록,
     # 그리고 양 팀 다음 경기.
     extra: list = []
+    # 카드에서 줄인 줄은 **원문 그대로** 캡션이 받는다 (v2.18).
+    extra.extend(_etc_full)
     for how, what in _etc[4:]:
         extra.append(f"{how} — {what}")
     _nx: list = []

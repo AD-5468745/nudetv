@@ -1645,5 +1645,61 @@ check("★★★ K리그 순위표 카드 머리글도 '승점률'이다 (한 �
       "승점률" in _kl_html and "승률" not in _kl_html.replace("승점률", ""),
       plain(_kl_html)[:120])
 
+# ── ★★ **한 줄 한도를 실제 카드로 다시 잰다** (v2.18 · 실제 사고) ────────
+#
+# KBO 기록실의 홈런 줄이 49자로 와서 **2.1줄**이 됐고, 접힘 게이트가 카드를
+# 통째로 거절해 그날 기록실이 한 장도 안 나갔다. 한도(32자)는 실측값인데
+# **글씨를 키우면 그 값이 바뀐다**(v1.75 `지명타자` 사고와 같다).
+# 그래서 숫자를 믿지 않고 **실제 카드를 그려 다시 잰다.**
+_LONG = "강백호33호(4회2점 구창모) 허인서20호(4회1점 김민우) 문현빈8호(7회1점 이용찬)"
+_shown18, _hid18 = C5.fit_bar_value(_LONG)
+check("★ 긴 값은 항목 경계에서 줄인다 (말이 끊기지 않는다)",
+      _shown18.endswith(f"외 {_hid18}") and ")" in _shown18 and _hid18 >= 1,
+      _shown18)
+check("  ↳ 줄인 것이 한도 안이다", len(_shown18) <= C5.BAR_VALUE_MAX_CHARS,
+      f"{len(_shown18)}자 > {C5.BAR_VALUE_MAX_CHARS}자")
+check("  ↳ 짧은 값은 건드리지 않는다",
+      C5.fit_bar_value("강백호33호(4회2점 구창모)")[0] == "강백호33호(4회2점 구창모)")
+
+
+def _fold18(val: str):
+    """실제 카드를 그려 접힘이 나는지 본다. 못 그리면 None(건너뜀)."""
+    try:
+        from playwright.sync_api import sync_playwright as _pw18
+    except Exception:                                        # noqa: BLE001
+        return None
+    import headline as _H18
+    body = ('<div class="anh">기록<span>이 경기</span></div>'
+            f'<div class="bar"><span class="k">홈런</span>'
+            f'<span class="v">{C5.esc(val)}</span></div>')
+    head = _H18.Headline(rule="B-BOX", text="한화 5 : 3 NC", sub="경기 기록",
+                         facts={"away": 5, "home": 3})
+    html = C5.shell(kind="boxscore", league=League.KBO, date_label="9.25 금",
+                   head=head, body=body, foot_left="대전")
+    try:
+        with _pw18() as p:
+            b = p.chromium.launch()
+            pg = b.new_page(viewport={"width": C5.CARD_W, "height": 1600})
+            pg.set_content(html)
+            pg.wait_for_timeout(150)
+            bad = [x for x in pg.evaluate(C5._MEASURE_JS) if "접힘" in x]
+            b.close()
+            return bool(bad)
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+_f_long = _fold18(_LONG)
+_f_short = _fold18(_shown18)
+if _f_long is None or _f_short is None:
+    skip += 1
+    print("  SKIP  실제 카드 렌더로 한 줄 한도 재기 (렌더 도구 없음)")
+else:
+    check("★★ 줄인 값은 **실제 카드에서** 안 접힌다", _f_short is False,
+          "한도(BAR_VALUE_MAX_CHARS)가 지금 글씨 크기와 안 맞는다")
+    check("  ↳ (변이) 원문은 접힌다 — 그래서 줄여야 한다", _f_long is True,
+          "원문이 안 접히면 이 시험은 아무것도 안 잡는다")
+
+
 print(f"\n결과: {ok} PASS / {fail} FAIL" + (f" / {skip} SKIP" if skip else ""))
 sys.exit(1 if fail else 0)

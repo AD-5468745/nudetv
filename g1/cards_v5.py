@@ -1954,6 +1954,47 @@ async def audit(page, html: str) -> list[str]:
 # 캡션 글자만 뜬다 — 캡션이 비면 구독자 폰에 "사진"이라고만 온다.
 # 그 한 줄은 카드와 같은 말을 하지만 중복이 아니다. **매체가 다르다** —
 # 알림은 글자만 보이고, 카드는 열어야 보인다.
+# ── 한 줄짜리 값이 접히지 않는 한도 (v2.18) ──────────────────────────
+#
+# `.bar` 의 오른쪽 값(`.v`)은 **한 줄**을 전제로 그린다. 넘치면 접힘 게이트가
+# 카드를 통째로 거절한다 — 그러면 그 장이 조용히 안 나간다.
+#
+# 실측 2026-09-26: KBO 기록실의 홈런 줄이
+#     `강백호33호(4회2점 구창모) 허인서20호(4회1점 김민우) 문현빈8호(…)`  49자
+# 로 와서 **2.1줄**이 됐고, 그날 KBO 기록실이 한 장도 안 나갔다.
+# 실제 카드를 렌더해 이분탐색으로 재니 **32자**가 한 줄 한도였다.
+#
+# ⚠️ **글씨 크기를 바꾸면 이 값도 바뀐다** (v1.75 의 `지명타자` 사고와 같다).
+# 그래서 `verify_cards` 가 실제 카드를 그려 이 한도를 다시 잰다 — 폰트를
+# 키우면 거기서 짖는다.
+BAR_VALUE_MAX_CHARS = 32
+
+
+def fit_bar_value(text: str, *, limit: int = BAR_VALUE_MAX_CHARS) -> tuple:
+    """한 줄에 들어갈 만큼만 남긴다. `(보일 것, 못 실은 개수)`.
+
+    **항목 경계에서 자른다** — 글자 수로 뚝 자르면 `허인서20호(4회1점 김민` 처럼
+    말이 끊긴다. 항목은 `)` 뒤 빈칸으로 나뉜다(소스 표기).
+    못 실은 것은 캡션이 받는다 — 카드가 버리는 것이 아니다.
+    """
+    t = str(text or "").strip()
+    if len(t) <= limit:
+        return t, 0
+    parts = [x.strip() for x in t.replace(") ", ")\n").split("\n") if x.strip()]
+    if len(parts) <= 1:
+        return (t[: max(1, limit - 1)].rstrip() + "…"), 0
+    keep: list = []
+    for x in parts:
+        cand = " ".join(keep + [x])
+        if keep and len(cand) + 6 > limit:      # `외 N` 자리를 남긴다
+            break
+        keep.append(x)
+    hidden = len(parts) - len(keep)
+    if not hidden:
+        return " ".join(keep), 0
+    return f"{' '.join(keep)} 외 {hidden}", hidden
+
+
 CAPTION_MAX = 1024
 # 이어 보내는 텍스트의 상한 — 사진 캡션(1024)과 **다른 값이다**.
 # 계약이 가진 값을 그대로 쓴다(두 벌로 적으면 한쪽이 낡는다).
