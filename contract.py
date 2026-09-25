@@ -2712,6 +2712,9 @@ SETTLED_STATES = frozenset({
 IDEM_SEP = "|"   # game_id가 ':'를 포함하므로 ':'를 쓰면 키를 되돌려 파싱할 수 없다
 
 
+_FINGERPRINT_RE = re.compile(r"^ch[0-9a-f]{12}$")
+
+
 def channel_ref(channel_id: str) -> str:
     """대장·멱등키에 남길 채널 식별자 — **실제 ID를 남기지 않는다** (v1.11c).
 
@@ -2729,8 +2732,20 @@ def channel_ref(channel_id: str) -> str:
     해시는 **단방향**이라 지문만으로는 원래 ID를 알 수 없고, 같은 채널이면 항상 같은
     지문이 나오므로 **중복 발송 방지는 그대로 작동한다**. 채널이 바뀌면 지문도 바뀌어
     새 채널에는 처음부터 다시 나간다(운영 채널 전환 시 의도한 동작이다).
+
+    ⚠️ **이 함수는 멱등이 아니다.** 지문에 다시 걸면 **또 다른 지문**이 나온다
+    (지문에 또 걸면 전혀 다른 지문이 나온다). 그래서 이미 지문인 값을 넣으면
+    아무도 조회하지 않는 죽은 주소가 만들어진다 — 2026-09-25 에 실제로 냈다
+    (앵커 별칭 다섯 줄이 `ch1fa75615e92f` 로 적혀 아무 일도 안 했다).
+    **더 나빴던 것은 확인까지 같은 실수를 해서 통과한 것이다** — 양쪽에 같은
+    잘못된 전제를 넣고 재면 아무것도 안 잡힌다.
+    그래서 여기서 못 박는다: 지문 모양이 들어오면 터진다.
     """
     import hashlib
+    if _FINGERPRINT_RE.match(str(channel_id)):
+        raise GateError(
+            f"이미 채널 지문입니다 — 다시 걸면 죽은 주소가 됩니다 ({channel_id}). "
+            f"실제 채널 ID를 넣거나, 기존 멱등키의 앞칸을 그대로 쓰세요.")
     return "ch" + hashlib.sha256(str(channel_id).encode()).hexdigest()[:12]
 
 
