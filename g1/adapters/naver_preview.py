@@ -38,6 +38,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from typing import Optional
 
 from contract import KST, League
@@ -113,8 +114,24 @@ def _get(path: str) -> Optional[dict]:
         return None
 
 
+# ── 소스가 다르게 부르는 팀 (v2.12) ──────────────────────────────────
+#
+# 같은 소스 안에서도 **일정표와 우리 표가 다른 이름**을 쓰는 팀이 있다.
+# 실측 2026-09-25: 우리 `화이트삭스` · 일정표 `시카고W` — 이름이 안 맞아
+# 그 경기 사전정보가 통째로 빠졌다. 코드는 일부러 **추측하지 않고 포기**한다
+# (엉뚱한 경기의 선발투수를 싣느니 안 싣는 편이 낫다) — 그래서 이름이
+# 어긋나면 조용히 0건이 된다. 여기 **한 곳에만** 적어 맞춘다.
+#
+# ⚠️ 새로 넣을 때는 반드시 **일정표에서 실제로 본 이름**을 적는다.
+# 추측해서 넣으면 엉뚱한 경기를 고르게 되고, 그게 이 규칙이 막으려던 것이다.
+NAME_ALIAS: dict = {
+    "화이트삭스": "시카고W",        # MLB CWS — 2026-09-25 실측
+}
+
+
 def _norm(x) -> str:
-    return "".join(str(x or "").split()).replace("·", "")
+    v = "".join(str(x or "").split()).replace("·", "")
+    return NAME_ALIAS.get(v, v)
 
 
 def game_id(league: League, game) -> Optional[str]:
@@ -129,11 +146,29 @@ def game_id(league: League, game) -> Optional[str]:
         return None
     upper, cat = pair
     day = game.sports_day
+    # ── ★★★ **우리 날짜와 소스 달력이 하루 어긋난다** (v2.12 · 실제 사고) ──
+    #
+    # 우리 `sports_day` 는 **경기 날**이고, 소스의 `fromDate` 는 **한국 달력
+    # 날짜**다. MLB 는 한국시각 새벽에 열리므로 둘이 자주 갈라진다:
+    #     우리  CHC vs BOS · sports_day 2026-09-25
+    #     실제  시작 09-26 02:05 KST  → 소스 표에는 **9/26** 에 있다
+    # 그래서 하루치만 물으면 못 찾고, `사전정보`가 **조용히 0건**이 된다.
+    # 실측 2026-09-25: 우리 9/25 MLB 16경기 중 **13경기가 소스의 9/26** 에
+    # 있었다(9/25 에 있던 것은 2경기뿐). 그날 사전정보 절반 이상이 사라진다.
+    #
+    # 고치는 법은 **날짜를 옮기는 것이 아니라 창을 이틀로 넓히는 것**이다.
+    # 어느 쪽 관례가 맞는지 우리가 정할 일이 아니고, 대진+시각으로 맞추므로
+    # 하루 더 받아도 엉뚱한 경기를 고를 위험이 없다(더블헤더 처리 그대로).
+    try:
+        _d2 = (datetime.strptime(day, "%Y-%m-%d")
+               + timedelta(days=1)).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        _d2 = day
     key = (league, day)
     hit = _sched.get(key)
     if not (hit and time.time() - hit[0] < SCHEDULE_CACHE_SECONDS):
         q = urllib.parse.urlencode({"fields": "basic", "upperCategoryId": upper,
-                                    "fromDate": day, "toDate": day, "size": 100})
+                                    "fromDate": day, "toDate": _d2, "size": 100})
         d = _get(f"/schedule/games?{q}") or {}
         table: dict = {}
         for g in ((d.get("result") or {}).get("games") or []):

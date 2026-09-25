@@ -3865,6 +3865,43 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★★ **사전정보가 하루 어긋난 날짜를 찾아내는가** (v2.12 · 실제 사고) ──
+#
+# 우리 `sports_day` 는 **경기 날**이고 소스의 `fromDate` 는 **한국 달력
+# 날짜**다. MLB 는 한국시각 새벽에 열려 둘이 자주 갈라진다.
+# 실측 2026-09-25: 우리 9/25 MLB 16경기 중 **13경기가 소스의 9/26** 에
+# 있었고(9/25 에 있던 것은 2경기), 그만큼 사전정보가 **조용히 0건**이었다.
+# 창을 이틀로 넓혀 28경기 전부 찾게 됐다(9/24 12/12 · 9/25 16/16).
+from adapters import naver_preview as _NPv
+_asked212: list = []
+_old_get212 = _NPv._get
+try:
+    _NPv._get = lambda path: _asked212.append(path) or {}
+    _NPv._sched.clear()
+    _g212 = C.Game(
+        league=C.League.MLB, season="2026", source_key="v212",
+        home=C.TeamRef(C.League.MLB, "BOS"), away=C.TeamRef(C.League.MLB, "CHC"),
+        start_utc=datetime(2026, 9, 25, 17, 5, tzinfo=timezone.utc),
+        home_tz="America/New_York", status=C.Status.SCHEDULED)
+    _NPv.game_id(C.League.MLB, _g212)
+    _q212 = _asked212[0] if _asked212 else ""
+    check("★★★ 일정 조회 창이 **이틀**이다 (한국 새벽 경기가 다음 날 표에 있다)",
+          "fromDate=2026-09-25" in _q212 and "toDate=2026-09-26" in _q212,
+          f"{_q212}")
+    check("  ↳ (변이) 하루만 물으면 그 13경기를 못 찾는다",
+          "toDate=2026-09-25" not in _q212,
+          "창이 하루면 사전정보가 절반 넘게 조용히 사라진다")
+finally:
+    _NPv._get = _old_get212
+    _NPv._sched.clear()
+check("★★ 소스가 다르게 부르는 팀 이름을 한 곳에서 맞춘다",
+      _NPv._norm("화이트삭스") == "시카고W"
+      and _NPv._norm("콜로라도") == "콜로라도",
+      f"{_NPv._norm('화이트삭스')!r}")
+check("  ↳ 별칭은 표 한 곳에만 있다 (손으로 여기저기 적지 않는다)",
+      isinstance(_NPv.NAME_ALIAS, dict) and len(_NPv.NAME_ALIAS) >= 1)
+
+
 # ── ★★★ **날짜 단위 대조가 주소 모양이 바뀌어도 맞는가** (v2.11 · 실제 사고) ──
 #
 # `_day_scope_seen` 이 `scope.split("#")[0]` 으로 잘랐다. 분석 주소가
