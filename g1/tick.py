@@ -2740,6 +2740,37 @@ def _message_link(chat_id: str, message_id: int, *, username: str = "") -> str:
     return f"https://t.me/c/{inner}/{int(message_id)}"
 
 
+def _anchor_alias(snd, item, games: list, channel: str) -> None:
+    """앵커를 **안정키 주소로도** 대장에 적는다 (v2.16).
+
+    소스가 경기 번호를 바꾸면 앵커는 옛 주소에만 있고 뒤따르는 콘텐츠는
+    새 주소로 찾으러 와서 **그 경기가 통째로 조용해진다**
+    (2026-09-25 KBO: `20260925LTOB0` → `20260925LTOB0C1700`).
+
+    **새로 보내는 것이 아니다.** 같은 글번호를 다른 주소에 한 번 더 적는 것뿐이고,
+    오히려 앵커가 두 번 나가는 것을 막는다(이미 나간 것으로 보이므로).
+    """
+    try:
+        one = next((g for g in (games or []) if g.game_id == item.game_id), None)
+        sk = stable_game_key(one) if one is not None else None
+        if not sk:
+            return
+        alias = f"{item.league.value}:{item.sports_day}:{sk}"
+        if alias == (item.scope or ""):
+            return                       # 이미 안정키로 적혀 있다
+        key = idem_key(channel, ContentType.ANCHOR, alias)
+        if snd.led.get(key) is not None:
+            return
+        base = snd.led.get(item.idem_key)
+        if base is None or not base.message_ids:
+            return
+        snd.led.put(replace(base, idem_key=key,
+                            last_error="안정키 별칭 — 같은 앵커의 다른 주소"))
+        print(f"    🔗 앵커 별칭 {alias} → {base.message_ids}")
+    except Exception as e:                                   # noqa: BLE001
+        print(f"    ⚠️ 앵커 별칭을 못 남겼습니다: {type(e).__name__}")
+
+
 def _index_after_send(item, message_ids, channel: str, transport) -> None:
     """발송 뒤 뒷정리 — 오늘의 경기는 **고정**하고, 앵커는 **링크를 채운다.**
 
@@ -2806,6 +2837,30 @@ def _index_after_send(item, message_ids, channel: str, transport) -> None:
             rec["links"][_lk_key] = int(message_ids[0])
             if item.game_id and item.game_id != _lk_key:
                 rec["links"][item.game_id] = int(message_ids[0])
+            # ── ★★★ **안정키 별칭을 대장에 함께 남긴다** (v2.16) ──────────
+            #
+            # 2026-09-25: KBO 소스가 경기 도중 번호에 `C1700` 을 붙였다.
+            # 앵커는 옛 번호로 대장에 적혀 있고 뒤이은 콘텐츠는 새 번호를
+            # 들고 오니, **자리를 못 찾아 그 경기가 통째로 조용해졌다**
+            # (한화 경기만 번호가 안 바뀌어 혼자 멀쩡했다).
+            #
+            # 링크만 고쳐서는 부족하다 — 토론방 자리를 찾는 쪽은 **대장**을
+            # 본다. 그래서 앵커를 보낸 그 자리에서 **안정키(날짜+두 팀)로도**
+            # 같은 글번호를 적어 둔다. 번호가 어떻게 바뀌어도 `_anchor_keys`
+            # 의 안정키 후보가 이 줄을 찾는다.
+            #
+            # 이건 새 발송이 아니라 **같은 앵커의 다른 주소**다 — 글번호가
+            # 같으므로 중복 발송이 되지 않고, 오히려 앵커가 두 번 나가는 것을
+            # 막는다(이미 나간 것으로 보이므로).
+            try:
+                _one_lk = next((g for g in (_INDEX_POOL.get(day) or [])
+                                if g.game_id == item.game_id), None)
+                _sk_lk = stable_game_key(_one_lk) if _one_lk is not None else None
+                if _sk_lk and item.league is not None:
+                    _alias = (f"{item.league.value}:{item.sports_day}:{_sk_lk}")
+                    rec["links"].setdefault(_alias, int(message_ids[0]))
+            except Exception as _e_lk:                       # noqa: BLE001
+                print(f"    ⚠️ 앵커 별칭을 못 남겼습니다: {type(_e_lk).__name__}")
             _index_save(state)
             _user = _DS.public_username(transport, channel)
             # 고정된 글을 그 자리에서 고쳐 바로가기를 채운다.
@@ -4478,6 +4533,16 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 # v1.39 — 오늘의 경기는 **고정**하고, 앵커는 그 글에 **바로가기를
                 # 채운다**. 실패해도 발송에는 영향이 없다(뒷정리일 뿐이다).
                 _index_after_send(item, res.message_ids, channel, tr)
+                # ── ★★★ **앵커를 안정키로도 대장에 적는다** (v2.16) ─────
+                # 토론방 자리를 찾는 쪽은 **대장**을 본다. 소스가 경기
+                # 번호를 바꾸면(2026-09-25 KBO `C1700`) 앵커는 옛 번호로
+                # 적혀 있고 뒤 콘텐츠는 새 번호를 들고 와 **자리를 못 찾아
+                # 그 경기가 통째로 조용해진다.** 같은 앵커를 안정키 주소로도
+                # 적어 두면 번호가 어떻게 바뀌어도 찾는다.
+                # 새 발송이 아니라 **같은 글번호의 다른 주소**다.
+                if (item.content_type is ContentType.ANCHOR
+                        and item.league is not None and res.message_ids):
+                    _anchor_alias(snd, item, games, channel)
             elif res.state is SendState.NEEDS_HUMAN:
                 # **이미 격리된 것을 이번 틱의 실패로 다시 세지 않는다 (v1.11i).**
                 # 전에는 격리 1건이 매 틱 `failed += 1` → "발송 실패 1건" +

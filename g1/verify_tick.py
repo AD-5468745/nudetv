@@ -3865,6 +3865,64 @@ try:
 except (ValueError, C.GateError):
     check("  ↳ (변이) 옛 결함 모양은 반드시 터진다", True)
 
+# ── ★★★ **앵커를 안정키 주소로도 적는가** (v2.16 · 실제 사고) ──────────
+#
+# 토론방 자리를 찾는 쪽은 **대장**을 본다. 소스가 경기 번호를 바꾸면
+# (2026-09-25 KBO `20260925LTOB0` → `...C1700`) 앵커는 옛 주소에만 있고
+# 뒤따르는 콘텐츠는 새 주소로 찾으러 와 **그 경기가 통째로 조용해진다.**
+# 같은 앵커를 안정키 주소로도 적어 두면 번호가 어떻게 바뀌어도 찾는다.
+import tempfile as _tp216
+import pathlib as _pl216
+import sender as _S216
+
+
+class _Snd216:
+    def __init__(self, led):
+        self.led = led
+
+
+_p216 = _pl216.Path(_tp216.mkdtemp()) / "l.jsonl"
+_led216 = _S216.Ledger(_p216)
+_g216 = C.Game(league=C.League.KBO, season="2026", source_key="20260926HHNC0",
+               home=C.TeamRef(C.League.KBO, "NC"),
+               away=C.TeamRef(C.League.KBO, "HH"),
+               start_utc=NOW, home_tz="Asia/Seoul", status=C.Status.SCHEDULED)
+_raw216 = f"KBO:{_g216.sports_day}:{_g216.game_id}"
+_it216 = C.QueueItem(
+    idem_key=C.idem_key("-100t", ContentType.ANCHOR, _raw216),
+    content_type=ContentType.ANCHOR, scope=_raw216, scheduled_utc=NOW,
+    league=C.League.KBO, sports_day=_g216.sports_day,
+    game_id=_g216.game_id, render_at_utc=NOW)
+_led216.put(C.SendRecord(
+    idem_key=_it216.idem_key, state=C.SendState.SENT,
+    chat_id="ch", content_type=ContentType.ANCHOR, message_ids=[1480],
+    sent_count=1))
+T._anchor_alias(_Snd216(_led216), _it216, [_g216], "-100t")
+_alias216 = C.idem_key(
+    "-100t", ContentType.ANCHOR,
+    f"KBO:{_g216.sports_day}:{C.stable_game_key(_g216)}")
+_got216 = _led216.get(_alias216)
+check("★★★ 앵커가 **안정키 주소로도** 대장에 적힌다",
+      _got216 is not None and _got216.message_ids == [1480],
+      f"{_got216!r} — 없으면 번호가 바뀐 경기가 통째로 조용해진다")
+check("  ↳ **같은 글번호**다 (새로 보내는 것이 아니다)",
+      _got216 is not None and _got216.message_ids == [1480])
+# 번호가 바뀐 뒤에도 그 별칭을 찾아내는가 — 여기가 실제 구조다
+_drift216 = C.QueueItem(
+    idem_key="x", content_type=ContentType.FINAL_FLASH,
+    scope=f"KBO:{_g216.sports_day}:KBO:2026:20260926HHNC0C1700",
+    scheduled_utc=NOW, league=C.League.KBO, sports_day=_g216.sports_day,
+    game_id="KBO:2026:20260926HHNC0C1700", render_at_utc=NOW)
+_found216 = [k for k in T._anchor_keys(_drift216, "-100t", _g216)
+             if _led216.get(k) is not None]
+check("★★★ 번호가 바뀐 뒤에도 그 앵커를 **찾아낸다**",
+      bool(_found216),
+      "이게 안 되면 오늘 KBO 두 경기처럼 종료속보·기록실을 잃는다")
+check("  ↳ (변이) 안정키 후보가 없으면 못 찾는다 (이 시험이 무력하지 않다)",
+      not [k for k in T._anchor_keys(_drift216, "-100t", None)
+           if _led216.get(k) is not None])
+
+
 # ── ★★★ **KBO 도 번호를 바꿨다 — 전 리그 안정키** (v2.15 · 실제 사고) ──
 #
 # 2026-09-25 17:00 KBO 3경기 중 한 경기(한화)만 콘텐츠가 다 붙고 나머지
