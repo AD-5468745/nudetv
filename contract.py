@@ -2296,7 +2296,17 @@ def unqueued_per_game(content_type: "ContentType", games: list, idem_keys,
     과거 경기는 보지 않는다(`lookback_seconds`). 리그를 새로 붙인 날에는
     이미 끝난 옛 경기가 무더기로 ①에 걸리는데, 그건 사고가 아니라 도입이다.
     """
-    if content_type is ContentType.FINAL_FLASH:
+    # ── ★★★ **기록실이 감시 밖이라 조용히 사라졌다** (v2.19 · 실제 사고) ──
+    #
+    # 2026-09-25 KBO·NPB 기록실이 **한 장도 안 나갔고 장부에 줄도 없었다.**
+    # 사라진 것을 아무도 몰랐던 이유는 이 함수가 **종료속보·선발명단 둘만**
+    # 받아들였기 때문이다. 기록실은 예약 시각이 종료속보와 **같은 도장**
+    # (`first_final_at`)에서 나오므로 처음부터 여기 있어야 했다.
+    # 다른 것은 유예뿐이고(기록실 12시간 · 종료속보 6시간) 그것은
+    # `GRACE_SECONDS` 가 알아서 본다.
+    #
+    # 예외를 세는 쪽이 늘 뚫린다 — 넣을 수 있는 것은 넣는다.
+    if content_type in (ContentType.FINAL_FLASH, ContentType.BOXSCORE):
         stamp, need = "first_final_at", "terminal"
     elif content_type is ContentType.LINEUP:
         stamp, need = "lineup_seen_at", "lineup"

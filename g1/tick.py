@@ -4801,7 +4801,11 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         #     **정리판이 결과를 담으므로 정보는 안 사라진다** — 그래도 센다.
         #     세지 않으면 얼마나 자주 일어나는지 영원히 모른다.
         #   · 선발 라인업 — 명단은 받았는데 `lineup_seen_at`이 없으면 같은 일이 난다.
-        for _ct in (ContentType.FINAL_FLASH, ContentType.LINEUP):
+        #   · 기록실 — v2.19 에 넣었다. 2026-09-25 KBO·NPB 기록실이 한 장도
+        #     안 나갔는데 **장부에 줄도 없어 아무도 몰랐다.** 예약 시각이
+        #     종료속보와 같은 도장에서 나오므로 처음부터 여기 있어야 했다.
+        for _ct in (ContentType.FINAL_FLASH, ContentType.BOXSCORE,
+                    ContentType.LINEUP):
             if _ct in DISABLED_CONTENT_TYPES:
                 continue
             if _ct is ContentType.LINEUP and not LINEUP_ENABLED:
@@ -4809,7 +4813,9 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
             _pg = unqueued_per_game(_ct, _pool, led.idem_keys(), now)
             if not _pg:
                 continue
-            _label = "종료 속보" if _ct is ContentType.FINAL_FLASH else "선발 라인업"
+            _label = {ContentType.FINAL_FLASH: "종료 속보",
+                      ContentType.BOXSCORE: "기록실",
+                      ContentType.LINEUP: "선발 라인업"}[_ct]
             lost.append(
                 f"★★ 큐에조차 들어오지 못한 {_label} {len(_pg)}건 — "
                 + " · ".join(f"{_s} ({_w})" for _s, _w in _pg[:3]))

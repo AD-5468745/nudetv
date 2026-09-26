@@ -3873,6 +3873,42 @@ def _raises217(v) -> bool:
         return True
 
 
+# ── ★★★ **기록실이 조용히 사라지면 알림이 뜨는가** (v2.19 · 실제 사고) ──────
+#
+# 2026-09-25 KBO·NPB 기록실이 **한 장도 안 나갔고 장부에 줄도 없었다.**
+# 아무도 몰랐던 이유는 경기별 의무 감시가 **종료속보·선발명단 둘만** 봤기
+# 때문이다. 기록실은 예약 시각이 종료속보와 **같은 도장**에서 나오므로
+# 처음부터 감시 안에 있어야 했다. 예외를 세는 쪽이 늘 뚫린다.
+_bx19 = C.Game(
+    league=C.League.KBO, season="2026", source_key="v219",
+    home=C.TeamRef(C.League.KBO, "NC"), away=C.TeamRef(C.League.KBO, "HH"),
+    start_utc=NOW - timedelta(hours=20), home_tz="Asia/Seoul",
+    status=C.Status.FINAL, score=C.Score(home=3, away=1, unit=C.ScoreUnit.RUNS),
+    meta=C.GameMeta())
+_bx19.meta.first_final_at = (NOW - timedelta(hours=17)).isoformat()
+_miss19 = C.unqueued_per_game(ContentType.BOXSCORE, [_bx19], [], NOW)
+check("★★★ 기록실이 창을 넘겨 사라지면 **잡힌다**",
+      len(_miss19) == 1, f"{_miss19} — 안 잡히면 조용히 사라진다")
+check("  ↳ 장부에 흔적이 있으면 안 잡는다 (헛경보 금지)",
+      not C.unqueued_per_game(
+          ContentType.BOXSCORE, [_bx19],
+          [C.idem_key("-100t", ContentType.BOXSCORE, C.game_scope(_bx19))],
+          NOW))
+check("  ↳ 유예 안이면 아직 안 잡는다 (기록실은 12시간)",
+      not C.unqueued_per_game(ContentType.BOXSCORE, [_bx19],
+                              [], NOW - timedelta(hours=13)))
+check("  ↳ 취소·연기에는 기록실 의무가 없다",
+      not C.unqueued_per_game(
+          ContentType.BOXSCORE,
+          [__import__("dataclasses").replace(
+              _bx19, status=C.Status.CANCELED)], [], NOW))
+check("  ↳ 시계가 실제로 기록실을 감시 목록에 넣었다",
+      "ContentType.BOXSCORE" in (pathlib.Path(__file__).resolve().parent
+                                 / "tick.py").read_text(encoding="utf-8")
+      .split("for _ct in (ContentType.FINAL_FLASH")[1][:160],
+      "계약이 받아들여도 시계가 안 부르면 아무 일도 안 일어난다")
+
+
 # ── ★★★ **채널 지문을 두 번 걸면 막는가** (v2.17 · 내가 낸 사고) ──────────
 #
 # 2026-09-25 복구 중에 `idem_key()` 에 **이미 지문인 값**을 넣었다.
