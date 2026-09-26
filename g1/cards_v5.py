@@ -556,7 +556,15 @@ html,body{{width:{CARD_BASE_W}px;background:{th['bg']};
 /* **값은 자기 팀 이름 아래에 선다.** 전에는 좌우 값이 둘 다 가운데로 몰려서
    팀명(바깥 끝)과 값(가운데) 사이가 끊겼다 — 어느 값이 누구 것인지
    눈으로 이어붙여야 했다. 게이트 다섯이 전부 통과한 채로 그랬다. */
-.cmp .v{{font-size:30px;font-weight:600;color:{th['dim']};text-align:right}}
+/* ★★★ **한 줄 칸은 구조적으로 두 줄이 될 수 없게 한다** (v2.22).
+   같은 병으로 네 번 카드가 죽었다 — 명단(v1.75) · 오늘의 경기(v1.57b) ·
+   기록실(v2.18) · 사전정보(v2.20). 매번 **글자를 줄여서** 고쳤는데,
+   그러면 다음에 값이 길어지는 날 또 죽는다. 부르는 곳이 스물 몇 군데다.
+   그래서 **칸에서 막는다**: 넘치면 `…` 로 자른다.
+   값 하나가 줄어드는 것이 **카드가 통째로 사라지는 것보다 낫다.**
+   (부르는 쪽의 줄이기도 그대로 둔다 — 그쪽은 못 실은 것을 캡션에 넘긴다.) */
+.cmp .v{{font-size:30px;font-weight:600;color:{th['dim']};text-align:right;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}}
 .cmp .v.r{{text-align:left}}
 .cmp .v.on{{color:{th['accent']};font-weight:800}}
 .cmp .k{{text-align:center;font-size:20px;font-weight:700;letter-spacing:.09em;
@@ -564,7 +572,8 @@ html,body{{width:{CARD_BASE_W}px;background:{th['bg']};
 .bar{{margin-top:28px;border:1px solid {th['rule']};border-radius:4px;
   padding:26px 32px;display:flex;justify-content:space-between;align-items:center}}
 .bar .k{{font-size:20px;font-weight:800;letter-spacing:.14em;color:{th['faint']}}}
-.bar .v{{font-size:31px;font-weight:800;color:{th['ink']}}}
+.bar .v{{font-size:31px;font-weight:800;color:{th['ink']};
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}}
 .ix{{display:flex;align-items:center;gap:22px;padding:22px 0;
   border-bottom:1px solid {th['line']}}}
 .ix:last-child{{border-bottom:none}}
