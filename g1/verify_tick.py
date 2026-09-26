@@ -3873,6 +3873,30 @@ def _raises217(v) -> bool:
         return True
 
 
+# ── ★★★ **기록실 의무를 종목만 보고 세지 않는가** (v2.24 · 내가 낸 사고) ──
+#
+# v2.19 에서 기록실을 경기 단위 의무에 넣을 때 **종목(야구)만 보고** 넣었다.
+# 기록실은 네이버 미리보기 창구로 그리는데 그 창구가 **NPB 에는 없다**
+# (실측 전 기간: KBO 14 · MLB 74 · **NPB 0**). 그래서 NPB 3경기가 매일
+# 「큐에조차 들어오지 못한 기록실」로 찍혔다 — **없는 사고를 만든 것이다.**
+# 같은 실수가 `pipeline.py` 291~297줄에 리더보드로 이미 적혀 있다. 두 번째다.
+import pipeline as _P24
+check("★★★ 기록실 의무 리그를 **수집기 표에서** 받아 쓴다 (종목만 안 본다)",
+      _P24.BOXSCORE_LEAGUES == frozenset({C.League.KBO, C.League.MLB}),
+      f"{sorted(x.value for x in _P24.BOXSCORE_LEAGUES)}")
+check("  ↳ NPB 는 의무가 아니다 (창구가 없다 — 전 기간 발송 0건)",
+      C.League.NPB not in _P24.BOXSCORE_LEAGUES)
+check("  ↳ 야구가 아닌 리그도 의무가 아니다",
+      C.League.KL1 not in _P24.BOXSCORE_LEAGUES
+      and C.League.KBL not in _P24.BOXSCORE_LEAGUES)
+check("  ↳ (변이) 종목만 보면 NPB 가 들어온다 — 그게 사고였다",
+      C.SCORE_UNIT_BY_LEAGUE.get(C.League.NPB) in C.BOXSCORE_SPORTS)
+import morning_table as _M24
+check("  ↳ 아침표도 **같은 표**를 읽는다 (두 벌로 적지 않는다)",
+      _M24.duty("boxscore", C.League.MLB) is True
+      and _M24.duty("boxscore", C.League.NPB) is False)
+
+
 # ── ★★ **월 하순에 다음 달을 함께 긁는가** (v2.21 · 실제 사고) ──────────
 #
 # 앞을 이틀만 보면 월 하순에 남은 경기가 한두 건이 되고, 커버리지의 완화

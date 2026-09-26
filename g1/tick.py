@@ -4823,7 +4823,14 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 continue
             if _ct is ContentType.LINEUP and not LINEUP_ENABLED:
                 continue
-            _pg = unqueued_per_game(_ct, _pool, led.idem_keys(), now)
+            # ★ **리그 관문을 여기서 다시 적지 않는다** (v2.24).
+            # 기록실은 네이버 미리보기 창구가 있는 리그에만 의무가 있다 —
+            # 종목(야구)만 보고 넣었더니 NPB 3경기가 매일 「큐에조차 들어오지
+            # 못한 기록실」로 찍혔다(없는 사고). 표는 `pipeline` 하나가 갖는다.
+            _pool_ct = _pool
+            if _ct is ContentType.BOXSCORE:
+                _pool_ct = [g for g in _pool if g.league in P.BOXSCORE_LEAGUES]
+            _pg = unqueued_per_game(_ct, _pool_ct, led.idem_keys(), now)
             if not _pg:
                 continue
             _label = {ContentType.FINAL_FLASH: "종료 속보",

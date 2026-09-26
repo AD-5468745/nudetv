@@ -329,6 +329,28 @@ assert LEADERBOARD_LEAGUES <= RECORD_SOURCE_LEAGUES, (
 #      유럽은 과거를 사흘만 들고 있어 팀당 1~2경기뿐이었다 → 전부 `None`.
 #      `naver_football.FORM_HISTORY_DAYS` 를 45일로 넓혀 해결했다(실측: EPL
 #      팀당 과거 5경기 · 분석 카드 1080×1562 생성 확인).
+# ── 기록실 의무가 있는 리그 (v2.24) ──────────────────────────────────
+#
+# ★ **종목만 보면 안 된다.** 기록실은 네이버 미리보기의 `record` 로 그리는데
+# 그 창구는 리그마다 있고 없다 — **NPB 에는 없다**(실측: 전 기간 기록실
+# 발송이 KBO 14 · MLB 74 · NPB 0).
+#
+# 2026-09-26 에 기록실을 경기 단위 의무 감시에 넣을 때 **종목(야구)만 보고**
+# 넣었다. 그래서 NPB 3경기가 매일 「큐에조차 들어오지 못한 기록실」로
+# 찍혔다 — **없는 사고를 만든 것이다.** 같은 실수가 이 파일 291~297줄에
+# 리더보드로 이미 적혀 있다(`RECORD_SOURCE_LEAGUES` 로 다시 적었더니 NPB가
+# 매일 구멍으로 찍혔다). 두 번째다.
+#
+# 판정을 **수집기가 가진 표**에서 받아 쓴다 — 여기서 다시 적지 않는다.
+def _boxscore_leagues() -> frozenset:
+    from adapters import naver_preview as _NPb
+    from contract import BOXSCORE_SPORTS as _BS
+    return frozenset(lg for lg in _NPb.PREVIEW_LEAGUES
+                     if SCORE_UNIT_BY_LEAGUE.get(lg) in _BS)
+
+
+BOXSCORE_LEAGUES = _boxscore_leagues()
+
 ANALYSIS_LEAGUES = frozenset({
     League.KBO, League.NPB, League.MLB, League.KL1,
     League.EPL, League.LALIGA, League.SERIEA,

@@ -125,7 +125,11 @@ def duty(content: str, lg: League) -> bool:
         #   구멍으로 찍혔다** — 없는 사고를 만든 것이다.
         return lg in P.LEADERBOARD_LEAGUES
     if content == "boxscore":
-        return unit in C.BOXSCORE_SPORTS
+        # ★ **종목만 보면 NPB가 매일 구멍으로 찍힌다** (v2.24 · 두 번째 같은 실수).
+        #   기록실은 네이버 미리보기 창구가 있는 리그에만 의무가 있다
+        #   (실측: 전 기간 KBO 14 · MLB 74 · **NPB 0**).
+        #   판정은 `P.BOXSCORE_LEAGUES` 하나가 갖는다 — 여기서 다시 적지 않는다.
+        return lg in P.BOXSCORE_LEAGUES
     if content == "goal_flash":
         return unit is ScoreUnit.GOALS    # 골로 세는 종목 = 축구
     return False
