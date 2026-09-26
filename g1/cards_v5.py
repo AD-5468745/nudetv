@@ -1261,13 +1261,21 @@ def body_starters(away_name: str, home_name: str,
     def _whip(d: dict) -> str:
         return f"{d['whip']}" if d.get("whip") else ""
 
-    def _work(d: dict) -> str:
-        bits = []
-        if d.get("inn"):
-            bits.append(f"{d['inn']}이닝")
-        if d.get("kk") is not None:
-            bits.append(f"{d['kk']}K")
-        return " · ".join(bits)
+    # ── ★★ **한 칸에 둘을 넣어 접혔다** (v2.20 · 실제 사고) ────────────
+    #
+    # 전에는 `소화` 한 줄에 `163 2/3이닝 · 137K` 를 같이 넣었다. 16자인데
+    # `.cmp` 값 칸의 한 줄 한도가 **딱 16자**라(실측 2026-09-26), 이름이
+    # 한 글자만 길어도 넘쳐 **2.1줄**이 되고 카드가 통째로 거절된다.
+    # 실측: 2026-09-26 KBO 사전정보 4건이 그렇게 안 나갔다.
+    #     접힘(2.1줄): 163 2/3이닝 · 137K
+    #
+    # **줄이지 않고 나눈다** — 정보를 하나도 안 버린다. 각 값이 8자 안쪽이라
+    # 한도에서 넉넉히 멀어진다.
+    def _inn(d: dict) -> str:
+        return f"{d['inn']}이닝" if d.get("inn") else ""
+
+    def _kk(d: dict) -> str:
+        return f"{d['kk']}K" if d.get("kk") is not None else ""
 
     def _vs(d: dict) -> str:
         v = d.get("vs") or {}
@@ -1286,7 +1294,7 @@ def body_starters(away_name: str, home_name: str,
             f'<div class="n r"><b class="tn">{esc(home.get("name", ""))}</b></div>'
             f'<div class="p r">{esc(home_name)}</div></div></div>']
     for label, fn in (("시즌", _wl), ("ERA", _era), ("WHIP", _whip),
-                      ("소화", _work), ("이 상대", _vs)):
+                      ("소화", _inn), ("탈삼진", _kk), ("이 상대", _vs)):
         la, lh = fn(away), fn(home)
         if not (la or lh):
             continue
