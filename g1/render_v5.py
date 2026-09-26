@@ -272,7 +272,27 @@ def result_card(games: list, league: League, day: str, *,
         # 경기마다 나갔고(`FINAL_FLASH`), 이건 마지막 속보 30분 뒤에 나가는
         # 정리다. 그래서 **몇 번째 경기였는지·몇 시 경기였는지**를 함께 적는다:
         # *"몇번째 경기라고 표기해주면 좋을것같고 경기시간도 같이 알려주면 좋겠다"*.
-        body = C5.body_scoreboard(todays, league, with_time=True, numbered=True)
+        # ── ★★★ **경기가 많으면 카드가 높이 한계를 넘어 통째로 사라진다** (v2.23) ──
+        #
+        # 실측 2026-09-27: 정리판 카드는 한 경기가 약 122px 이라
+        #     12경기 1841px ✅ · 13경기 1963px ✅ · **14경기 2085px ❌**
+        # 한계가 2000px 이다. MLB 는 보통 14~17경기라 **거의 매일 죽었다** —
+        # 9/22·23·25·26·27 전부 0장이고, 12경기였던 9/24 만 나갔다.
+        # 대장에는 줄이 안 생기고 알림도 없어 아무도 몰랐다.
+        #
+        # 카드에는 들어가는 만큼만 싣고 **나머지는 캡션이 받는다**
+        # (기록실·오늘의 경기가 쓰는 같은 방식). 한도는 `cards_v5` 한 곳에
+        # 있고, 「딱 들어가는 값」이 아니라 **여유 150px 을 남기는 값**이다 —
+        # 딱 맞게 잡으면 머리말이 한 줄 길어지는 날 또 죽는다.
+        _ord = sorted(todays, key=lambda x: x.start_utc)
+        _shown = _ord[:C5.SCOREBOARD_MAX_ROWS]
+        _rest = _ord[C5.SCOREBOARD_MAX_ROWS:]
+        body = C5.body_scoreboard(_shown, league, with_time=True,
+                                  numbered=True)
+        if _rest:
+            body += ('<div class="bar"><span class="k">나머지</span>'
+                     f'<span class="v">{len(todays)}경기 중 {len(_shown)}경기만 '
+                     f'실었습니다 · 전체는 아래 글에</span></div>')
 
     # ── 오늘의 경기 (대표님: "베스트 경기를 뽑아 간단히 코멘트") ──
     #
@@ -337,6 +357,23 @@ def result_card(games: list, league: League, day: str, *,
             _extra = _Pf.wrapup_lines(
                 games, league, name_of=lambda t: C5._nm(league, t))
             _title = "오늘의 하루"
+            # ── ★ **카드에 못 실은 경기는 캡션이 반드시 받는다** (v2.23) ──
+            # 자르기만 하면 그 경기 결과가 **아무 데도 없다.** 카드가 12경기를
+            # 실으면 나머지를 여기 글로 적는다 — 번호·시각·점수 그대로.
+            _ord2 = sorted(todays, key=lambda x: x.start_utc)
+            if len(_ord2) > C5.SCOREBOARD_MAX_ROWS:
+                _lines = []
+                for _i, _g2 in enumerate(_ord2, 1):
+                    if _i <= C5.SCOREBOARD_MAX_ROWS:
+                        continue
+                    _a2 = C5._nm(league, _g2.away)
+                    _h2 = C5._nm(league, _g2.home)
+                    _sc2 = (f"{_g2.score.away} : {_g2.score.home}"
+                            if _g2.score else "—")
+                    _lines.append(
+                        f"{_i}. {_g2.start_utc.astimezone(KST):%H:%M} "
+                        f"{_a2} {_sc2} {_h2}")
+                _extra = list(_extra) + ["", "■ 나머지 경기"] + _lines
     except Exception:                              # noqa: BLE001
         _extra = []                                # 문장 하나 때문에 카드를 잃지 않는다
     parts = C5.caption(kind=kind, league=league, head=head,

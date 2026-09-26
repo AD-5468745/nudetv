@@ -103,6 +103,47 @@ def cases() -> list:
     return out
 
 
+def height_cases() -> list:
+    """리그 단위 카드를 **그 리그의 가장 바쁜 날**로 렌더한다.
+
+    ★ 왜 — 접힘만 재고 **높이**를 안 재서 MLB 정리판이 거의 매일 죽었다
+    (실측 2026-09-27: 14경기 2085px > 한계 2000px. 9/22·23·25·26·27 전부
+    0장이고 12경기였던 9/24 만 나갔다). 장부에 줄도 안 생겨 아무도 몰랐다.
+    **경기가 많은 날은 예외가 아니라 평소다** — MLB 는 보통 14~17경기다.
+    """
+    import datetime
+    import contract as C
+    import render_v5 as R
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # 리그별 (가장 바쁜 날의 경기 수, 팀 코드 몇 개)
+    busiest = {League.MLB: 20, League.KBO: 5, League.NPB: 6,
+               League.KBL: 5, League.VLEAGUE_M: 4, League.KL1: 6,
+               League.EPL: 10}
+    out = []
+    for lg, n in busiest.items():
+        codes = [c for c in ((getattr(C5, "TEAM_NAMES", {}) or {})
+                             .get(lg, {}) or {})] or ["AA", "BB"]
+        games = []
+        for i in range(n):
+            games.append(C.Game(
+                league=lg, season="2026", source_key=f"h{i}",
+                home=C.TeamRef(lg, codes[(i * 2) % len(codes)]),
+                away=C.TeamRef(lg, codes[(i * 2 + 1) % len(codes)]),
+                start_utc=now - datetime.timedelta(hours=8 + i * 0.2),
+                home_tz="Asia/Seoul", status=C.Status.FINAL,
+                score=C.Score(home=5, away=3,
+                              unit=C.SCORE_UNIT_BY_LEAGUE[lg])))
+        try:
+            made = R.result_card(games, lg, games[0].sports_day, now=now)
+        except Exception as e:                                 # noqa: BLE001
+            out.append((f"정리판 {lg.value} {n}경기", None,
+                        f"{type(e).__name__}: {e}", n))
+            continue
+        out.append((f"정리판 {lg.value} {n}경기",
+                    made[0] if made else None, "", n))
+    return out
+
+
 def main() -> int:
     global SKIP
     try:
@@ -131,6 +172,35 @@ def main() -> int:
         print(f"\n  접힌 것 {len(bad)}가지:")
         for n, p in bad:
             print(f"     ✗ {n} → {p}")
+
+    # ── 높이 — **가장 바쁜 날**로 잰다 ────────────────────────────────
+    import contract as _C
+    lim = _C.CARD_MAX_HEIGHT_PX
+    tall: list = []
+    hrows = height_cases()
+    print(f"\n카드 높이 전수 — 리그 {len(hrows)}개를 가장 바쁜 날로 렌더합니다"
+          f" (한계 {lim}px)")
+    with sync_playwright() as p:
+        b = p.chromium.launch()
+        pg = b.new_page(viewport={"width": C5.CARD_W, "height": 4000})
+        for name, html, err, n in hrows:
+            if html is None:
+                tall.append((name, err or "카드가 만들어지지 않았습니다"))
+                continue
+            pg.set_content(html)
+            pg.wait_for_timeout(80)
+            el = pg.query_selector(".card")
+            h = el.bounding_box()["height"] if el else 0
+            room = lim - h
+            mark = "✅" if room >= 100 else ("⚠ 여유부족" if room >= 0 else "❌")
+            print(f"     {mark} {name:24} {h:5.0f}px · 여유 {room:4.0f}px")
+            # **딱 들어가는 것을 통과로 세지 않는다** — 머리말이 한 줄
+            # 길어지는 날 다시 넘는다. 여유 100px 을 요구한다.
+            if room < 100:
+                tall.append((name, f"{h:.0f}px · 여유 {room:.0f}px"))
+        b.close()
+    check(f"★★★ 리그 {len(hrows)}개 정리판이 **가장 바쁜 날에도** 여유 100px 이상",
+          not tall, "; ".join(f"{n} ({d})" for n, d in tall[:6]))
     return 0
 
 
