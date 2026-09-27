@@ -135,11 +135,62 @@ def duty(content: str, lg: League) -> bool:
     return False
 
 
+def ledger_freshness() -> str:
+    """장부가 **언제 것인지** 한 줄. 묵은 장부로 재면 없는 구멍이 보인다.
+
+    ★★★ **이 표를 오래된 장부로 돌려 없는 사고를 두 번 보고했다** (v2.28).
+    실측 2026-09-28: 내 로컬 장부에는 9/27 정리판이 **1건**이었는데 운영에는
+    **4건**이었다(KBO 21:17 · KL1 21:27 · MLS 12:08 · NPB 21:58).
+    그걸 근거로 *"정리판이 세 리그 전부 0건"* 이라고 보고했다 — **전부 거짓**이다.
+    `state/ledger.jsonl` 은 시계가 깃에 올리는 파일이라, **먼저 받아오지 않으면**
+    내 사본은 몇 시간 뒤처진다.
+
+    그래서 이 표는 **자기가 언제 것인지 먼저 말한다.** 묵었으면 눈에 보이게.
+    """
+    import datetime as _dt
+    try:
+        last = ""
+        for line in LEDGER.read_text(encoding="utf-8").splitlines():
+            if '"sent_at_utc": "' in line:
+                v = line.split('"sent_at_utc": "', 1)[1].split('"', 1)[0]
+                if v > last:
+                    last = v
+        if not last:
+            return "장부에 발송 기록이 없습니다"
+        at = _dt.datetime.fromisoformat(last)
+        age = (_dt.datetime.now(_dt.timezone.utc) - at).total_seconds() / 3600
+        # ★ **나이로 묵음을 판정하지 않는다.** 새벽에 조용한 것과 내 사본이
+        #   뒤처진 것은 다르다 — 운영 사본과 **직접 대조**한다.
+        mark = ""
+        try:
+            import subprocess
+            n_local = sum(1 for _ in LEDGER.open(encoding="utf-8"))
+            out = subprocess.run(
+                ["git", "show", "origin/main:state/ledger.jsonl"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                n_remote = out.stdout.count("\n")
+                if n_remote > n_local:
+                    mark = (f"  ⚠️ **내 사본이 {n_remote - n_local}줄 뒤처졌습니다** — "
+                            f"`git fetch origin main && git checkout "
+                            f"origin/main -- state/ledger.jsonl` 먼저 하세요. "
+                            f"묵은 장부로 재면 **없는 구멍**이 보입니다")
+                else:
+                    mark = "  (운영 사본과 같습니다)"
+        except Exception:                                    # noqa: BLE001
+            mark = "  (운영 사본과 대조하지 못했습니다)"
+        return (f"장부 마지막 발송 {at.astimezone(C.KST):%m-%d %H:%M} "
+                f"({age:.1f}시간 전){mark}")
+    except Exception as e:                                   # noqa: BLE001
+        return f"장부 나이를 못 읽었습니다: {type(e).__name__}"
+
+
 def load(day_filter=None) -> tuple:
     """원장 → (그날 발송 맵, 종류별 총계, 종류별 마지막 시각)."""
     if not LEDGER.exists():
         print(f"  ✗ 원장이 없습니다: {LEDGER}")
         sys.exit(2)
+    print(f"  ⓘ {ledger_freshness()}")
     sent: dict = collections.defaultdict(set)   # (day, league, content) → idem
     total: dict = collections.Counter()
     last: dict = {}
