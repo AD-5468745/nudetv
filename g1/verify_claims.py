@@ -991,9 +991,16 @@ check("★ 축구에는 역전·연장을 말하지 않는다 (이닝이 없다)
 
 # 실물 배선 — 정리판에는 붙고 종료 속보(한 경기)에는 흐름 문장이 붙는다
 _wrcard = _RV.result_card(_WR, _L.MLB, "2026-09-09")
+# ★ **캡션은 늘 마지막 값이다** (v2.25). 정리판은 경기가 많으면
+# `(카드, 짧은판들, 캡션)` 세 값을 준다 — 높이 사다리를 쓰기 때문이다
+# (나이트가 먼저 쓰던 길). 둘로 고정해 풀면 캡션 자리에 HTML 이 들어온다.
+_wrcap = _wrcard[-1] if _wrcard else []
 check("★★ 정리판 캡션에 '오늘의 하루'가 실린다 (배선)",
-      _wrcard is not None and any("오늘의 하루" in p for p in _wrcard[1]),
-      str(_wrcard[1])[:110] if _wrcard else "None")
+      _wrcard is not None and any("오늘의 하루" in p for p in _wrcap),
+      str(_wrcap)[:110] if _wrcard else "None")
+check("  ↳ 캡션은 글 목록이다 (HTML 이 아니다 — 세 값 반환을 둘로 풀면 어긋난다)",
+      all(isinstance(p, str) and not p.lstrip().startswith("<!doctype")
+          for p in _wrcap), str(_wrcap)[:80])
 _ffcard = _RV.result_card([_WR[4]], _L.MLB, "2026-09-09")
 # v1.37 — 소제목이 '경기 흐름'에서 **'경기 내용'**으로 넓어졌다(흐름 + 총평).
 # 검사는 **이름이 아니라 배선**을 보는 것이므로 이름만 따라간다.
@@ -1206,9 +1213,14 @@ check("★★ 종료 속보에는 안 붙는다",
       _fl2 is not None and "기록" not in _fl2[1][0].split("\n")[0],
       _fl2[1][0].split("\n")[0] if _fl2 else "None")
 _wr2 = _RV.result_card(_WR, _L.MLB, "2026-09-09")
+# 캡션은 **마지막 값**이다 — 정리판은 경기가 많으면 세 값을 준다(v2.25).
+# `[1]` 로 고정하면 HTML 을 캡션으로 읽어 **우연히 통과**한다.
+_wr2cap = _wr2[-1] if _wr2 else [""]
 check("★★ 정리판에는 안 붙는다",
-      _wr2 is not None and "기록" not in _wr2[1][0].split("\n")[0],
-      _wr2[1][0].split("\n")[0] if _wr2 else "None")
+      _wr2 is not None and "기록" not in _wr2cap[0].split("\n")[0],
+      _wr2cap[0].split("\n")[0] if _wr2 else "None")
+check("  ↳ 그 캡션이 진짜 캡션이다 (HTML 을 캡션으로 읽지 않는다)",
+      not _wr2cap[0].lstrip().startswith("<!doctype"), _wr2cap[0][:60])
 
 # 출처 이름을 적지 않는다 — 이 프로젝트가 이미 낸 결론(약점 107)
 _allcap = " ".join([_sc2[1][0], _lc2[1][0]])

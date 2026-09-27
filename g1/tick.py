@@ -3504,6 +3504,15 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
             _R5.set_current(f"{kind} {item.scope}")
             made = build(_R5)
             if not made:
+                # ── ★★★ **이유를 안 남기면 영영 못 찾는다** (v2.25) ────────
+                # 여기서 조용히 `None` 을 돌려주고 있었다. 그래서 MLB 정리판이
+                # 9/22·23·25·26 나흘을 못 나가는 동안 **기록이 한 줄도 없었다** —
+                # `health.json` 에도 로그에도 이유가 없어서, 내가 높이라고
+                # 잘못 짚고 엉뚱한 곳을 고쳤다(v2.23).
+                # 카드 함수가 "못 만들겠다"고 한 것도 **사실이고 기록해야 한다.**
+                _R5.note_fallback(
+                    f"{kind} 카드 함수가 만들 수 없다고 했습니다 "
+                    f"(재료 부족 — 그 종류의 조건을 보세요)")
                 return None
             # **나이트만 세 값을 준다** — (카드, 짧은판, 캡션).
             # 그 카드만 길이를 미리 알 수 없어서다(`render_v5.night_card` 주석).
@@ -3558,6 +3567,14 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
         # (모닝은 07:30에 나가고 취소는 그 뒤에 발표된다).
         # 실측: KBO 2026-08-05·06·07·09·28 — 5경기 전 경기 폭염취소.
         if not any(g.is_terminal for g in todays):
+            # **왜 안 나가는지 말한다** (v2.25). 이 줄이 없어서 MLB 정리판이
+            # 나흘을 못 나가는 동안 아무 기록이 없었다.
+            _R5r = sys.modules.get("render_v5")
+            if _R5r is not None:
+                _R5r.note_fallback(
+                    f"정리판 {item.league.value if item.league else ''} {day} — "
+                    f"그날 경기 {len(todays)}건 중 **끝난 경기가 하나도 없습니다** "
+                    f"(스냅샷이 종료를 아직 못 봤습니다)")
             return None                     # 아직 아무것도 안 끝났다 — 다음 틱에 다시 본다
         # **못 만들면 안 보낸다 (v1.40).** 예전에는 `USE_V5['result']=False`로
         # 옛 카드에 떨어졌지만, 옛 카드 경로는 2026-09-17 지시로 전부 걷어냈다

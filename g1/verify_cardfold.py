@@ -131,7 +131,11 @@ def height_cases() -> list:
                 away=C.TeamRef(lg, codes[(i * 2 + 1) % len(codes)]),
                 start_utc=now - datetime.timedelta(hours=8 + i * 0.2),
                 home_tz="Asia/Seoul", status=C.Status.FINAL,
-                score=C.Score(home=5, away=3,
+                # ★ **1점차로 만든다** — 그래야 「오늘의 경기」 블록이 실제로
+                # 붙는다. v2.23 은 2점차 데이터로 재서 그 블록이 없는
+                # **실제보다 짧은 카드**를 통과시켰고, MLB 정리판은 고친 뒤에도
+                # 계속 죽었다. 검증 입력을 내가 만들면 이렇게 틀린다.
+                score=C.Score(home=4, away=5,
                               unit=C.SCORE_UNIT_BY_LEAGUE[lg])))
         try:
             made = R.result_card(games, lg, games[0].sports_day, now=now)
@@ -139,8 +143,29 @@ def height_cases() -> list:
             out.append((f"정리판 {lg.value} {n}경기", None,
                         f"{type(e).__name__}: {e}", n))
             continue
-        out.append((f"정리판 {lg.value} {n}경기",
-                    made[0] if made else None, "", n))
+        if not made:
+            out.append((f"정리판 {lg.value} {n}경기", None,
+                        "카드가 만들어지지 않았습니다", n))
+            continue
+        # ── ★★★ **실제 발송 경로로 판정한다** (v2.25) ───────────────────
+        # 카드 HTML 만 재면 안 된다. 넘치면 `render_png` 의 사다리가 한 단
+        # 줄여 다시 그리므로, **여기서 성공했으면 운영에서도 나간다.**
+        import pathlib as _pl
+        import tempfile as _tf
+        _o = _pl.Path(_tf.mkdtemp()) / "c.png"
+        try:
+            _r = (R.render_png(made[0], _o, made[1]) if len(made) == 3
+                  else R.render_png(made[0], _o))
+        except Exception as e:                                 # noqa: BLE001
+            out.append((f"정리판 {lg.value} {n}경기", None,
+                        f"{type(e).__name__}: {e}", n))
+            continue
+        if not _r or _r == R.TOO_TALL:
+            out.append((f"정리판 {lg.value} {n}경기", None,
+                        f"발송 경로에서 거절됨({_r})", n))
+            continue
+        out.append((f"정리판 {lg.value} {n}경기", None,
+                    f"OK {_r[1]}px", n))
     return out
 
 
@@ -185,7 +210,11 @@ def main() -> int:
         pg = b.new_page(viewport={"width": C5.CARD_W, "height": 4000})
         for name, html, err, n in hrows:
             if html is None:
+                if str(err).startswith("OK "):
+                    print(f"     ✅ {name:24} {err} (발송 경로 통과)")
+                    continue
                 tall.append((name, err or "카드가 만들어지지 않았습니다"))
+                print(f"     ❌ {name:24} {err}")
                 continue
             pg.set_content(html)
             pg.wait_for_timeout(80)

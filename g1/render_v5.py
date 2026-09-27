@@ -284,15 +284,35 @@ def result_card(games: list, league: League, day: str, *,
         # (기록실·오늘의 경기가 쓰는 같은 방식). 한도는 `cards_v5` 한 곳에
         # 있고, 「딱 들어가는 값」이 아니라 **여유 150px 을 남기는 값**이다 —
         # 딱 맞게 잡으면 머리말이 한 줄 길어지는 날 또 죽는다.
+        # ── ★★★ **숫자를 고르지 않는다 — 넘치면 줄여서 다시 그린다** (v2.25) ──
+        #
+        # v2.23 에 "11행이면 들어간다"고 **한 번 재고** 한도를 박았다. 그런데
+        # 그때 잰 카드에는 「오늘의 경기」 블록이 없었다(시험 데이터가 그 규칙에
+        # 안 걸렸다). 실제 카드에는 그 블록이 붙어 **11행에서도 2111px** 이었고,
+        # MLB 정리판은 고친 뒤에도 계속 죽었다.
+        # **내가 만든 입력으로 재서 틀린 것이다** — 전역 규율에 어제 적은 그 실수다.
+        #
+        # 그래서 숫자를 고르는 방식을 버린다. `render_png` 에는 이미
+        # **짧은 판으로 한 단씩 내려 다시 그리는 사다리**가 있다(나이트가 쓴다).
+        # 정리판이 그 사다리를 안 넘겨줘서 못 쓰고 있었다. 이제 넘긴다 —
+        # 블록이 늘든 글씨가 커지든 **카드가 스스로 들어갈 때까지 줄인다.**
         _ord = sorted(todays, key=lambda x: x.start_utc)
-        _shown = _ord[:C5.SCOREBOARD_MAX_ROWS]
-        _rest = _ord[C5.SCOREBOARD_MAX_ROWS:]
-        body = C5.body_scoreboard(_shown, league, with_time=True,
-                                  numbered=True)
-        if _rest:
-            body += ('<div class="bar"><span class="k">나머지</span>'
-                     f'<span class="v">{len(todays)}경기 중 {len(_shown)}경기만 '
-                     f'실었습니다 · 전체는 아래 글에</span></div>')
+
+        def _sb(rows: int) -> str:
+            _sh = _ord[:rows]
+            _out = C5.body_scoreboard(_sh, league, with_time=True,
+                                      numbered=True)
+            if len(_ord) > len(_sh):
+                _out += ('<div class="bar"><span class="k">나머지</span>'
+                         f'<span class="v">{len(_ord)}경기 중 {len(_sh)}경기만 '
+                         f'실었습니다 · 전체는 아래 글에</span></div>')
+            return _out
+
+        _rungs = [n for n in (C5.SCOREBOARD_MAX_ROWS, 9, 7, 5, 3)
+                  if n < len(_ord) or n == C5.SCOREBOARD_MAX_ROWS]
+        body = _sb(_rungs[0])
+        _shorter_sb = [_sb(n) for n in _rungs[1:]]
+        _rest = _ord[min(_rungs):] if len(_ord) > min(_rungs) else []
 
     # ── 오늘의 경기 (대표님: "베스트 경기를 뽑아 간단히 코멘트") ──
     #
@@ -360,12 +380,15 @@ def result_card(games: list, league: League, day: str, *,
             # ── ★ **카드에 못 실은 경기는 캡션이 반드시 받는다** (v2.23) ──
             # 자르기만 하면 그 경기 결과가 **아무 데도 없다.** 카드가 12경기를
             # 실으면 나머지를 여기 글로 적는다 — 번호·시각·점수 그대로.
+            # ── ★ **어느 단이 이길지 모르므로 전 경기를 싣는다** (v2.25) ──
+            # 카드는 높이에 따라 11·9·7·5·3행 중 하나로 그려진다(사다리).
+            # 캡션을 「나머지」로만 채우면 **어느 단이 이겼는지에 따라 빠지는
+            # 경기가 달라진다.** 그래서 한 줄이라도 줄어들 수 있는 날에는
+            # **전 경기**를 적는다 — 카드와 조금 겹쳐도 잃는 것이 없다.
             _ord2 = sorted(todays, key=lambda x: x.start_utc)
-            if len(_ord2) > C5.SCOREBOARD_MAX_ROWS:
+            if len(_ord2) > 3:
                 _lines = []
                 for _i, _g2 in enumerate(_ord2, 1):
-                    if _i <= C5.SCOREBOARD_MAX_ROWS:
-                        continue
                     _a2 = C5._nm(league, _g2.away)
                     _h2 = C5._nm(league, _g2.home)
                     _sc2 = (f"{_g2.score.away} : {_g2.score.home}"
@@ -373,7 +396,7 @@ def result_card(games: list, league: League, day: str, *,
                     _lines.append(
                         f"{_i}. {_g2.start_utc.astimezone(KST):%H:%M} "
                         f"{_a2} {_sc2} {_h2}")
-                _extra = list(_extra) + ["", "■ 나머지 경기"] + _lines
+                _extra = list(_extra) + ["", "■ 전체 경기"] + _lines
     except Exception:                              # noqa: BLE001
         _extra = []                                # 문장 하나 때문에 카드를 잃지 않는다
     parts = C5.caption(kind=kind, league=league, head=head,
@@ -383,6 +406,19 @@ def result_card(games: list, league: League, day: str, *,
                        note=(record_asof_note(rb) if (_used_rb and rb is not None)
                              else ""),
                        tags=_tags(kind, league, todays))
+    # ── ★ **짧은 판을 같이 돌려준다** (v2.25) ────────────────────────
+    # `_try_v5` 는 세 값이 오면 가운데를 `render_png(shorter_html=)` 로 넘긴다
+    # (나이트가 쓰던 길). 그러면 높이 상한을 넘어도 **한 단씩 줄여 다시 그린다.**
+    # 정리판만 이 길을 안 쓰고 있어서, 「오늘의 경기」 블록이 붙는 날마다 죽었다.
+    _short = locals().get("_shorter_sb") or []
+    if _short:
+        return (html,
+                [C5.shell(kind=kind, league=league, date_label=date_label,
+                          head=head, body=_b + (C5.body_best(
+                              H.best_games(todays, league), league)
+                              if not flow else "") + extra_body,
+                          foot_left=foot) for _b in _short],
+                list(parts))
     return html, list(parts)
 
 
