@@ -88,8 +88,24 @@ def duty(content: str, lg: League) -> bool:
     if content in NOT_BUILT:
         return False                      # 아직 안 만든 것은 사고가 아니다
     if content in ("anchor", "kickoff", "final_flash",
-                   "league_result", "period_flash", "morning"):
+                   "league_result", "morning"):
         return True                       # 전 리그 공통
+    if content == "period_flash":
+        # ★ **구간은 보강 창구가 있는 리그에만 있다** (v2.29).
+        #   구간(전반 종료·5회 종료·연장)은 `naver_game` 이 경기 상세에서
+        #   채운다(`parse_period`). 그 창구가 **없는 리그는 의무가 없다** —
+        #   MLS 가 그렇다(실측: 전 기간 구간 0건 · MLB 44 · NPB 13 · KBO 7 ·
+        #   KL1 1). '전 리그 공통'에 섞여 있어서 **MLS 가 경기마다 구멍으로
+        #   찍혔다.** 기록실(v2.24)·리더보드·사전정보와 **같은 병**이다.
+        from adapters.naver_game import NAVER_LEAGUE    # noqa: PLC0415
+        return lg in NAVER_LEAGUE
+    if content == "goal_flash":
+        # ★ **계약이 이미 의무에서 뺐다** (v2.29). `DUTY_EXEMPT_CONTENT` 에
+        #   들어 있는데(창이 30분이라 시계가 뜸하면 일부러 사라진다 · 안전망은
+        #   종료 속보) 이 표만 「축구면 의무」라고 세고 있었다.
+        #   **판정이 두 벌이면 어긋난 쪽이 조용히 이긴다** — 0-0 경기에도
+        #   구멍으로 찍혔다(KL1 9/27). 계약을 읽는다.
+        return False
     if content == "lineup":
         # ★ **야구와 축구는 명단을 받는 창구가 다르다** (v1.86).
         #   축구는 경기 상세(`fill_lineups`)에서 온다 — 전 리그 온다.
@@ -99,7 +115,13 @@ def duty(content: str, lg: League) -> bool:
         from adapters import naver_preview as _NP2       # noqa: PLC0415
         if lg in _NP2.BASEBALL_LEAGUES or unit is ScoreUnit.RUNS:
             return lg in _NP2.LINEUP_SOURCE_LEAGUES
-        return True
+        # ★ **축구도 '전 리그'가 아니다** (v2.29). 명단은
+        #   `naver_football.fill_lineups` 가 채우는데 그 어댑터는 **K리그를
+        #   지원하지 않는다**(`naver_football: 지원하지 않는 리그 KL1` —
+        #   실측). 그래서 K리그 명단이 **전 기간 0건**이고 경기마다 구멍으로
+        #   찍혔다. 창구가 있는 리그는 그 어댑터가 가진 표가 안다.
+        from adapters.naver_football import CATEGORY as _NF_CAT  # noqa: PLC0415
+        return lg in _NF_CAT
     if content == "pregame":
         # ★ **여기서 리그를 다시 적지 않는다** (v1.80에서 바로잡음).
         #   사전정보는 소스에 `/preview` 창구가 있는 리그에만 있다.
@@ -130,8 +152,6 @@ def duty(content: str, lg: League) -> bool:
         #   (실측: 전 기간 KBO 14 · MLB 74 · **NPB 0**).
         #   판정은 `P.BOXSCORE_LEAGUES` 하나가 갖는다 — 여기서 다시 적지 않는다.
         return lg in P.BOXSCORE_LEAGUES
-    if content == "goal_flash":
-        return unit is ScoreUnit.GOALS    # 골로 세는 종목 = 축구
     return False
 
 
@@ -185,6 +205,33 @@ def ledger_freshness() -> str:
         return f"장부 나이를 못 읽었습니다: {type(e).__name__}"
 
 
+def _not_over_yet(cell_last: dict, day: str, lg) -> bool:
+    """그 리그의 그날이 **아직 안 끝났나.**
+
+    ★★★ **날짜로 판정하면 MLB 가 매일 구멍으로 찍힌다** (v2.29).
+    전에는 `day == 오늘` 일 때만 「아직」으로 봤다. 그런데 **MLB 의 `sports_day`
+    D 경기는 한국시각 D+1 새벽~낮에 치러진다** — 그래서 「어제」 표를 보면
+    아직 진행 중인 슬레이트가 **흐름·결과 0건**으로 찍힌다.
+    실측 2026-09-28 06시: MLB 9/27 15경기가 04:05 에 시작해 한 경기만 끝났는데
+    표는 `흐름 ✗ · 결과 ✗` 라고 했다 — **없는 사고**다.
+
+    **시각으로 판정한다**: 그 리그·그날의 **마지막 킥오프가 나간 뒤** 경기가
+    끝날 만한 시간(야구 4시간 · 그 밖 3시간)이 아직 안 지났으면 「아직」이다.
+    킥오프는 경기 시작에 맞춰 나가므로 그것이 곧 '마지막 경기가 시작한 때'다.
+    """
+    import datetime as _dt
+    at = cell_last.get((day, getattr(lg, "value", lg), "kickoff"))
+    if not at:
+        return False                       # 킥오프 기록이 없으면 판단 못 한다
+    try:
+        started = _dt.datetime.fromisoformat(at)
+    except (TypeError, ValueError):
+        return False
+    unit = C.SCORE_UNIT_BY_LEAGUE.get(lg)
+    need = 4 * 3600 if unit is ScoreUnit.RUNS else 3 * 3600
+    return (_dt.datetime.now(_dt.timezone.utc) - started).total_seconds() < need
+
+
 def load(day_filter=None) -> tuple:
     """원장 → (그날 발송 맵, 종류별 총계, 종류별 마지막 시각)."""
     if not LEDGER.exists():
@@ -194,6 +241,9 @@ def load(day_filter=None) -> tuple:
     sent: dict = collections.defaultdict(set)   # (day, league, content) → idem
     total: dict = collections.Counter()
     last: dict = {}
+    # ★ **(날짜·리그·종류)별 마지막 발송 시각** (v2.29) — 「아직 안 끝난 날」을
+    #   날짜 비교가 아니라 **실제 시각**으로 판정하려면 이것이 필요하다.
+    cell_last: dict = {}
     for line in LEDGER.read_text(encoding="utf-8").splitlines():
         try:
             d = json.loads(line)
@@ -217,7 +267,9 @@ def load(day_filter=None) -> tuple:
         if day_filter and dayv not in day_filter:
             continue
         sent[(dayv, lgv, ct)].add(d.get("idem_key"))
-    return sent, total, last
+        if at > cell_last.get((dayv, lgv, ct), ""):
+            cell_last[(dayv, lgv, ct)] = at
+    return sent, total, last, cell_last
 
 
 def kst_day(offset: int = 0) -> str:
@@ -226,7 +278,7 @@ def kst_day(offset: int = 0) -> str:
 
 def main() -> int:
     days = sys.argv[1:] or [kst_day(-1), kst_day(0)]
-    sent, total, last = load(set(days))
+    sent, total, last, cell_last = load(set(days))
     now = datetime.now(C.KST)
 
     print("=" * 72)
@@ -294,7 +346,7 @@ def main() -> int:
                 n = len(sent.get((day, l.value, ct), ()))
                 if n:
                     cells.append(f"{n:>6}")
-                elif today and ct in AFTER_GAME:
+                elif ct in AFTER_GAME and _not_over_yet(cell_last, day, l):
                     cells.append(f"{'…':>6}")          # 아직 시간이 안 됐다
                 else:
                     cells.append(f"{'✗':>6}")
