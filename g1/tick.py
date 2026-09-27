@@ -3528,8 +3528,19 @@ def render_for(item: QueueItem, games: list, *, records: dict | None = None,
                 return None
             return [(_p.name, _p.read_bytes(), _r[0], _r[1])], _parts
         except Exception as _e:                              # noqa: BLE001
-            print(f"  ⚠️ [v5] {kind} 카드 실패 — 옛 카드로 그립니다: "
+            # ── ★★★ **예외도 기록해야 한다** (v2.27) ─────────────────
+            # 여기는 **찍기만 하고 기록을 안 남겼다.** 그래서 카드가 예외로
+            # 죽으면 `health.json` 에 아무 줄도 안 생기고, 이유는 실행 로그에만
+            # 남는다 — 그 로그는 연속 운전 때문에 **최대 5시간** 안 열린다.
+            # 2026-09-27 에 그것 때문에 원인을 다섯 시간 늦게 찾았다.
+            #
+            # 곁들여 **글월도 거짓이었다**: "옛 카드로 그립니다" 는 v1.40 에
+            # 옛 카드 경로를 걷어내면서 사실이 아니게 됐다 — 그냥 안 나간다.
+            print(f"  ⚠️ [v5] {kind} 카드가 예외로 죽어 안 나갑니다: "
                   f"{_e.__class__.__name__}: {_e}")
+            _R5.note_fallback(
+                f"{kind} 카드가 예외로 죽었습니다 — "
+                f"{_e.__class__.__name__}: {str(_e)[:90]}")
             return None
 
     if item.content_type is ContentType.MORNING:
@@ -4324,6 +4335,18 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
         # 나이트 브리핑은 리그가 없는 통합 카드다 — 전 리그 경기를 함께 넘긴다.
         pool = [g for gs in snaps.values() if gs for g in gs]
         try:
+            # ── ★★★ **이유를 안 말한 자리를 시스템이 지목하게 한다** (v2.27) ──
+            #
+            # `render_for` 안에 **조용한 `return None` 이 30곳**이다(실측).
+            # 그중 어디서 돌아섰는지 모르면 그 콘텐츠가 왜 안 나갔는지 영영
+            # 못 찾는다 — 2026-09-27 에 MLB 정리판 원인을 다섯 시간 늦게
+            # 찾은 이유가 이것이다.
+            #
+            # 30곳을 하나씩 고치지 않는다(그중 여럿은 '해당 없음'이라 정상이다).
+            # 대신 **이유를 남겼는지 여기서 센다.** 안 남겼으면 그 사실 자체를
+            # 적는다 — 그러면 며칠 안에 **말 안 하는 자리 목록**이 저절로 모인다.
+            _fb_before = len(getattr(sys.modules.get("render_v5"),
+                                     "_FALLBACKS", []) or [])
             made = render_for(item, games, records=records,
                               team_stats=team_stats_by_league.get(
                                   item.league.value if item.league else ""),
@@ -4333,6 +4356,13 @@ def tick(*, dry_run: bool = False, force_fetch: bool = False) -> int:
                 _note_skip(item, "카드를 못 만듦")
                 empty_kinds[item.content_type.value] = \
                     empty_kinds.get(item.content_type.value, 0) + 1
+                _R5n = sys.modules.get("render_v5")
+                if _R5n is not None and len(
+                        getattr(_R5n, "_FALLBACKS", []) or []) == _fb_before:
+                    _R5n.note_fallback(
+                        f"{item.content_type.value} {item.scope} — "
+                        f"**이유를 말하지 않고** 안 만들었습니다 "
+                        f"(render_for 의 조용한 return)")
                 continue
             photos, parts = made
             # ── 투표는 갈래가 다르다 (v1.78) ────────────────────────
